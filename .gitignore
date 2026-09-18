@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-build/
-dist/
-data/
-cache/
-reports/
-*.sqlite
-.tmp_*
