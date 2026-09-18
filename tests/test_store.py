@@ -1,0 +1,174 @@
+import tempfile
+import unittest
+from pathlib import Path
+
+from football_analysis.browser_report import render_browser_html
+from football_analysis.query_report import render_query_html
+from football_analysis.store import list_issues, query_movements, save_issue_movements
+
+
+def _item(match_no: str, home: str, away: str, *, attention: bool, level: str, reason: str, direction: str = "") -> dict:
+    return {
+        "match_no": match_no,
+        "league": "欧冠",
+        "match_time": "09-10 00:45",
+        "home_team": home,
+        "away_team": away,
+        "titan_match_id": "1" + match_no,
+        "odds_analysis": {
+            "asian_handicap": {
+                "available": True,
+                "recommended_side": "客队赢盘",
+                "action": "轻仓",
+            }
+        },
+        "odds_movement": {
+            "available": True,
+            "attention": attention,
+            "level": level,
+            "kind": direction,
+            "reasons": [reason] if reason else [],
+            "asian": {
+                "available": True,
+                "direction": direction,
+                "lean": "客队（下盘/受让方）" if direction == "降盘" else "客队（上盘/让球方）" if direction == "升盘" else "",
+                "line_change": -0.5 if direction == "降盘" else 0.5 if direction == "升盘" else 0.0,
+                "initial": {
+                    "line_display": "主让一球",
+                    "home_water": 0.87,
+                    "away_water": 1.01,
+                },
+                "current": {
+                    "line_display": "主让半球",
+                    "home_water": 1.03,
+                    "away_water": 0.85,
+                },
+            },
+        },
+    }
+
+
+class MovementStoreTests(unittest.TestCase):
+    def test_kind_filter_returns_only_matching_movement(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            rows = [
+                _item("1", "巴萨", "费耶诺德", attention=True, level="重点关注", reason="让球盘降盘", direction="降盘"),
+                _item("2", "利物浦", "马竞", attention=True, level="关注", reason="亚盘水位反转"),
+            ]
+            save_issue_movements(db, rows, "26121", "https://trade.500.com/sfc/")
+            drops = query_movements(db, kind="降盘", latest_only=True)
+            self.assertEqual(len(drops), 1)
+            self.assertEqual(drops[0]["home_team"], "巴萨")
+            self.assertEqual(drops[0]["kind"], "降盘")
+
+    def test_legacy_retreat_kind_is_queried_as_drop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            rows = [
+                _item("1", "巴萨", "费耶诺德", attention=True, level="重点关注", reason="让球盘退盘", direction="退盘"),
+            ]
+            save_issue_movements(db, rows, "26121", "https://trade.500.com/sfc/")
+            drops = query_movements(db, kind="降盘", latest_only=True)
+            self.assertEqual(len(drops), 1)
+            self.assertEqual(drops[0]["kind"], "降盘")
+
+    def test_save_and_query_latest_issue_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            first = [
+                _item("1", "巴萨", "费耶诺德", attention=True, level="重点关注", reason="让球盘降盘：主让一球 -> 主让半球", direction="降盘"),
+                _item("2", "利物浦", "马竞", attention=False, level="稳定", reason=""),
+            ]
+            save_issue_movements(db, first, "26121", "https://trade.500.com/sfc/")
+            second = [
+                _item("1", "巴萨", "费耶诺德", attention=True, level="关注", reason="亚盘水位反转：主让一球 -> 主让半球"),
+                _item("2", "利物浦", "马竞", attention=True, level="关注", reason="亚盘水位摆动：主让一球 -> 主让半球"),
+            ]
+            save_issue_movements(db, second, "26121", "https://trade.500.com/sfc/")
+            issues = list_issues(db)
+            self.assertEqual(len(issues), 1)
+            self.assertEqual(issues[0]["issue"], "26121")
+            self.assertEqual(issues[0]["run_count"], 2)
+            latest = query_movements(db, issue="26121", latest_only=True)
+            self.assertEqual(len(latest), 2)
+            self.assertEqual(latest[0]["home_team"], "巴萨")
+            self.assertEqual(latest[0]["level"], "关注")
+            alerts = query_movements(db, attention_only=True, latest_only=True)
+            self.assertEqual(len(alerts), 2)
+            barcelona = query_movements(db, team="巴萨", latest_only=True)
+            self.assertEqual(len(barcelona), 1)
+            all_rows = query_movements(db, latest_only=False)
+            self.assertEqual(len(all_rows), 4)
+            html = render_query_html(latest, issues=issues, issue="26121", db_path=str(db))
+            self.assertIn("巴萨 vs 费耶诺德", html)
+            self.assertIn("变盘异动查询", html)
+            self.assertIn("降盘", html)
+            self.assertNotIn("退盘", html)
+            self.assertIn("倾向", html)
+
+
+class DetailTotalDisplayTests(unittest.TestCase):
+    def _item(self, *, current: dict | None) -> dict:
+        return {
+            "match_no": "01",
+            "league": "欧冠",
+            "match_time": "09-10 00:45",
+            "home_team": "主队",
+            "away_team": "客队",
+            "odds_analysis": {},
+            "odds_movement": {
+                "total": {"current": current},
+            },
+        }
+
+    def test_detail_uses_immediate_total_when_available(self):
+        html = render_browser_html(
+            [
+                self._item(
+                    current={
+                        "line_text": "3/3.5",
+                        "over_water": 0.9,
+                        "under_water": 0.97,
+                    }
+                )
+            ],
+            "26122",
+            "https://trade.500.com/sfc/",
+        )
+        self.assertIn("3/3.5 0.90/0.97", html)
+        self.assertNotIn("2.5 0.00/0.00", html)
+
+    def test_detail_shows_dash_when_immediate_total_missing(self):
+        html = render_browser_html(
+            [self._item(current=None), self._item(current={"available": False})],
+            "26122",
+            "https://trade.500.com/sfc/",
+        )
+        detail_table = html.split('<table id="detail-table">', 1)[1].split("</table>", 1)[0]
+        self.assertEqual(detail_table.count("<td>-</td>"), 2)
+        self.assertNotIn("2.5", html)
+
+
+class BrowserReportTests(unittest.TestCase):
+    def test_alert_page_uses_upgrade_downgrade_layout(self):
+        html = render_browser_html(
+            [
+                _item("4", "那不勒斯", "阿森纳", attention=True, level="重点关注", reason="让球盘升盘：主受半球 -> 主受一球", direction="升盘"),
+                _item("13", "摩雷伦斯", "本菲卡", attention=True, level="关注", reason="让球盘降盘：主让一球 -> 主让半球", direction="降盘"),
+            ],
+            "26121",
+            "https://trade.500.com/sfc/",
+        )
+        self.assertIn("data-alert-filter=\"升盘\"", html)
+        self.assertIn("data-alert-filter=\"降盘\"", html)
+        self.assertNotIn("data-alert-filter=\"退盘\"", html)
+        self.assertNotIn("退盘", html)
+        self.assertIn("上盘=让球方", html)
+        self.assertIn(">倾向<", html)
+        self.assertIn("那不勒斯 vs 阿森纳", html)
+        self.assertIn("row.hidden = !visible", html)
+
+
+if __name__ == "__main__":
+    unittest.main()
