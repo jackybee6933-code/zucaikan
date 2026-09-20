@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html
+import json
 from datetime import datetime
 
 
@@ -28,6 +29,73 @@ def _kind_badge(kind: str) -> str:
     }.get(kind, "kind-watch")
     return f'<span class="kind {css}">{_esc(kind or "无")}</span>'
 
+
+def _line_delta_html(row: dict) -> str:
+    d = str(row.get("direction") or "").strip()
+    try:
+        lc = float(row.get("line_change") or 0)
+    except (ValueError, TypeError):
+        lc = 0.0
+    # lc==0: 无让球线变化(如水位摆动) → 原样显示 direction，不加数字，不高亮
+    if lc == 0:
+        return f'<div class="line-delta">{_esc(d)}</div>' if d else ""
+    label = f"升盘 +{abs(lc):g}" if lc > 0 else f"降盘 -{abs(lc):g}"
+    cls = "delta-hot" if abs(lc) >= 0.5 else ""
+    cls_attr = f" {cls}" if cls else ""
+    return f'<div class="line-delta{cls_attr}">{_esc(label)}</div>'
+
+
+def _total_goals_parts(payload_json: str) -> tuple[str, str, str]:
+    """Return (initial, current, delta) for total-goals line."""
+    try:
+        data = json.loads(payload_json or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return ("无数据", "无数据", "")
+    total = (data.get("odds_movement") or {}).get("total") or {}
+    if not total.get("available"):
+        return ("无市场", "无市场", "")
+    init = total.get("initial") or {}
+    curr = total.get("current") or {}
+
+    def fmt(side: dict) -> str:
+        line = str(side.get("line_text") or "").strip()
+        over = side.get("over_water")
+        under = side.get("under_water")
+        if over is not None and under is not None and (over or under):
+            return f"{line} {over:.2f}/{under:.2f}".strip()
+        return line
+
+    i_text = fmt(init) or "无数据"
+    c_text = fmt(curr) or "无数据"
+    delta = ""
+    if init.get("line") is not None and curr.get("line") is not None:
+        diff = round(float(curr["line"]) - float(init["line"]), 2)
+        if diff > 0:
+            delta = f"升盘 +{diff}"
+        elif diff < 0:
+            delta = f"降盘 {diff}"
+    return (i_text, c_text, delta)
+
+
+def _total_goals_html(payload_json: str) -> str:
+    i, c, d = _total_goals_parts(payload_json)
+    abs_diff = 0.0
+    if d:
+        try:
+            num_part = d.replace("升盘 ", "").replace("降盘 ", "").replace("+", "")
+            abs_diff = abs(float(num_part))
+        except ValueError:
+            pass
+    hot = abs_diff >= 0.5
+    delta_html = ""
+    if d:
+        tag_cls = "delta-hot" if hot else ""
+        delta_html = f'<div class="line-delta {tag_cls}">{_esc(d)}</div>'
+    return (
+        f'<div class="line-pair"><span class="k">{_esc(chr(21021))}</span>{_esc(i)}</div>'
+        f'<div class="line-pair"><span class="k">{_esc(chr(21363))}</span>{_esc(c)}</div>'
+        + delta_html
+    )
 
 
 _FETCH_BLOCK = \
@@ -63,6 +131,7 @@ _FETCH_BLOCK = \
     </script>
 """
 
+
 def render_query_html(
     rows: list[dict],
     *,
@@ -89,7 +158,7 @@ def render_query_html(
     if analyses and issue:
         unified_html = render_browser_html(analyses, issue, source_url, datetime.now())
     issue_options = ['<option value="">全部期号</option>']
-    for item in issues:
+    for item in sorted(issues, key=lambda x: str(x.get("issue", "")), reverse=True):
         selected = " selected" if str(item.get("issue")) == issue else ""
         issue_options.append(f'<option value="{_esc(item.get("issue"))}"{selected}>{_esc(item.get("issue"))}</option>')
     level_options = []
@@ -122,11 +191,13 @@ def render_query_html(
               <td class="line-change">
                 <div class="line-pair"><span class="k">初</span>{_esc(row.get("initial_line") or "无数据")}</div>
                 <div class="line-pair"><span class="k">即</span>{_esc(row.get("current_line") or "无数据")}</div>
-                <div class="line-delta">{_esc(row.get("direction") or "")}</div>
+                {_line_delta_html(row)}
               </td>
               <td class="lean-cell">{_esc(row.get("lean") or "—")}</td>
 
-              <td class="time-cell">{_esc(row.get("captured_at"))}</td>
+              <td class="total-cell">
+                {_total_goals_html(row.get('payload_json') or '')}
+              </td>
             </tr>
             """
         )
@@ -161,7 +232,9 @@ def render_query_html(
     .match-cell {{ min-width: 220px; white-space: normal; }}
     .match-cell strong {{ display: block; white-space: normal; }}
     .match-head {{ display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }}
-    .time-cell {{ white-space: nowrap; color: #475569; }}
+.time-cell {{ white-space: nowrap; color: #475569; }}
+.total-cell {{ white-space: normal; font-size: 13px; }}
+.line-delta.delta-hot {{ color: #fff; background: var(--red); border-radius: 4px; padding: 1px 6px; display: inline-block; }}
     .alert-table .line-change {{ white-space: normal; }}
     .line-pair {{ display: flex; gap: 6px; align-items: baseline; }}
     .line-pair .k {{ flex: 0 0 1.2em; color: var(--muted); font-size: 12px; }}
@@ -172,7 +245,8 @@ def render_query_html(
     .alert-table .match-cell {{ width: 26%; }}
     .alert-table .line-change {{ width: 28%; }}
     .alert-table .score-cell {{ width: 9%; }}
-    .alert-table .lean-cell {{ width: 16%; }}
+.alert-table .lean-cell {{ width: 16%; }}
+.alert-table .total-cell {{ width: 12%; }}
 
     .badge, .kind {{ display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }}
     .badge-hot {{ background: var(--red-soft); color: var(--red); }}
@@ -215,7 +289,7 @@ def render_query_html(
       <table class="alert-table">
         <thead>
           <tr>
-            <th>期号</th><th>比赛</th><th>比分</th><th>类型</th><th>盘口变化</th><th>倾向</th><th>入库时间</th>
+            <th>期号</th><th>比赛</th><th>比分</th><th>类型</th><th>盘口变化</th><th>倾向</th><th>大小球</th>
           </tr>
         </thead>
         <tbody>
