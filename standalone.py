@@ -2,9 +2,26 @@ from __future__ import annotations
 
 import argparse
 import sys
+import socket
 import traceback
 from football_analysis.open_browser import open_in_chrome
 from pathlib import Path
+
+import ctypes
+
+
+def _minimize_console():
+    if sys.platform != "win32":
+        return
+    SW_MINIMIZE = 6
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetConsoleWindow.restype = ctypes.c_void_p
+        hwnd = user32.GetConsoleWindow()
+        if hwnd:
+            user32.ShowWindow(hwnd, SW_MINIMIZE)
+    except Exception:
+        pass
 
 from football_analysis.http import Fetcher
 from football_analysis.pipeline import analyze_issue
@@ -49,6 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--workers", type=int, default=4, help="球队页并发抓取数")
     analyze.add_argument("--no-cache", action="store_true", help="不使用本地缓存")
     analyze.add_argument("--no-db", action="store_true", help="不写入本地异动数据库")
+    analyze.add_argument("--no-serve", action="store_true", help="分析后不启动本地查询服务")
+    analyze.add_argument("--port", type=int, default=8765, help="查询服务端口")
     analyze.add_argument("--no-open", action="store_true", help="生成报告后不自动打开浏览器")
 
     query = subparsers.add_parser("query", help="查询已入库的变盘异动")
@@ -69,6 +88,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _resolve_db_path(root: Path, value: str | None) -> Path:
     return Path(value) if value else default_db_path(root)
+
+
+def _find_free_port(preferred: int) -> int:
+    for port in range(preferred, preferred + 11):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", port))
+            return port
+        except OSError:
+            continue
+    raise RuntimeError(f"Could not find a free port near {preferred}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -156,7 +186,17 @@ def main(argv: list[str] | None = None) -> int:
                 f"  DB:   {saved['db_path']}  run_id={saved['run_id']}  "
                 f"异动={saved['attention_count']}/{saved['match_count']}"
             )
-        if not args.no_open:
+        if not args.no_serve:
+            port = _find_free_port(args.port)
+            print(f"\n查询服务: http://127.0.0.1:{port}/  (Ctrl+C 停止)")
+            _minimize_console()
+            serve_query(
+                _resolve_db_path(root, args.db_path),
+                port=port,
+                open_browser=not args.no_open,
+                cache_dir=cache_dir,
+            )
+        elif not args.no_open:
             open_in_chrome(html_path.resolve())
         return 0
     except KeyboardInterrupt:
