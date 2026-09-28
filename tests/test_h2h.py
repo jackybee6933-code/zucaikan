@@ -4,6 +4,7 @@ from football_analysis.h2h import (
     build_sfc_match_map,
     parse_desktop_h2h_html,
     parse_mobile_h2h_html,
+    match_no_to_tian_match,
 )
 from football_analysis.model import build_model_input, predict_match
 
@@ -72,6 +73,43 @@ class ScheduleH2HTests(unittest.TestCase):
         self.assertEqual(mapped["1"], "3073215")
         self.assertEqual(mapped["2"], "3073214")
         self.assertEqual(mapped["3"], "3073213")
+
+    def test_match_no_to_tian_match_prefers_schedule_then_falls_back(self):
+        rows = [
+            {"match_no": "1", "home_id": "10", "away_id": "20", "match_time": "09-29 00:00"},
+            {"match_no": "2", "home_id": "30", "away_id": "40", "match_time": "09-30 02:45"},
+            {"match_no": "3", "home_id": "50", "away_id": "60", "titan_match_id": "99999"},
+        ]
+        schedules = [
+            [
+                {
+                    "id": 222,
+                    "home_team_id": "30",
+                    "away_team_id": "40",
+                    "time": "02:45",
+                }
+            ]
+        ]
+        schedule_map = {"1": "111"}
+        result = match_no_to_tian_match(rows, schedule_map=schedule_map, schedules=schedules)
+        # 1: from schedule_map; 2: team-id fallback; 3: pre-set titan_match_id
+        self.assertEqual(result["1"], 111)
+        self.assertEqual(result["2"], 222)
+        self.assertEqual(result["3"], 99999)
+
+    def test_match_no_to_tian_match_rejects_time_mismatch(self):
+        rows = [
+            {"match_no": "1", "home_id": "10", "away_id": "20", "match_time": "09-29 00:00"},
+        ]
+        # schedule row for same teams but 6h off -> should be rejected
+        schedules = [
+            [
+                {"id": 222, "home_team_id": "10", "away_team_id": "20", "time": "08:00"}
+            ]
+        ]
+        result = match_no_to_tian_match(rows, schedule_map={}, schedules=schedules)
+        self.assertEqual(result, {})
+
 
 
 class ModelH2HTests(unittest.TestCase):

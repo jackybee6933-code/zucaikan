@@ -334,6 +334,8 @@ def fetch_issue_schedule(
     issue: str,
 ) -> tuple[dict[str, str], str, str]:
     errors: list[str] = []
+    schedule: dict[str, str] = {}
+    used_dates: list[str] = []
     for yyyymmdd in candidate_schedule_dates(rows, issue):
         url = BF_NEXT_URL.format(yyyymmdd=yyyymmdd)
         try:
@@ -341,7 +343,74 @@ def fetch_issue_schedule(
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{yyyymmdd}: {exc}")
             continue
-        schedule = build_sfc_match_map(html, issue)
-        if schedule:
-            return schedule, yyyymmdd, ""
-    return {}, "", "; ".join(errors)
+        day_map = build_sfc_match_map(html, issue)
+        if day_map:
+            used_dates.append(yyyymmdd)
+            for match_no, match_id in day_map.items():
+                schedule.setdefault(match_no, match_id)
+    return schedule, ",".join(used_dates), "; ".join(errors)
+
+
+def _match_by_team_ids(
+    home_id: str, away_id: str, match_time: str, schedules: list[dict]
+) -> int:
+    """Match a SFC team pair to a Titan team-match ID.
+
+    Returns 0 when no schedule row fits. When a time window is available,
+    rows farther than +/-3h are skipped.
+    """
+    home_id = str(home_id or "")
+    away_id = str(away_id or "")
+    if not home_id or not away_id:
+        return 0
+    hh, mm = "", ""
+    if match_time:
+        time_match = re.search(r"(\d{1,2}):(\d{2})", str(match_time))
+        if time_match:
+            hh = time_match.group(1)
+            mm = time_match.group(2)
+    best = 0
+    best_diff = 9999
+    for sched in schedules:
+        for m in sched:
+            if m.get("home_team_id") != home_id or m.get("away_team_id") != away_id:
+                continue
+            diff = 9998
+            target = int(hh) * 60 + int(mm) if hh else None
+            mtime_match = re.search(r"(\d{1,2}):(\d{2})", str(m.get("time") or ""))
+            if target is not None and mtime_match:
+                m_minutes = int(mtime_match.group(1)) * 60 + int(mtime_match.group(2))
+                diff = abs(target - m_minutes)
+                if diff > 180:
+                    continue
+            mid = int(m.get("id") or 0)
+            if mid and diff < best_diff:
+                best, best_diff = mid, diff
+    return best
+
+
+
+
+def match_no_to_tian_match(rows: list[dict], *, schedule_map: dict[str, str], schedules: list[list[dict]]) -> dict[str, int]:
+    """Resolve SFC match numbers to Titan team-match IDs."
+
+    Rows must carry either home_id/away_id (jczq enrichment or detail fallback)
+    or titan_match_id from an earlier pass. When schedule_map has no entry and
+    no titan_match_id, falls back to team-id matching against Titan schedules.
+    """
+    result: dict[str, int] = {}
+    for row in rows:
+        match_no = str(row.get("match_no", ""))
+        match_id = int(row.get("titan_match_id") or 0)
+        if not match_id:
+            match_id = int(schedule_map.get(match_no, 0))
+        if not match_id:
+            match_id = _match_by_team_ids(
+                row.get("home_id"),
+                row.get("away_id"),
+                row.get("match_time") or "",
+                schedules,
+            )
+        if match_id:
+            result[match_no] = match_id
+    return result

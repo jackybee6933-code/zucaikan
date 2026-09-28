@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 
 from .h2h import fetch_issue_schedule, fetch_titan_h2h
+from .h2h import match_no_to_tian_match
 from .http import Fetcher
 from .jczq import JCZQ_URL, parse_jczq_html
 from .model import build_model_input, predict_match
@@ -241,12 +242,13 @@ def _attach_titan_h2h(
         schedule_error = str(exc)
 
     by_fixture: dict[str, str] = {}
+    no_map = match_no_to_tian_match(rows, schedule_map=schedule_map, schedules=[])
     for row in rows:
-        match_id = schedule_map.get(str(row.get("match_no", "")))
+        match_id = int(no_map.get(str(row.get("match_no", "")), 0))
         if match_id:
-            row["titan_match_id"] = match_id
-            by_fixture[row["fixture_id"]] = match_id
-        elif not schedule_map:
+            row["titan_match_id"] = str(match_id)
+            by_fixture[row["fixture_id"]] = str(match_id)
+        elif not schedule_map and not row.get("home_id"):
             row["warnings"].append(f"Titan 赛程未映射本场：{schedule_error}" if schedule_error else "Titan 赛程未映射本场")
 
     if not by_fixture:
@@ -310,6 +312,8 @@ def _attach_odds_movement(
         payload = movements.get(str(row.get("fixture_id", "")))
         if payload is not None:
             row["odds_movement"] = payload
+            if row.get("titan_match_id") and not payload.get("titan_match_id"):
+                payload["titan_match_id"] = row["titan_match_id"]
 
 
 def _total_from_movement(movement: dict | None) -> tuple[float, str, float, float, str] | None:
