@@ -4,7 +4,7 @@ from pathlib import Path
 
 from football_analysis.browser_report import render_browser_html
 from football_analysis.query_report import render_query_html
-from football_analysis.store import list_issues, query_movements, save_issue_movements
+from football_analysis.store import list_issues, query_movements, save_issue_movements, update_match_scores
 
 
 def _item(match_no: str, home: str, away: str, *, attention: bool, level: str, reason: str, direction: str = "") -> dict:
@@ -173,6 +173,24 @@ class BrowserReportTests(unittest.TestCase):
         self.assertIn(">倾向<", html)
         self.assertIn("那不勒斯 vs 阿森纳", html)
         self.assertIn("row.hidden = !visible", html)
+
+
+
+
+class UpdateMatchScoresTests(unittest.TestCase):
+    def test_updates_only_empty_scores(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            item = _item("1", "巴萨", "马竞", attention=False, level="无数据", reason="")
+            save_issue_movements(db, [item], "26120")
+            # first update fills empty
+            updated = update_match_scores(db, "26120", {"1": "2 - 1"})
+            self.assertEqual(updated, 1)
+            # second update is a no-op because score already filled
+            updated = update_match_scores(db, "26120", {"1": "2 - 1"})
+            self.assertEqual(updated, 0)
+            # unknown issue returns 0
+            self.assertEqual(update_match_scores(db, "99999", {"1": "0 - 0"}), 0)
 
 
 if __name__ == "__main__":

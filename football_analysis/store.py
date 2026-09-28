@@ -347,3 +347,32 @@ def rebuild_analyses_from_db(db_path: str | Path, issue: str) -> list[dict]:
 def load_issue_snapshot(db_path: str | Path, issue: str) -> list[dict]:
     """Read the full analysis snapshot for one issue from the DB."""
     return rebuild_analyses_from_db(db_path, issue)
+def update_match_scores(
+    db_path: str | Path,
+    issue: str,
+    scores: dict[str, str],
+) -> int:
+    """Write final scores keyed by match_no into the latest run for an issue."""
+    conn = connect(db_path)
+    try:
+        run_id = conn.execute(
+            "SELECT MAX(run_id) FROM issue_runs WHERE issue = ?",
+            (issue,),
+        ).fetchone()[0]
+        if run_id is None:
+            return 0
+        updated = 0
+        for match_no, score in scores.items():
+            cur = conn.execute(
+                """
+                UPDATE match_movements SET final_score = ?
+                WHERE run_id = ? AND match_no = ? AND final_score = ''
+                """,
+                (score, run_id, match_no),
+            )
+            updated += cur.rowcount
+        conn.commit()
+        return updated
+    finally:
+        conn.close()
+
