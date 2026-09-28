@@ -11,6 +11,7 @@ from .odds import fmt_handicap, fmt_probability
 
 
 
+
 def _kickoff_key(item: dict) -> str:
     """Return a comparable time key; missing times sort to the end of their group."""
     match_time = str(item.get("match_time") or "").strip()
@@ -46,11 +47,11 @@ def h2h_short(h2h: dict | None) -> str:
 
 
 def asian_display(analysis: dict) -> str:
-    market = analysis["market"]
-    asian = market["asian"]
+    market = analysis.get("market") or {}
+    asian = market.get("asian") or {}
     if not market.get("has_asian"):
         return "无"
-    line = asian["line_text"] or fmt_handicap(float(asian["home_line"]))
+    line = str(asian.get("line_text") or "") or (fmt_handicap(float(asian["home_line"])) if asian.get("home_line") is not None else "")
     water = ""
     if asian.get("home_water") or asian.get("away_water"):
         water = f" {asian['home_water']:.2f}/{asian['away_water']:.2f}"
@@ -58,8 +59,8 @@ def asian_display(analysis: dict) -> str:
 
 
 def total_display(analysis: dict) -> str:
-    market = analysis["market"]
-    total = market["total"]
+    market = analysis.get("market") or {}
+    total = market.get("total") or {}
     if not market.get("has_total"):
         return "无"
     water = ""
