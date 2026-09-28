@@ -194,7 +194,6 @@ def main(argv: list[str] | None = None) -> int:
                 _resolve_db_path(root, args.db_path),
                 port=port,
                 open_browser=not args.no_open,
-                cache_dir=cache_dir,
             )
         elif not args.no_open:
             open_in_chrome(html_path.resolve())

@@ -30,7 +30,6 @@ def serve_query(
     host: str = "127.0.0.1",
     port: int = 8765,
     open_browser: bool = True,
-    cache_dir: str | Path | None = None,
 ) -> None:
     db_path = str(Path(db_path))
 
@@ -45,7 +44,9 @@ def serve_query(
                 return
             fetch_state.update(running=True, issue=issue, result="", error="")
         try:
-            fetcher = Fetcher(cache_dir=cache_dir)
+            # 手动抓取必须走网络：舍缓存里的 sfc/detail 页面在开赛前抓取时是空比分、
+            # 过期即时盘，重抓时必须重新请求。cache_dir=None 表示不读也不写缓存。
+            fetcher = Fetcher(cache_dir=None)
             analyses, actual_issue, source_url = analyze_issue(issue, fetcher=fetcher, max_workers=4)
             saved = save_issue_movements(Path(db_path), analyses, actual_issue, source_url)
             fetch_state["result"] = f"{saved['issue']} 入库 {saved['match_count']} 场，异动 {saved['attention_count']} 场"
