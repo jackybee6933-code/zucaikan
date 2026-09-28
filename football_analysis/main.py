@@ -65,6 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_args(review)
     review.add_argument("--cache-dir", default=None, help="原始页面缓存目录, 缺省不使用缓存")
     review.add_argument("--refresh", action="store_true", help="复盘前先重新抓取最终比分")
+    review.add_argument("--trend", action="store_true", help="跨期命中率趋势统计")
     return parser
 
 
@@ -169,6 +170,110 @@ def _refresh_scores(db_path: Path, issue: str, cache_dir: Path | None) -> None:
     print(f"刷新 {issue} 最终比分: {filled}/{len(matches)} 场有值, DB 更新 {updated} 条")
 
 
+def _issue_hit_rates(analyses: list[dict]) -> dict:
+    """Count asian / over-under recommendation hits for one issue snapshot."""
+    asian_hits = asian_total = 0
+    total_hits = total_total = 0
+    for item in analyses:
+        score = str(item.get("final_score") or "")
+        if "-" not in score:
+            continue
+        try:
+            hg, ag = (int(part.strip() or "0") for part in score.split("-", 1))
+        except ValueError:
+            continue
+        goal_diff = hg - ag
+        total_goals = hg + ag
+        odds = item.get("odds_analysis") or {}
+        asian_rec = odds.get("asian_handicap") or {}
+        if asian_rec.get("available") and asian_rec.get("action") in ("主推", "轻仓"):
+            line = float((item.get("market", {}).get("asian") or {}).get("home_line") or 0)
+            if line < 0:
+                home_handicap = goal_diff + line
+            elif line > 0:
+                home_handicap = goal_diff - line
+            else:
+                home_handicap = goal_diff
+            is_home_upper = asian_rec.get("recommended_side") == "主队赢盘"
+            win_side = home_handicap if is_home_upper else -home_handicap
+            asian_total += 1
+            asian_hits += 1 if win_side > 0 else 0
+        total_rec = odds.get("total_goals") or {}
+        if total_rec.get("available") and total_rec.get("action") in ("主推", "轻仓"):
+            line = float((item.get("market", {}).get("total") or {}).get("line") or 0)
+            is_over = "大" in str(total_rec.get("recommended_side", ""))
+            hit = total_goals > line if is_over else total_goals < line
+            total_total += 1
+            total_hits += 1 if hit else 0
+    return {
+        "asian_hits": asian_hits,
+        "asian_total": asian_total,
+        "total_hits": total_hits,
+        "total_total": total_total,
+    }
+
+
+def _print_trend(db_path: Path) -> None:
+    """Print cross-issue hit-rate trend from the DB, ordered by issue ascending."""
+    from .store import load_issue_snapshot
+
+    issues = sorted(list_issues(db_path), key=lambda row: row["issue"])
+
+    def _pct(hits: int, total: int) -> str:
+        return f"{hits / total * 100:.0f}%" if total else "-"
+
+    agg = {"asian_hits": 0, "asian_total": 0, "total_hits": 0, "total_total": 0}
+    prev: dict | None = None
+    print("=" * 70)
+    print("命中率趋势（仅主推/轻仓，走水不计入命中率）")
+    print("=" * 70)
+    print(f"{'期号':<8}{'已完成':<10}{'亚盘命中':<10}{'亚盘率':<8}{'大小命中':<12}{'大小率':<8}")
+    for info in issues:
+        snapshot = load_issue_snapshot(db_path, info["issue"])
+        done = [a for a in snapshot if a.get("final_score")]
+        rates = _issue_hit_rates(done)
+        for key in agg:
+            agg[key] += rates[key]
+        delta_text = ""
+        if prev is not None:
+            deltas = []
+            for label, cur, before in (
+                ("亚", rates["asian_hits"], prev["asian_hits"]),
+                ("大", rates["total_hits"], prev["total_hits"]),
+            ):
+                d = cur - before
+                if d > 0:
+                    deltas.append(f"{label}盘+{d}")
+                elif d < 0:
+                    deltas.append(f"{label}盘{d}")
+            if deltas:
+                delta_text = f"环比: {', '.join(deltas)}"
+        scored = f"{len(done)}/{len(snapshot)}"
+        asian_cell = f"{rates['asian_hits']}/{rates['asian_total']}"
+        total_cell = f"{rates['total_hits']}/{rates['total_total']}"
+        print(
+            f"{info['issue']:<8}{scored:<10}{asian_cell:<10}"
+            f"{_pct(rates['asian_hits'], rates['asian_total']):<8}{total_cell:<12}"
+            f"{_pct(rates['total_hits'], rates['total_total']):<8}"
+        )
+        if delta_text:
+            print(f"{'':<8}{delta_text}")
+        prev = rates
+    print("-" * 70)
+    print(
+        f"{'合计':<8}{'':<10}"
+        f"{str(agg['asian_hits']) + '/' + str(agg['asian_total']):<10}"
+        f"{_pct(agg['asian_hits'], agg['asian_total']):<8}"
+        f"{str(agg['total_hits']) + '/' + str(agg['total_total']):<12}"
+        f"{_pct(agg['total_hits'], agg['total_total']):<8}"
+    )
+    print("口径: 仅统计主推/轻仓推荐, 走水(盘口后净胜=0)不计入命中")
+    
+    return None
+
+
+
+
 def _run_review(args: argparse.Namespace) -> int:
     """Compute hit-rate statistics for completed matches of an issue."""
     from .store import load_issue_snapshot
@@ -182,6 +287,11 @@ def _run_review(args: argparse.Namespace) -> int:
             print("库中暂无数据,先用 analyze 抓取一期")
             return 1
         issue = rows[0]["issue"]
+    if args.trend:
+        if args.refresh:
+            _refresh_scores(db_path, issue, cache_dir)
+        _print_trend(db_path)
+        return 0
     if args.refresh:
         _refresh_scores(db_path, issue, cache_dir)
     analyses = load_issue_snapshot(db_path, issue)
@@ -190,48 +300,10 @@ def _run_review(args: argparse.Namespace) -> int:
     if not done:
         return 0
 
-    def _score(item: dict) -> tuple[str, str]:
-        score = str(item.get("final_score") or "")
-        home, away = "0", "0"
-        if "-" in score:
-            home, away = score.split("-", 1)
-        return (home.strip() or "0"), (away.strip() or "0")
-
-    asian_hits = asian_total = 0
-    total_hits = total_total = 0
-    for item in done:
-        home_g, away_g = _score(item)
-        try:
-            hg, ag = int(home_g), int(away_g)
-        except ValueError:
-            continue
-        goal_diff = hg - ag
-        total_goals = hg + ag
-        odds = item.get("odds_analysis") or {}
-        asian_rec = odds.get("asian_handicap") or {}
-        if asian_rec.get("available") and asian_rec.get("action") in ("主推", "轻仓"):
-            line = float((item.get("market", {}).get("asian") or {}).get("home_line") or 0)
-            # home_line 符号: 负 = 主队让球(如 -1 为主让一球), 正 = 主队受让
-            # 上盘 = 让球方: line<0 时主队为让球方, line>0 时客队为让球方
-            if line < 0:
-                home_handicap = goal_diff + line  # 主队让 |line| 球
-            elif line > 0:
-                home_handicap = goal_diff - line  # 客队让 line 球(主队受让 line)
-            else:
-                home_handicap = goal_diff
-            is_home_upper = asian_rec.get("recommended_side") == "主队赢盘"
-            # 上盘赢: 让球方盘口后净胜 > 0; 下盘赢: < 0; 走水: == 0
-            win_side = home_handicap if is_home_upper else -home_handicap
-            hit = win_side > 0
-            asian_total += 1
-            asian_hits += 1 if hit else 0
-        total_rec = odds.get("total_goals") or {}
-        if total_rec.get("available") and total_rec.get("action") in ("主推", "轻仓"):
-            line = float((item.get("market", {}).get("total") or {}).get("line") or 0)
-            is_over = "大" in str(total_rec.get("recommended_side", ""))
-            hit = total_goals > line if is_over else total_goals < line
-            total_total += 1
-            total_hits += 1 if hit else 0
+    rates = _issue_hit_rates(done)
+    rates = _issue_hit_rates(done)
+    asian_hits, asian_total = rates["asian_hits"], rates["asian_total"]
+    total_hits, total_total = rates["total_hits"], rates["total_total"]
     print("-" * 60)
     print(f"亚盘推荐: {asian_hits}/{asian_total} 命中" if asian_total else "亚盘推荐: 无数据")
     print(f"大小球推荐: {total_hits}/{total_total} 命中" if total_total else "大小球推荐: 无数据")

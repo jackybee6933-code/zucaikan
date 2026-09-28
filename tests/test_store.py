@@ -193,5 +193,51 @@ class UpdateMatchScoresTests(unittest.TestCase):
             self.assertEqual(update_match_scores(db, "99999", {"1": "0 - 0"}), 0)
 
 
+
+
+class IssueHitRatesTests(unittest.TestCase):
+    def test_aggregates_per_issue_and_skips_watch_actions(self):
+        from football_analysis.main import _issue_hit_rates
+        from football_analysis.model import build_model_input, predict_match
+
+        def _item(match_no, action, side, final_score, home_line=0.5):
+            market = {"asian": {"home_line": home_line}, "total": {"line": 2.5}}
+            odds = {"asian_handicap": {"available": True, "action": action, "recommended_side": side}}
+            return {"match_no": match_no, "final_score": final_score, "market": market, "odds_analysis": odds}
+
+        items = [
+            # 0.5 盘主让: 主胜 2-1 (净胜 1 > 0.5) → 主队赢盘命中
+            _item("1", "主推", "主队赢盘", "2 - 1", home_line=0.5),
+            # 主赢 0-2 (净胜 -2) 与 主队赢盘相反 → 未命中
+            _item("2", "轻仓", "主队赢盘", "0 - 2", home_line=0.5),
+            # 观望不计入
+            _item("3", "观望", "主队赢盘", "3 - 0", home_line=0.5),
+        ]
+        rates = _issue_hit_rates(items)
+        self.assertEqual(rates["asian_total"], 2)
+        self.assertEqual(rates["asian_hits"], 1)
+
+    def test_total_goals_hit(self):
+        from football_analysis.main import _issue_hit_rates
+
+        def _item(match_no, action, side, final_score, total_line=2.5):
+            market = {"asian": {"home_line": 0.5}, "total": {"line": total_line}}
+            odds = {"asian_handicap": {"available": True, "action": action, "recommended_side": "主队赢盘"},
+                    "total_goals": {"available": True, "action": action, "recommended_side": side}}
+            return {"match_no": match_no, "final_score": final_score, "market": market, "odds_analysis": odds}
+
+        items = [
+            # 2+1=3 > 2.5 大琄 → 大琄命中
+            _item("1", "主推", "大", "2 - 1", total_line=2.5),
+            # 1+0=1 < 2.5 小琄 → 小琄命中
+            _item("2", "轻仓", "小", "1 - 0", total_line=2.5),
+            # 2+0=2 < 2.5 大琄 → 大琄未命中
+            _item("3", "主推", "大", "2 - 0", total_line=2.5),
+        ]
+        rates = _issue_hit_rates(items)
+        self.assertEqual(rates["total_total"], 3)
+        self.assertEqual(rates["total_hits"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()
