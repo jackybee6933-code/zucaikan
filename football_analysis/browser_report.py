@@ -92,6 +92,9 @@ def _movement_kind(item: dict) -> str:
         ("升盘", "让球盘升盘"),
         ("水位反转", "亚盘水位反转"),
         ("水位摆动", "亚盘水位摆动"),
+        ("大盘变动", "大小盘升"),
+        ("大盘变动", "大小盘降"),
+        ("大水位摆动", "大小盘水位摆动"),
     ):
         if marker in reason:
             return fallback
@@ -104,6 +107,8 @@ def _kind_badge(kind: str) -> str:
         "升盘": "kind-rise",
         "水位反转": "kind-reverse",
         "水位摆动": "kind-swing",
+        "大盘变动": "kind-swing",
+        "大水位摆动": "kind-swing",
     }.get(kind, "kind-watch")
     return f'<span class="kind {css}">{_esc(kind)}</span>'
 
@@ -398,6 +403,7 @@ def _render_body(analyses: list[dict], issue: str, source_url: str, generated_at
           <button type="button" data-alert-filter="降盘">降盘</button>
           <button type="button" data-alert-filter="水位反转">水位反转</button>
           <button type="button" data-alert-filter="水位摆动">水位摆动</button>
+          <button type="button" data-alert-filter="大盘变动">大盘变动</button>
         </div>
       </div>
       <div class="table-scroll alert-scroll">

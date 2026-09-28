@@ -18,6 +18,10 @@ SOURCE_NAME = "nowscore_prematch"
 ASIAN_LINE_WATCH = 0.25
 ASIAN_LINE_BIG = 0.5
 WATER_WATCH = 0.08
+TOTAL_LINE_WATCH = 0.25
+TOTAL_LINE_BIG = 0.5
+TOTAL_LINE_WATCH = 0.25
+TOTAL_LINE_BIG = 0.5
 
 _ROW_KEYS = {4: "europe", 1: "asian", 2: "total"}
 
@@ -242,18 +246,71 @@ def _asian_movement(asian: dict) -> dict:
     }
 
 
+def _total_movement(total: dict) -> dict:
+    if not total.get("available"):
+        return {"available": False, "level": "稳定", "kind": "", "note": ""}
+    initial = total.get("initial") or {}
+    current = total.get("current") or {}
+    initial_line = float(initial.get("line") or 0)
+    current_line = float(current.get("line") or 0)
+    line_change = current_line - initial_line
+    initial_water = _format_water(float(initial.get("over_water") or 0), float(initial.get("under_water") or 0))
+    current_water = _format_water(float(current.get("over_water") or 0), float(current.get("under_water") or 0))
+    old_text = f"{initial.get('line_text', '')} {initial_water}".strip()
+    new_text = f"{current.get('line_text', '')} {current_water}".strip()
+    level = "稳定"
+    kind = ""
+    note = ""
+    if abs(line_change) >= TOTAL_LINE_BIG:
+        level = "重点关注"
+        kind = "大盘升" if line_change > 0 else "大盘降"
+        note = f"大小盘{kind}：{old_text} -> {new_text}"
+    elif abs(line_change) >= TOTAL_LINE_WATCH:
+        level = "关注"
+        kind = "大盘升" if line_change > 0 else "大盘降"
+        note = f"大小盘{kind}：{old_text} -> {new_text}"
+    else:
+        over_delta = abs(float(current.get("over_water") or 0) - float(initial.get("over_water") or 0))
+        under_delta = abs(float(current.get("under_water") or 0) - float(initial.get("under_water") or 0))
+        water_delta = max(over_delta, under_delta)
+        if water_delta >= WATER_WATCH:
+            level = "关注"
+            kind = "大水位摆动"
+            parts = []
+            if over_delta >= WATER_WATCH:
+                parts.append(f"大水{'+' if float(current.get('over_water',0)) > float(initial.get('over_water',0)) else '-'}{over_delta:.2f}")
+            if under_delta >= WATER_WATCH:
+                parts.append(f"小水{'+' if float(current.get('under_water',0)) > float(initial.get('under_water',0)) else '-'}{under_delta:.2f}")
+            note = f"大小盘水位摆动：{old_text} -> {new_text}（{'，'.join(parts)}）"
+    return {
+        "available": True,
+        "level": level,
+        "kind": kind,
+        "note": note,
+        "line_change": line_change,
+        "initial": initial,
+        "current": current,
+    }
+
 def analyze_prematch_movement(raw: dict) -> dict:
     asian = _asian_movement(raw.get("asian") or {})
+    total = _total_movement(raw.get("total") or {})
     reasons = [asian["note"]] if asian.get("available") and asian.get("note") else []
+    if total.get("available") and total.get("note"):
+        reasons.append(total["note"])
     max_level = asian["level"] if asian.get("available") else "稳定"
+    if total.get("available") and total.get("level") in ("关注", "重点关注"):
+        rank = {"稳定": 0, "关注": 1, "重点关注": 2}
+        max_level = max([max_level, total["level"]], key=lambda v: rank.get(v, 0))
     return {
         "available": bool((raw.get("asian") or {}).get("available")),
+        "total_available": bool(total.get("available")),
         "source": SOURCE_NAME,
         "asian": asian,
-        "total": raw.get("total") or {},
+        "total": total,
         "attention": bool(reasons),
         "level": max_level,
-        "kind": asian.get("kind") or "",
+        "kind": asian.get("kind") or total.get("kind") or "",
         "reasons": reasons,
     }
 

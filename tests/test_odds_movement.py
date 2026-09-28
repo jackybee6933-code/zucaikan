@@ -67,14 +67,23 @@ class PrematchMovementTests(unittest.TestCase):
         self.assertEqual(movement["total"]["current"]["line_text"], "3/3.5")
         self.assertAlmostEqual(movement["total"]["current"]["over_water"], 1.06)
         self.assertAlmostEqual(movement["total"]["current"]["under_water"], 0.82)
+        self.assertAlmostEqual(movement["total"]["initial"]["line"], 2.75)
+        self.assertAlmostEqual(movement["total"]["current"]["line"], 3.25)
+        self.assertAlmostEqual(movement["total"]["line_change"], 0.5)
+        self.assertEqual(movement["total"]["kind"], "大盘升")
+        self.assertEqual(movement["total"]["level"], "重点关注")
+        self.assertTrue(movement["attention"])
+        self.assertIn(movement["total"]["note"], movement["reasons"])
 
     def test_flags_asian_water_reversal(self):
         movement = analyze_prematch_movement(parse_prematch_movement_html(PREMATCH_HTML))
         self.assertTrue(movement["attention"])
-        self.assertEqual(movement["level"], "关注")
+        # PREMATCH_HTML has both asian water reversal and total line rise, level = 重点关注
+        self.assertEqual(movement["level"], "重点关注")
         self.assertEqual(movement["asian"]["level"], "关注")
         self.assertIn("水位反转", movement["asian"]["note"])
         self.assertEqual(movement["asian"]["kind"], "水位反转")
+        self.assertEqual(movement["total"]["kind"], "大盘升")
         self.assertEqual(movement["kind"], "水位反转")
 
     def test_home_favorite_drop_is_downgrade(self):
@@ -175,7 +184,7 @@ class PrematchMovementTests(unittest.TestCase):
         self.assertFalse(movement["attention"])
         self.assertEqual(movement["level"], "稳定")
 
-    def test_total_line_change_is_not_an_alert(self):
+    def test_total_line_change_triggers_alert(self):
         html = """
         <div class="fenxiBar">赛前指数</div>
         <div class="contentBox"><table>
@@ -187,8 +196,9 @@ class PrematchMovementTests(unittest.TestCase):
         </table></div>
         """
         movement = analyze_prematch_movement(parse_prematch_movement_html(html))
-        self.assertFalse(movement["available"])
-        self.assertFalse(movement["attention"])
+        self.assertTrue(movement["total_available"])
+        self.assertTrue(movement["attention"])
+        self.assertEqual(movement["total"]["kind"], "大盘升")
 
     def test_europe_change_is_not_an_alert(self):
         html = """

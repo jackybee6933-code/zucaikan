@@ -92,6 +92,10 @@ def _movement_kind(reason: str) -> str:
         return "水位反转"
     if "亚盘水位摆动" in reason:
         return "水位摆动"
+    if "大小盘升" in reason or "大小盘降" in reason or "大盘升" in reason or "大盘降" in reason:
+        return "大盘变动"
+    if "大小盘水位摆动" in reason:
+        return "大水位摆动"
     return "关注" if reason else ""
 
 
