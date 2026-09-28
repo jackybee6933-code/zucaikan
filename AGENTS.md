@@ -13,6 +13,14 @@ python run.py --cache-dir cache
 ```
 
 运行后会先自动抓取胜负彩最新一期，再在 `reports/` 生成 `md`、`csv`、`json`、`html` 四类报告，并把亚洲盘让球异动写入 `data/football_analysis.sqlite`。查询：`python run.py query --serve`。独立版 Windows 程序位于源码树 `dist/足球胜负彩分析工具.exe`；解压正式归档包后位于压缩包顶层 `足球胜负彩分析工具.exe`，双击后会自动抓取最新一期、入库并打开 HTML 报告。
+常用命令：
+
+```powershell
+python run.py --cache-dir cache            # 抓最新一期并生成报告
+python run.py --issue 26129 --cache-dir cache --no-db   # 用缓存重跑历史期
+python run.py query --serve                # 异动查询页（自选 8765 附近空闲端口）
+python -m unittest discover -s tests       # 测试
+```
 
 ## 技术栈
 
@@ -34,6 +42,7 @@ python run.py --cache-dir cache
 ## 当前状态
 
 - 现役功能：自动抓取最新一期胜负彩、往绩/H2H、泊松模型、欧赔/亚盘/大小盘分析、亚洲盘让球异动提醒、本地 SQLite 异动库、浏览器 HTML 报告、独立 exe。
-- 异动提醒只消费亚洲盘让球初盘和即时盘；大小盘、欧赔不触发异动提醒。
-- 当前验证基线（2026-09-17）：42 项单测通过；最新一期 26128 可自动抓取并生成 14 场报告（含 11 场异动提醒），查询页同步更新为 `reports/movement_query.html`。
+- 大小球双来源兜底：`odds.xml` 的 `dxq` 优先；缺失时回落到 Nowscore 赛前指数即时盘，报告标注来源（`澳门`/`赛前指数`），异动提醒仍只消费亚盘。
+- 异动提醒消费亚盘让球初盘/即时盘 + 大小盘初盘/即时盘；欧赔不触发异动提醒。
+- 当前验证基线（2026-09-28）：57 项单测通过；最新一期 26134 可自动抓取并生成 14 场报告，大小球 14/14 覆盖（odds.xml 与赛前指数混合来源）；历史期可用 `--issue 26129 --cache-dir cache --no-db` 离线重跑；查询页同步更新为 `reports/movement_query.html`。
 - 这是研究型原型，尚未完成长期回测、赛后反馈学习、生产部署和多公司完整赔率时间线。
