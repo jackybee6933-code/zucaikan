@@ -61,21 +61,11 @@ def _total_display(item: dict) -> str:
     line = str(total.get("line_text") or "")
     over_water = _float(total.get("over_water"))
     under_water = _float(total.get("under_water"))
+    source = str(total.get("source") or "")
+    suffix = f"（{source}）" if source else ""
     if over_water or under_water:
-        return f"{line} {over_water:.2f}/{under_water:.2f}".strip()
-    return line or "无"
-
-
-def _movement_total_display(item: dict) -> str:
-    current = ((item.get("odds_movement") or {}).get("total") or {}).get("current") or {}
-    line = str(current.get("line_text") or "")
-    over_water = _float(current.get("over_water"))
-    under_water = _float(current.get("under_water"))
-    if not line and not over_water and not under_water:
-        return "-"
-    if over_water or under_water:
-        return f"{line} {over_water:.2f}/{under_water:.2f}".strip()
-    return line or "-"
+        return f"{line} {over_water:.2f}/{under_water:.2f}{suffix}".strip()
+    return (line or "无") + suffix
 
 
 def _movement_level(item: dict) -> str:
@@ -339,7 +329,7 @@ def _render_summary_rows(analyses: list[dict]) -> str:
               <td class="time-cell">{_esc(item.get('match_time'))}</td>
               <td><strong>{_esc(item.get('home_team'))} vs {_esc(item.get('away_team'))}</strong></td>
               <td>{_esc(_rec_cell(odds.get('asian_handicap'), '主队赢盘'))}</td>
-              <td>{_esc(_movement_total_display(item))}</td>
+              <td>{_esc(_total_display(item))}</td>
               <td><span class="badge badge-{alert_css}">{_esc(level if level in ("重点关注", "关注") else "-")}</span></td>
             </tr>
             """
@@ -365,7 +355,7 @@ def _render_detail_rows(analyses: list[dict]) -> str:
               </td>
               <td class="time-cell">{_esc(item.get('match_time'))}</td>
               <td>{_esc(_asian_display(item))}</td>
-              <td>{_esc(_movement_total_display(item))}</td>
+              <td>{_esc(_total_display(item))}</td>
               <td class="compact-cell">{_esc(home_history)}</td>
               <td class="compact-cell">{_esc(away_history)}</td>
               <td class="compact-cell">{_esc(h2h)}</td>

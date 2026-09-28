@@ -109,7 +109,7 @@ class MovementStoreTests(unittest.TestCase):
 
 
 class DetailTotalDisplayTests(unittest.TestCase):
-    def _item(self, *, current: dict | None) -> dict:
+    def _item(self, *, total: dict | None, has_total: bool = True) -> dict:
         return {
             "match_no": "01",
             "league": "欧冠",
@@ -117,36 +117,41 @@ class DetailTotalDisplayTests(unittest.TestCase):
             "home_team": "主队",
             "away_team": "客队",
             "odds_analysis": {},
-            "odds_movement": {
-                "total": {"current": current},
+            "market": {
+                "has_asian": True,
+                "asian": {"line_text": "平手", "home_water": 0.90, "away_water": 0.95},
+                "has_total": has_total,
+                "total": total or {},
             },
+            "odds_movement": {},
         }
 
-    def test_detail_uses_immediate_total_when_available(self):
+    def test_detail_uses_market_total_when_available(self):
         html = render_browser_html(
             [
                 self._item(
-                    current={
+                    total={
                         "line_text": "3/3.5",
                         "over_water": 0.9,
                         "under_water": 0.97,
+                        "source": "赛前指数",
                     }
                 )
             ],
             "26122",
             "https://trade.500.com/sfc/",
         )
-        self.assertIn("3/3.5 0.90/0.97", html)
+        self.assertIn("3/3.5 0.90/0.97（赛前指数）", html)
         self.assertNotIn("2.5 0.00/0.00", html)
 
-    def test_detail_shows_dash_when_immediate_total_missing(self):
+    def test_detail_shows_wu_when_market_total_missing(self):
         html = render_browser_html(
-            [self._item(current=None), self._item(current={"available": False})],
+            [self._item(total=None, has_total=False), self._item(total={"available": False}, has_total=False)],
             "26122",
             "https://trade.500.com/sfc/",
         )
         detail_table = html.split('<table id="detail-table">', 1)[1].split("</table>", 1)[0]
-        self.assertEqual(detail_table.count("<td>-</td>"), 2)
+        self.assertEqual(detail_table.count("<td>无</td>"), 2)
         self.assertNotIn("2.5", html)
 
 

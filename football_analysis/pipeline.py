@@ -12,7 +12,7 @@ from .model import build_model_input, predict_match
 from .odds import market_implied_from_odds
 from .odds_analysis import analyze_odds
 from .odds_movement import fetch_nowscore_movement
-from .odds_xml import ODDS_XML_URL, parse_odds_xml
+from .odds_xml import ODDS_XML_URL, company_label, parse_odds_xml
 from .sfc import ISSUE_URL, TRADE_URL, parse_sfc_html
 from .sfc import extract_match_score
 from .team import TEAM_PAGE_URL, parse_team_recent_html
@@ -312,6 +312,17 @@ def _attach_odds_movement(
             row["odds_movement"] = payload
 
 
+def _total_from_movement(movement: dict | None) -> tuple[float, str, float, float, str] | None:
+    """odds.xml 无 dxq 时，回落到 Nowscore 赛前指数的即时大小球盘。"""
+    current = (((movement or {}).get("total") or {}).get("current")) or {}
+    line = float(current.get("line") or 0)
+    text = str(current.get("line_text") or "").strip()
+    over_water = float(current.get("over_water") or 0)
+    under_water = float(current.get("under_water") or 0)
+    if line <= 0 and not text:
+        return None
+    return line, text or f"{line:g}", over_water, under_water, "赛前指数"
+
 def _build_single_analysis(
     row: dict,
     odds: dict,
@@ -361,17 +372,24 @@ def _build_single_analysis(
         asian_away_water = float(row.get("asian_away_water") or 0)
     has_asian = bool(asian_text or asian_home_water or asian_away_water)
 
+    total_source = ""
     if float(odds.get("total_line") or 0) != 0 or odds.get("total_line_text"):
         total_line = float(odds.get("total_line"))
         total_text = odds.get("total_line_text", "")
         over_water = float(odds.get("over_water") or 0)
         under_water = float(odds.get("under_water") or 0)
         has_total = True
+        total_source = company_label(odds.get("total_company") or "")
     else:
-        total_line = 2.5
-        total_text = ""
-        over_water = under_water = 0.0
-        has_total = False
+        fallback = _total_from_movement(row.get("odds_movement"))
+        if fallback:
+            total_line, total_text, over_water, under_water, total_source = fallback
+            has_total = True
+        else:
+            total_line = 2.5
+            total_text = ""
+            over_water = under_water = 0.0
+            has_total = False
 
     model_input = build_model_input(
         home_record=_record_from_dict(home_record),
@@ -416,6 +434,7 @@ def _build_single_analysis(
             "line_text": total_text,
             "over_water": over_water,
             "under_water": under_water,
+            "source": total_source,
         },
         "probability_3way": {
             "home": market_home,

@@ -190,7 +190,7 @@ class SummaryMovementDisplayTests(unittest.TestCase):
 
 
 class SummaryMarketDisplayTests(unittest.TestCase):
-    def test_summary_shows_asian_rec_and_immediate_total(self):
+    def test_summary_shows_asian_rec_and_market_total(self):
         rows = _render_summary_rows([
             {
                 "match_no": "01",
@@ -201,15 +201,19 @@ class SummaryMarketDisplayTests(unittest.TestCase):
                 "odds_analysis": {
                     "asian_handicap": {"available": True, "recommended_side": "主队赢盘", "action": "主推"},
                 },
-                "odds_movement": {
+                "market": {
+                    "has_total": True,
                     "total": {
-                        "current": {"line_text": "3/3.5", "over_water": 0.9, "under_water": 0.97},
+                        "line_text": "3/3.5",
+                        "over_water": 0.9,
+                        "under_water": 0.97,
+                        "source": "澳门",
                     },
                 },
             },
         ])
         self.assertIn("主队赢盘（主推）", rows)
-        self.assertIn("3/3.5 0.90/0.97", rows)
+        self.assertIn("3/3.5 0.90/0.97（澳门）", rows)
         self.assertNotIn("无市场", rows)
 
 if __name__ == "__main__":

@@ -63,6 +63,10 @@ class PageCache:
         self.key_path(key).write_bytes(raw)
 
 
+def _is_challenge(raw: bytes) -> bool:
+    """EdgeOne 等反爬返回 200 但内容是 JS 挑战脚本，不含页面数据。"""
+    return b"EO_Bot_Ssid" in raw[:4000]
+
 class Fetcher:
     def __init__(
         self,
@@ -117,6 +121,8 @@ class Fetcher:
                     raise RuntimeError(f"HTTP {response.status_code} for {url}")
                 response.raise_for_status()
                 raw = response.content
+                if _is_challenge(raw):
+                    raise RuntimeError(f"反爬 JS 挑战，未拿到页面内容：{url}")
                 if use_cache:
                     self.cache.save(key, raw)
                 return decode_bytes(raw, kind)

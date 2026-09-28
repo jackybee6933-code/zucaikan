@@ -65,7 +65,9 @@ def total_display(analysis: dict) -> str:
     water = ""
     if total.get("over_water") or total.get("under_water"):
         water = f" {total['over_water']:.2f}/{total['under_water']:.2f}"
-    return f"{total['line_text']}{water}"
+    source = str(total.get("source") or "")
+    suffix = f"（{source}）" if source else ""
+    return f"{total['line_text']}{water}{suffix}"
 
 
 def _rec_cell(rec: dict | None, fallback: str) -> str:
