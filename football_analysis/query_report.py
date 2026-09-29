@@ -39,8 +39,12 @@ def _line_delta_html(row: dict) -> str:
     # lc==0: 无让球线变化(如水位摆动) → 原样显示 direction，不加数字，不高亮
     if lc == 0:
         return f'<div class="line-delta">{_esc(d)}</div>' if d else ""
-    label = f"升盘 +{abs(lc):g}" if lc > 0 else f"降盘 -{abs(lc):g}"
-    cls = "delta-hot" if abs(lc) >= 0.5 else ""
+    if lc > 0:
+        label = f"升盘 +{abs(lc):g}"
+        cls = "delta-hot" if abs(lc) >= 0.5 else ""
+    else:
+        label = f"降盘 {abs(lc):g}"
+        cls = "drop-big" if abs(lc) >= 0.5 else "delta-hot"
     cls_attr = f" {cls}" if cls else ""
     return f'<div class="line-delta{cls_attr}">{_esc(label)}</div>'
 
@@ -86,10 +90,11 @@ def _total_goals_html(payload_json: str) -> str:
             abs_diff = abs(float(num_part))
         except ValueError:
             pass
+    is_drop = d.startswith("降盘")
     hot = abs_diff >= 0.5
     delta_html = ""
     if d:
-        tag_cls = "delta-hot" if hot else ""
+        tag_cls = ("drop-big" if is_drop else "delta-hot") if hot else ""
         delta_html = f'<div class="line-delta {tag_cls}">{_esc(d)}</div>'
     return (
         f'<div class="line-pair"><span class="k">{_esc(chr(21021))}</span>{_esc(i)}</div>'
@@ -255,6 +260,7 @@ def render_query_html(
     .kind-drop {{ color: #0f766e; background: var(--green-soft); }}
     .kind-rise {{ color: #b42318; background: var(--red-soft); }}
     .kind-reverse {{ color: #9a5b06; background: #fff3d6; }}
+    .drop-big {{ background: var(--green); color: #fff; }}
     .kind-swing, .kind-watch {{ color: #475569; background: #eef2f7; }}
     .no-alert {{ padding: 18px 16px; color: var(--green); background: var(--green-soft); }}
     .table-scroll {{ overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }}

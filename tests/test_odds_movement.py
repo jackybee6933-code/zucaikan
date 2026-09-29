@@ -102,8 +102,8 @@ class PrematchMovementTests(unittest.TestCase):
         self.assertEqual(movement["asian"]["direction"], "降盘")
         self.assertEqual(movement["asian"]["kind"], "降盘")
         self.assertEqual(movement["kind"], "降盘")
-        self.assertIn("客队（下盘/受让方）", movement["asian"]["lean"])
-        self.assertIn("倾向客队（下盘/受让方）赢盘", movement["asian"]["note"])
+        self.assertEqual(movement["asian"]["lean"], "客队")
+        self.assertIn("倾向客队赢盘", movement["asian"]["note"])
         self.assertNotIn("退盘", movement["asian"]["note"])
 
     def test_home_favorite_increase_is_upgrade(self):
@@ -122,8 +122,8 @@ class PrematchMovementTests(unittest.TestCase):
         self.assertEqual(movement["asian"]["direction"], "升盘")
         self.assertEqual(movement["asian"]["kind"], "升盘")
         self.assertEqual(movement["kind"], "升盘")
-        self.assertIn("主队（上盘/让球方）", movement["asian"]["lean"])
-        self.assertIn("倾向主队（上盘/让球方）赢盘", movement["asian"]["note"])
+        self.assertEqual(movement["asian"]["lean"], "主队")
+        self.assertIn("倾向主队赢盘", movement["asian"]["note"])
 
     def test_away_favorite_increase_is_upgrade(self):
         html = """
@@ -141,8 +141,8 @@ class PrematchMovementTests(unittest.TestCase):
         self.assertEqual(movement["asian"]["direction"], "升盘")
         self.assertEqual(movement["asian"]["kind"], "升盘")
         self.assertEqual(movement["kind"], "升盘")
-        self.assertIn("客队（上盘/让球方）", movement["asian"]["lean"])
-        self.assertIn("倾向客队（上盘/让球方）赢盘", movement["asian"]["note"])
+        self.assertEqual(movement["asian"]["lean"], "客队")
+        self.assertIn("倾向客队赢盘", movement["asian"]["note"])
         self.assertNotIn("退盘", movement["asian"]["note"])
 
     def test_away_favorite_drop_is_downgrade(self):
@@ -161,8 +161,8 @@ class PrematchMovementTests(unittest.TestCase):
         self.assertEqual(movement["asian"]["direction"], "降盘")
         self.assertEqual(movement["asian"]["kind"], "降盘")
         self.assertEqual(movement["kind"], "降盘")
-        self.assertIn("主队（下盘/受让方）", movement["asian"]["lean"])
-        self.assertIn("倾向主队（下盘/受让方）赢盘", movement["asian"]["note"])
+        self.assertEqual(movement["asian"]["lean"], "主队")
+        self.assertIn("倾向主队赢盘", movement["asian"]["note"])
 
     def test_unchanged_odds_are_stable(self):
         html = """

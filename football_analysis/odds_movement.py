@@ -193,9 +193,9 @@ def _asian_movement(asian: dict) -> dict:
         ref_line = current_line if abs(current_line) > 0.001 else initial_line
         letting_side, receiving_side = _handicap_sides(ref_line)
         if line_change > 0:
-            lean = f"{letting_side}（上盘/让球方）" if letting_side else "上盘/让球方"
+            lean = letting_side
         else:
-            lean = f"{receiving_side}（下盘/受让方）" if receiving_side else "下盘/受让方"
+            lean = receiving_side
         note = f"让球盘{direction}：{old_text} -> {new_text}"
         if lean:
             note += f"，倾向{lean}赢盘"
