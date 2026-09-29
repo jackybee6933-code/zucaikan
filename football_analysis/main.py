@@ -6,6 +6,7 @@ from pathlib import Path
 from .http import Fetcher
 from .pipeline import analyze_issue
 from .query_app import serve_query
+from .open_browser import open_in_chrome
 from .query_report import render_query_html
 from .report import print_console, write_report_files
 from .store import default_db_path, list_issues, query_movements, save_issue_movements
@@ -46,6 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--workers", type=int, default=4, help="球队页并发抓取数")
     analyze.add_argument("--no-cache", action="store_true", help="不使用本地缓存")
     analyze.add_argument("--no-db", action="store_true", help="不写入本地异动数据库")
+    analyze.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
+    analyze.add_argument("--narrate", action="store_true", help="调用大模型为变盘异动场次生成解读（需设置 LLM_API_KEY）")
 
     query = subparsers.add_parser("query", help="查询已入库的变盘异动")
     _add_common_args(query)
@@ -109,6 +112,10 @@ def _run_analyze(args: argparse.Namespace) -> int:
         fetcher=fetcher,
         max_workers=args.workers,
     )
+    if args.narrate:
+        from .llm import narrate_movements
+
+        narrate_movements(analyses)
     print_console(analyses, issue)
     html_path = write_report_files(
         args.output_dir,
@@ -117,6 +124,8 @@ def _run_analyze(args: argparse.Namespace) -> int:
         source_url,
     )
     print(f"\nHTML 报告: {html_path}")
+    if not args.no_open:
+        open_in_chrome(html_path)
     if not args.no_db:
         saved = save_issue_movements(
             _resolve_db_path(args.db_path),
@@ -360,13 +369,17 @@ def main(argv: list[str] | None = None) -> int:
         import sys
         raw = sys.argv[1:]
     if not raw or raw[0] not in {"analyze", "query", "review"}:
-        raw = ["analyze", *raw]
+        raw = ["query", "--serve", *raw] if raw else ["query", "--serve"]
     args = parser.parse_args(raw)
     if args.command == "query":
         return _run_query(args)
     if args.command == "review":
         return _run_review(args)
-    return _run_analyze(args)
+    result = _run_analyze(args)
+    import sys
+    if getattr(sys, "frozen", False):
+        input("\nPress Enter to close this window...")
+    return result
 
 
 if __name__ == "__main__":

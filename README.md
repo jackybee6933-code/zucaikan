@@ -37,7 +37,17 @@ python run.py --issue 26120 --cache-dir cache
 --workers 4        球队页并发数
 --no-cache         不使用缓存
 --no-db            本次不写入本地异动库
+--narrate          为变盘异动场次调用大模型生成解读（需 LLM_API_KEY）
 ```
+
+启用大模型解读（可选，需 OpenAI 兼容接口的 API Key）：
+
+```powershell
+$env:LLM_API_KEY = "sk-..."
+python run.py --cache-dir cache --narrate
+```
+
+默认使用 `gpt-4o-mini`；用 DeepSeek 等兼容服务商时设置 `LLM_BASE_URL` 与 `LLM_MODEL`。无 Key 或请求失败会静默跳过，报告其余部分不受影响。解读只引用已采集的近况、当前对手的过去对战、盘口与模型数据，不产生新的投注建议。
 
 查询已入库异动：
 

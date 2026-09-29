@@ -29,14 +29,12 @@ def _probs_text(probs: dict, labels: dict[str, str]) -> str:
 
 
 def history_short(record: dict) -> str:
-    if not record or not record.get("matches"):
-        return "无"
+    if not record or not record.get('matches'):
+        return "\u65e0"
     return (
-        f"{record['matches']}场 {record['wins']}胜{record['draws']}平{record['losses']}负 "
-        f"进{record['goals_for']}失{record['goals_against']}"
+        f"{record['matches']}\u573a {record['wins']}\u80dc{record['draws']}\u5e73{record['losses']}\u8d1f "
+        f"\u8fdb{record['goals_for']}\u5931{record['goals_against']}"
     )
-
-
 def h2h_short(h2h: dict | None) -> str:
     if not h2h or h2h.get("_error") or not h2h.get("total"):
         return "无"

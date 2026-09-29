@@ -101,7 +101,7 @@ def _movement_kind(item: dict) -> str:
     return "关注"
 
 
-def _kind_badge(kind: str) -> str:
+def _kind_badge(kind: str, *, muted: bool = False) -> str:
     css = {
         "降盘": "kind-drop",
         "升盘": "kind-rise",
@@ -110,7 +110,23 @@ def _kind_badge(kind: str) -> str:
         "大盘变动": "kind-swing",
         "大水位摆动": "kind-swing",
     }.get(kind, "kind-watch")
+    if muted and kind in ("降盘", "升盘", "大盘变动", "大水位摇动"):
+        css += " kind-muted"
     return f'<span class="kind {css}">{_esc(kind)}</span>'
+
+def _kind_muted(item: dict) -> bool:
+    """Return True when the kind badge should lose its colored background (|line-change| < 0.5)."""
+    movement = item.get("odds_movement") or {}
+    kind = str(movement.get("kind") or "").strip()
+    if kind not in ("升盘", "降盘", "大盘变动", "大水位摇动"):
+        return False
+    asian = movement.get("asian") or {}
+    total = movement.get("total") or {}
+    lc_asian = abs(_float(asian.get("line_change")))
+    lc_total = abs(_float(total.get("line_change")))
+    lc = lc_total if kind in ("大盘变动", "大水位摇动") else lc_asian
+    return lc < 0.5
+
 
 
 def _asian_rec_text(item: dict) -> str:
@@ -298,7 +314,7 @@ def _render_alert_rows(analyses: list[dict]) -> str:
                 <div class="muted">{_esc(item.get("league"))} · {_esc(item.get("match_time"))}</div>
               </td>
               <td class="score-cell">{_esc(item.get("final_score") or "未开赛")}</td>
-<td class="kind-cell">{_kind_badge(kind)}</td>
+<td class="kind-cell">{_kind_badge(kind, muted=_kind_muted(item))}</td>
               <td class="line-change">
                 <div class="line-pair"><span class="k">初</span>{_esc(old)}</div>
                 <div class="line-pair"><span class="k">即</span>{_esc(new)}</div>
@@ -317,6 +333,15 @@ def _render_alert_rows(analyses: list[dict]) -> str:
             </tr>
             """
         )
+        narration = item.get("narration")
+        if narration:
+            rows.append(
+                f'<tr data-alert-kind="{_esc(kind)}" class="narration-row">'
+                f'<td colspan="8">'
+                f'<span class="narration-label">大模型解读 · 仅依据已采集数据</span>'
+                f"{_esc(narration)}"
+                f"</td></tr>"
+            )
     return "\n".join(rows)
 
 
@@ -623,6 +648,9 @@ td { color: #2b3644; }
 .alert-table .analysis-link { width: 44px; text-align: center; }
 .alert-table .analysis-link a { color: var(--blue); text-decoration: none; font-weight: 600; font-size: 13px; }
 .alert-table .analysis-link a:hover { text-decoration: underline; }
+.alert-table tbody tr.narration-row { background: #f6f9ff; }
+.alert-table .narration-row td { padding-top: 0; border-top: 1px dashed var(--line); color: #334155; line-height: 1.7; }
+.narration-label { display: inline-block; margin-right: 8px; padding: 1px 7px; border-radius: 5px; background: #e8efff; color: var(--blue); font-size: 11px; font-weight: 600; white-space: nowrap; }
 .alert-table .empty-alert td { text-align: center; color: var(--green); background: var(--green-soft); }
 .badge {
   display: inline-block;
@@ -649,6 +677,7 @@ td { color: #2b3644; }
 .kind-reverse { color: #9a5b06; background: #fff3d6; }
 .kind-swing { color: #475569; background: #eef2f7; }
 .kind-watch { color: #475569; background: #eef2f7; }
+.kind-muted { background: transparent; }
 .asian-rec { min-width: 120px; white-space: nowrap; font-weight: 600; }
 .no-alert { padding: 18px 16px; color: var(--green); background: var(--green-soft); }
 .toolbar {
