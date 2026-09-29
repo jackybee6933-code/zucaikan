@@ -97,13 +97,15 @@ class PrematchMovementTests(unittest.TestCase):
           </tr>
         </table></div>
         """
-        movement = analyze_prematch_movement(parse_prematch_movement_html(html))
+        raw = parse_prematch_movement_html(html)
+        raw["teams"] = {"home": "主队B", "away": "客队A"}
+        movement = analyze_prematch_movement(raw)
         self.assertEqual(movement["level"], "重点关注")
         self.assertEqual(movement["asian"]["direction"], "降盘")
         self.assertEqual(movement["asian"]["kind"], "降盘")
         self.assertEqual(movement["kind"], "降盘")
-        self.assertEqual(movement["asian"]["lean"], "客队")
-        self.assertIn("倾向客队赢盘", movement["asian"]["note"])
+        self.assertEqual(movement["asian"]["lean"], "客队A")
+        self.assertIn("倾向客队A赢盘", movement["asian"]["note"])
         self.assertNotIn("退盘", movement["asian"]["note"])
 
     def test_home_favorite_increase_is_upgrade(self):
@@ -117,13 +119,15 @@ class PrematchMovementTests(unittest.TestCase):
           </tr>
         </table></div>
         """
-        movement = analyze_prematch_movement(parse_prematch_movement_html(html))
+        raw = parse_prematch_movement_html(html)
+        raw["teams"] = {"home": "主队B", "away": "客队A"}
+        movement = analyze_prematch_movement(raw)
         self.assertEqual(movement["level"], "重点关注")
         self.assertEqual(movement["asian"]["direction"], "升盘")
         self.assertEqual(movement["asian"]["kind"], "升盘")
         self.assertEqual(movement["kind"], "升盘")
-        self.assertEqual(movement["asian"]["lean"], "主队")
-        self.assertIn("倾向主队赢盘", movement["asian"]["note"])
+        self.assertEqual(movement["asian"]["lean"], "主队B")
+        self.assertIn("倾向主队B赢盘", movement["asian"]["note"])
 
     def test_away_favorite_increase_is_upgrade(self):
         html = """
@@ -136,13 +140,15 @@ class PrematchMovementTests(unittest.TestCase):
           </tr>
         </table></div>
         """
-        movement = analyze_prematch_movement(parse_prematch_movement_html(html))
+        raw = parse_prematch_movement_html(html)
+        raw["teams"] = {"home": "主队B", "away": "客队A"}
+        movement = analyze_prematch_movement(raw)
         self.assertEqual(movement["level"], "重点关注")
         self.assertEqual(movement["asian"]["direction"], "升盘")
         self.assertEqual(movement["asian"]["kind"], "升盘")
         self.assertEqual(movement["kind"], "升盘")
-        self.assertEqual(movement["asian"]["lean"], "客队")
-        self.assertIn("倾向客队赢盘", movement["asian"]["note"])
+        self.assertEqual(movement["asian"]["lean"], "客队A")
+        self.assertIn("倾向客队A赢盘", movement["asian"]["note"])
         self.assertNotIn("退盘", movement["asian"]["note"])
 
     def test_away_favorite_drop_is_downgrade(self):
@@ -156,13 +162,15 @@ class PrematchMovementTests(unittest.TestCase):
           </tr>
         </table></div>
         """
-        movement = analyze_prematch_movement(parse_prematch_movement_html(html))
+        raw = parse_prematch_movement_html(html)
+        raw["teams"] = {"home": "主队B", "away": "客队A"}
+        movement = analyze_prematch_movement(raw)
         self.assertEqual(movement["level"], "重点关注")
         self.assertEqual(movement["asian"]["direction"], "降盘")
         self.assertEqual(movement["asian"]["kind"], "降盘")
         self.assertEqual(movement["kind"], "降盘")
-        self.assertEqual(movement["asian"]["lean"], "主队")
-        self.assertIn("倾向主队赢盘", movement["asian"]["note"])
+        self.assertEqual(movement["asian"]["lean"], "主队B")
+        self.assertIn("倾向主队B赢盘", movement["asian"]["note"])
 
     def test_unchanged_odds_are_stable(self):
         html = """

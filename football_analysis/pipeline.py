@@ -288,10 +288,23 @@ def _attach_odds_movement(
     if not by_fixture:
         return
 
+    teams_by_fixture: dict[str, dict] = {}
+    for row in rows:
+        fid = str(row.get("fixture_id", ""))
+        if fid in by_fixture:
+            teams_by_fixture[fid] = {
+                "home": row.get("home_name") or row.get("home_team") or "",
+                "away": row.get("away_name") or row.get("away_team") or "",
+            }
     movements: dict[str, dict] = {}
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {
-            executor.submit(fetch_nowscore_movement, fetcher, match_id): fixture_id
+            executor.submit(
+                fetch_nowscore_movement,
+                fetcher,
+                match_id,
+                teams_by_fixture.get(fixture_id),
+            ): fixture_id
             for fixture_id, match_id in by_fixture.items()
         }
         for future in as_completed(future_map):

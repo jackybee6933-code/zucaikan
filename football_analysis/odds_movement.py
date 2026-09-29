@@ -162,7 +162,7 @@ def _handicap_sides(home_line: float) -> tuple[str, str]:
     return "", ""
 
 
-def _asian_movement(asian: dict) -> dict:
+def _asian_movement(asian: dict, teams: dict | None = None) -> dict:
     if not asian.get("available"):
         return {"available": False, "level": "稳定", "note": ""}
     initial = asian["initial"]
@@ -192,10 +192,19 @@ def _asian_movement(asian: dict) -> dict:
         kind = direction
         ref_line = current_line if abs(current_line) > 0.001 else initial_line
         letting_side, receiving_side = _handicap_sides(ref_line)
+        team_map = teams or {}
+        home_name = str(team_map.get("home") or "")
+        away_name = str(team_map.get("away") or "")
+        def _team_name(side: str) -> str:
+            if side == "主队":
+                return home_name or side
+            if side == "客队":
+                return away_name or side
+            return side
         if line_change > 0:
-            lean = letting_side
+            lean = _team_name(letting_side)
         else:
-            lean = receiving_side
+            lean = _team_name(receiving_side)
         note = f"让球盘{direction}：{old_text} -> {new_text}"
         if lean:
             note += f"，倾向{lean}赢盘"
@@ -293,7 +302,7 @@ def _total_movement(total: dict) -> dict:
     }
 
 def analyze_prematch_movement(raw: dict) -> dict:
-    asian = _asian_movement(raw.get("asian") or {})
+    asian = _asian_movement(raw.get("asian") or {}, raw.get("teams"))
     total = _total_movement(raw.get("total") or {})
     reasons = [asian["note"]] if asian.get("available") and asian.get("note") else []
     if total.get("available") and total.get("note"):
@@ -315,9 +324,12 @@ def analyze_prematch_movement(raw: dict) -> dict:
     }
 
 
-def fetch_nowscore_movement(fetcher: Fetcher, match_id: str) -> dict:
+def fetch_nowscore_movement(fetcher: Fetcher, match_id: str, teams: dict | None = None) -> dict:
     html = fetcher.fetch(
         NOWSCORE_MOVEMENT_URL.format(match_id=match_id),
         cache_key=f"movement_mobile:{match_id}",
     )
-    return analyze_prematch_movement(parse_prematch_movement_html(html))
+    raw = parse_prematch_movement_html(html)
+    if teams:
+        raw["teams"] = teams
+    return analyze_prematch_movement(raw)
