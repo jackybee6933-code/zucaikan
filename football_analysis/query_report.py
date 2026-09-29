@@ -252,8 +252,8 @@ def render_query_html(
     .badge-hot {{ background: var(--red-soft); color: var(--red); }}
     .badge-watch {{ background: #fff3d6; color: var(--amber); }}
     .badge-stable {{ background: var(--green-soft); color: var(--green); }}
-    .kind-drop {{ color: #b42318; background: var(--red-soft); }}
-    .kind-rise {{ color: #0f766e; background: var(--green-soft); }}
+    .kind-drop {{ color: #0f766e; background: var(--green-soft); }}
+    .kind-rise {{ color: #b42318; background: var(--red-soft); }}
     .kind-reverse {{ color: #9a5b06; background: #fff3d6; }}
     .kind-swing, .kind-watch {{ color: #475569; background: #eef2f7; }}
     .no-alert {{ padding: 18px 16px; color: var(--green); background: var(--green-soft); }}
