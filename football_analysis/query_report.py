@@ -18,7 +18,7 @@ def _badge(level: str) -> str:
     return f'<span class="badge badge-{css}">{_esc(level)}</span>'
 
 
-def _kind_badge(kind: str) -> str:
+def _kind_badge(kind: str, *, muted: bool = False) -> str:
     if kind == "退盘":
         kind = "降盘"
     css = {
@@ -27,7 +27,21 @@ def _kind_badge(kind: str) -> str:
         "水位反转": "kind-reverse",
         "水位摆动": "kind-swing",
     }.get(kind, "kind-watch")
+    if muted and kind in ("降盘", "升盘"):
+        css += " kind-muted"
     return f'<span class="kind {css}">{_esc(kind or "无")}</span>'
+
+def _kind_muted(row: dict) -> bool:
+    """kind 升盘/降盘: when |line_change| < 0.5, strip the colored background."""
+    kind = str(row.get("kind") or "")
+    if kind not in ("升盘", "降盘"):
+        return False
+    try:
+        lc = float(row.get("line_change") or 0)
+    except (ValueError, TypeError):
+        lc = 0.0
+    return abs(lc) < 0.5
+
 
 
 def _line_delta_html(row: dict) -> str:
@@ -44,7 +58,7 @@ def _line_delta_html(row: dict) -> str:
         cls = "delta-hot" if abs(lc) >= 0.5 else ""
     else:
         label = f"降盘 {abs(lc):g}"
-        cls = "drop-big" if abs(lc) >= 0.5 else "delta-hot"
+        cls = "drop-big" if abs(lc) >= 0.5 else ""
     cls_attr = f" {cls}" if cls else ""
     return f'<div class="line-delta{cls_attr}">{_esc(label)}</div>'
 
@@ -148,6 +162,7 @@ def render_query_html(
     attention_only: bool = False,
     latest_only: bool = True,
     db_path: str = "",
+    port: str = "",
     analyses: list[dict] = [],
     source_url: str = "",
 ) -> str:
@@ -192,7 +207,7 @@ def render_query_html(
 
               </td>
               <td class="score-cell">{_esc(row.get("final_score") or "未开赛")}</td>
-              <td>{_kind_badge(str(row.get("kind") or ""))}</td>
+              <td>{_kind_badge(str(row.get("kind") or ""), muted=_kind_muted(row))}</td>
               <td class="line-change">
                 <div class="line-pair"><span class="k">初</span>{_esc(row.get("initial_line") or "无数据")}</div>
                 <div class="line-pair"><span class="k">即</span>{_esc(row.get("current_line") or "无数据")}</div>
@@ -262,14 +277,17 @@ def render_query_html(
     .kind-reverse {{ color: #9a5b06; background: #fff3d6; }}
 .line-delta.drop-big {{ color: #fff; background: var(--green); display: inline-block; padding: 1px 6px; border-radius: 4px; }}
     .kind-swing, .kind-watch {{ color: #475569; background: #eef2f7; }}
+  .kind-muted {{ background: transparent; }}
     .no-alert {{ padding: 18px 16px; color: var(--green); background: var(--green-soft); }}
     .table-scroll {{ overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }}
+    .alert-table tbody tr:nth-child(even) td {{ background: #f8fafc; }}
   </style>
 </head>
 <body>
   <div class="page">
     <h1>变盘异动查询</h1>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}　上盘=让球方，下盘=受让方；上盘让球增加为升盘，减少为降盘。</div>
+    {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
     <form method="get">
       <label>期号
         <select name="issue">{''.join(issue_options)}</select>

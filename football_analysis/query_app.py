@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -32,6 +33,20 @@ def serve_query(
     open_browser: bool = True,
 ) -> None:
     db_path = str(Path(db_path))
+
+    def _pick_port(preferred: int) -> int:
+        """Prefer the requested port; fall back to the next free one upwards."""
+        for candidate in range(preferred, preferred + 40):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                try:
+                    s.bind((host, candidate))
+                except OSError:
+                    continue
+                return candidate
+        # Nothing free: hand the decision to the OS with port 0.
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host, 0))
+            return s.getsockname()[1]
 
     # State for the background fetch job
     fetch_state: dict = {"running": False, "issue": "", "result": "", "error": ""}
@@ -95,6 +110,7 @@ def serve_query(
                     attention_only=attention_only,
                     latest_only=latest_only,
                     db_path=db_path,
+                    port=str(port),
                     analyses=analyses,
                     source_url=source_url,
                 )
@@ -111,6 +127,7 @@ def serve_query(
                     rows,
                     issues=list_issues(Path(db_path)),
                     db_path=db_path,
+                    port=str(port),
                 )
             payload = html.encode("utf-8")
             self.send_response(200)
@@ -149,11 +166,16 @@ def serve_query(
         def log_message(self, format: str, *args) -> None:  # noqa: A003
             return
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    try:
+        port = _pick_port(port)
+        server = ThreadingHTTPServer((host, port), Handler)
+    except OSError as exc:
+        print(f"无法监听 {host}:{port}，请检查端口是否被占用或更换端口。错误: {exc}")
+        return
     url = f"http://{host}:{port}/"
     print(f"异动查询页已启动：{url}")
     print(f"数据库：{db_path}")
-    print("按 Ctrl+C 停止。")
+    print("按 Ctrl+C 停止服务。")
     if open_browser:
         open_in_chrome(url)
     try:
