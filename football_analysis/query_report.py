@@ -198,7 +198,7 @@ def render_query_html(
                 <div class="line-pair"><span class="k">即</span>{_esc(row.get("current_line") or "无数据")}</div>
                 {_line_delta_html(row)}
               </td>
-              <td class="lean-cell">{_esc(row.get("lean") or "—")}</td>
+              <td class="lean-cell">{_esc((str(row.get("lean") or "").split("（")[0]) or "—")}</td>
 
               <td class="total-cell">
                 {_total_goals_html(row.get('payload_json') or '')}
@@ -260,7 +260,7 @@ def render_query_html(
     .kind-drop {{ color: #0f766e; background: var(--green-soft); }}
     .kind-rise {{ color: #b42318; background: var(--red-soft); }}
     .kind-reverse {{ color: #9a5b06; background: #fff3d6; }}
-    .drop-big {{ background: var(--green); color: #fff; }}
+.line-delta.drop-big {{ color: #fff; background: var(--green); display: inline-block; padding: 1px 6px; border-radius: 4px; }}
     .kind-swing, .kind-watch {{ color: #475569; background: #eef2f7; }}
     .no-alert {{ padding: 18px 16px; color: var(--green); background: var(--green-soft); }}
     .table-scroll {{ overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }}
