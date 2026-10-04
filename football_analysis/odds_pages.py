@@ -28,6 +28,28 @@ def _line_text(text: object) -> str:
     return re.sub(r"[\s↑↓升降]+$", "", str(text or "").strip())
 
 
+# 抓取产物里的页面状态。只有这两种算「结果可信」；timeout/error 意味着抓取失败，
+# 会被上游忽略并告警——绝不能当成「上游没开盘」而静默当成事实。
+PAGE_STATUSES = ("ok", "empty")
+
+
+def _status(page: dict) -> str:
+    """取页面状态；旧产物没有 status 字段，按有无公司行推断，保持向后兼容。"""
+    status = str(page.get("status") or "").strip()
+    if status:
+        return status
+    return "ok" if page.get("rows") else "empty"
+
+
+def page_failures(raw: dict) -> list[str]:
+    """返回抓取失败（timeout/error）的页面 key，供上层告警。"""
+    return [
+        str(key)
+        for key, page in (raw or {}).items()
+        if isinstance(page, dict) and _status(page) not in PAGE_STATUSES
+    ]
+
+
 def _pick_company(rows: list[list]) -> list | None:
     by_cid = {str(row[0]): row for row in rows}
     for cid in CID_PREFERENCE:
@@ -44,6 +66,8 @@ def parse_odds_pages(raw: dict) -> dict[str, dict]:
     """
     result: dict[str, dict] = {}
     for key, page in (raw or {}).items():
+        if not isinstance(page, dict) or _status(page) not in PAGE_STATUSES:
+            continue
         fixture_id, _, kind = str(key).partition("|")
         rows = page.get("rows") or []
         row = _pick_company(rows)

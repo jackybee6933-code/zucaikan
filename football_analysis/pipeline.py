@@ -17,6 +17,7 @@ from .odds_xml import ODDS_XML_URL, company_label, parse_odds_xml
 from .odds_pages import (
     build_pages_movements,
     load_odds_pages_raw,
+    page_failures,
     parse_odds_pages,
 )
 from .sfc import ISSUE_URL, TRADE_URL, parse_sfc_html
@@ -106,6 +107,13 @@ def analyze_issue(
 
     pages_raw = load_odds_pages_raw(fetcher.cache.root, actual_issue)
     pages_map = parse_odds_pages(pages_raw)
+    # 抓取失败与「上游没开盘」是两回事，必须分开报，否则报告会缺盘口却看不出原因
+    failed_pages = page_failures(pages_raw)
+    pages_error = ""
+    if failed_pages:
+        preview = "、".join(failed_pages[:5])
+        more = f" 等 {len(failed_pages)} 个" if len(failed_pages) > 5 else ""
+        pages_error = f"单场页有 {len(failed_pages)} 个页面抓取失败，盘口可能缺失：{preview}{more}"
 
     enriched: list[dict] = []
     needs_detail: list[dict] = []
@@ -117,6 +125,8 @@ def analyze_issue(
             detail["warnings"].append(jczq_error)
         if odds_error:
             detail["warnings"].append(odds_error)
+        if pages_error:
+            detail["warnings"].append(pages_error)
         enrichment = jczq_map.get(row["fixture_id"])
         if enrichment:
             display_time = enrichment["match_time"]

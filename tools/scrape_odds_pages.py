@@ -129,15 +129,32 @@ def browser_alive(page) -> bool:
         return False
 
 
-def fetch_page(page, url: str, wait_seconds: float) -> list[list]:
-    """打开单场页取数据；撞到 EdgeOne 验证页则置前窗口并等待人工勾选。"""
+# 抓取结果状态。ok=拿到公司行；empty=页面正常渲染但零公司行（上游没开盘）；
+# timeout/error=抓取失败。这三者必须区分，否则一次部分失败的抓取会把好数据
+# 静默覆盖成空，报告显示成「无市场」，看起来像事实。
+STATUS_OK = "ok"
+STATUS_EMPTY = "empty"
+STATUS_TIMEOUT = "timeout"
+STATUS_ERROR = "error"
+
+
+def _error(detail: str) -> dict:
+    return {"status": STATUS_ERROR, "rows": [], "detail": detail}
+
+
+def fetch_page(page, url: str, wait_seconds: float) -> dict:
+    """打开单场页取数据；撞到 EdgeOne 验证页则置前窗口并等待人工勾选。
+
+    返回 {"status": ..., "rows": [...]}，status 取上面四个常量之一。
+    """
     if not browser_alive(page):
         raise BrowserGone()
     try:
         page.goto(url, timeout=PAGE_TIMEOUT_MS, wait_until="domcontentloaded")
     except PWError as exc:
-        log(f"    [x] 打开失败：{str(exc).splitlines()[0][:90]}")
-        return []
+        detail = str(exc).splitlines()[0][:90]
+        log(f"    [x] 打开失败：{detail}")
+        return _error(detail)
 
     deadline = time.time() + wait_seconds
     warned = False
@@ -145,8 +162,8 @@ def fetch_page(page, url: str, wait_seconds: float) -> list[list]:
     while time.time() < deadline:
         try:
             title = page.title() or ""
-        except PWError:
-            return []
+        except PWError as exc:
+            return _error(str(exc).splitlines()[0][:90])
 
         if VERIFY_MARK in title:
             settled = 0
@@ -164,8 +181,7 @@ def fetch_page(page, url: str, wait_seconds: float) -> list[list]:
             # 还在导航，等下一轮
             settled = 0
         else:
-            # 标题已是真实赔率页。只给 JS 渲染留几拍时间：之后无论有无公司行都算完成——
-            # 零公司行是「上游没开盘」的正常结果，不能当成失败空转到超时。
+            # 标题已是真实赔率页。只给 JS 渲染留几拍时间。
             try:
                 body = page.evaluate(BODY_JS) or ""
                 if any(mark in body for mark in RATE_LIMIT_MARKS):
@@ -173,18 +189,21 @@ def fetch_page(page, url: str, wait_seconds: float) -> list[list]:
                 rows = page.evaluate(EXTRACT_JS)
             except RateLimited:
                 raise
-            except PWError:
-                return []
+            except PWError as exc:
+                return _error(str(exc).splitlines()[0][:90])
             if rows:
-                return rows
+                return {"status": STATUS_OK, "rows": rows}
             settled += 1
             if settled >= SETTLE_POLLS:
-                return []
+                # 真实页面已渲染但零公司行 = 上游确实没开盘，属正常结果
+                return {"status": STATUS_EMPTY, "rows": []}
 
         # 等待期间页面可能因勾选而重载，不能用 page.wait_for_timeout（会抛），
         # 也不该在循环里做别的 Playwright 调用，纯 sleep 最稳。
         time.sleep(POLL_SECONDS)
-    return []
+
+    # 等到超时仍未拿到真实页面，多半是没人勾验证
+    return {"status": STATUS_TIMEOUT, "rows": []}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -244,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
                         return 5
                     url = f"https://odds.500.com/fenxi/{kind}-{fid}.shtml"
                     try:
-                        rows = fetch_page(page, url, args.wait)
+                        payload = fetch_page(page, url, args.wait)
                     except BrowserGone:
                         log("")
                         log("[!] 浏览器已断开（多半是被关掉了），中止（未写入文件）。")
@@ -260,9 +279,10 @@ def main(argv: list[str] | None = None) -> int:
                         log(f"[!] 浏览器中断：{str(exc).splitlines()[0][:90]}")
                         log("    未写入文件，重新运行即可。")
                         return 4
-                    result[f"{fid}|{kind}"] = {"rows": rows}
-                    note = "" if rows else "  无盘口"
-                    log(f"  [{done:>2}/{total}] {kind}-{fid}: {len(rows)} 家{note}")
+                    result[f"{fid}|{kind}"] = payload
+                    st = payload.get("status")
+                    note = "" if st == STATUS_OK else f"  <{st}>"
+                    log(f"  [{done:>2}/{total}] {kind}-{fid}: {len(payload['rows'])} 家{note}")
                     time.sleep(args.delay * random.uniform(0.6, 1.4))
         finally:
             # 只关自己开的；用户的浏览器绝不碰
@@ -274,10 +294,17 @@ def main(argv: list[str] | None = None) -> int:
 
     out = cache_dir / f"odds_pages_{issue}.json"
     out.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
-    hit = sum(1 for page in result.values() if page["rows"])
+    ok = sum(1 for page in result.values() if page.get("status") == STATUS_OK)
+    empty = sum(1 for page in result.values() if page.get("status") == STATUS_EMPTY)
+    bad = [k for k, page in result.items()
+           if page.get("status") not in (STATUS_OK, STATUS_EMPTY)]
     log("")
     log(f"落盘 {out}")
-    log(f"有盘口页面 {hit}/{len(result)}")
+    log(f"有盘口 {ok}   上游无盘口 {empty}   抓取失败 {len(bad)}")
+    if bad:
+        log("以下页面抓取失败（已带 status 标记，下游会忽略并告警，不会当成「无盘口」）：")
+        for key in bad:
+            log(f"  {key}  {result[key].get('status')}")
     return 0
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from football_analysis.odds_pages import (
     build_pages_movements,
     load_odds_pages,
+    page_failures,
     parse_odds_pages,
 )
 from football_analysis.pipeline import _build_single_analysis
@@ -281,6 +282,56 @@ class SplitRenderTests(unittest.TestCase):
         self.assertEqual(_split_html({"split": [{"market": "亚盘", "picked": "", "rows": []}]}, "sp-5"), "")
         self.assertEqual(_split_html({"split": ["x"]}, "sp-5"), "")
 
+
+
+class PageStatusTests(unittest.TestCase):
+    """抓取失败（timeout/error）与「上游没开盘」必须可区分。"""
+
+    ROWS = [["293", "0.67", "受半球", "1.10", "0.75", "受半球", "1.00"]]
+
+    def test_timeout_page_is_a_failure_not_empty(self):
+        raw = {"9|yazhi": {"status": "timeout", "rows": []}}
+        self.assertEqual(page_failures(raw), ["9|yazhi"])
+        self.assertEqual(parse_odds_pages(raw), {})
+
+    def test_error_page_is_a_failure(self):
+        raw = {"9|yazhi": {"status": "error", "rows": [], "detail": "boom"}}
+        self.assertEqual(page_failures(raw), ["9|yazhi"])
+
+    def test_empty_page_is_not_a_failure(self):
+        raw = {"9|yazhi": {"status": "empty", "rows": []}}
+        self.assertEqual(page_failures(raw), [])
+        self.assertEqual(parse_odds_pages(raw), {})
+
+    def test_ok_page_is_not_a_failure(self):
+        raw = {"9|yazhi": {"status": "ok", "rows": self.ROWS}}
+        self.assertEqual(page_failures(raw), [])
+        self.assertIn("9", parse_odds_pages(raw))
+
+    def test_failed_page_is_ignored_even_with_rows(self):
+        """防御性：失败页即便混进了残留行，也不能当成有效盘口。"""
+        raw = {"9|yazhi": {"status": "timeout", "rows": self.ROWS}}
+        self.assertEqual(parse_odds_pages(raw), {})
+        self.assertEqual(page_failures(raw), ["9|yazhi"])
+
+    def test_legacy_file_without_status_infers_from_rows(self):
+        """向后兼容：旧产物没有 status 字段，按有无公司行推断。"""
+        good = {"9|yazhi": {"rows": self.ROWS}}
+        blank = {"9|daxiao": {"rows": []}}
+        self.assertEqual(page_failures({**good, **blank}), [])
+        self.assertIn("9", parse_odds_pages({**good, **blank}))
+
+    def test_mixed_file_reports_only_failures(self):
+        raw = {
+            "9|yazhi": {"status": "ok", "rows": self.ROWS},
+            "9|daxiao": {"status": "timeout", "rows": []},
+            "8|yazhi": {"status": "empty", "rows": []},
+            "8|daxiao": {"status": "error", "rows": []},
+        }
+        self.assertEqual(sorted(page_failures(raw)), ["8|daxiao", "9|daxiao"])
+        parsed = parse_odds_pages(raw)
+        self.assertEqual(set(parsed), {"9"})
+        self.assertEqual(parsed["9"]["asian_line_text"], "受半球")
 
 if __name__ == "__main__":
     unittest.main()
