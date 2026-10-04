@@ -26,6 +26,26 @@ def _first(params: dict[str, list[str]], key: str, default: str = "") -> str:
     return values[0] if values else default
 
 
+def format_review(summary: dict) -> str:
+    """把 review_issue 的统计格式化成查询页展示的一行文案。"""
+    parts = [f"{summary['issue']} 已完成 {summary['scored']}/{summary['match_count']} 场"]
+    for label, key in (("亚盘", "asian"), ("大小球", "total")):
+        hits = summary[f"{key}_hits"]
+        count = summary[f"{key}_total"]
+        if count:
+            parts.append(f"{label} {hits}/{count} ({hits / count * 100:.0f}%)")
+        else:
+            parts.append(f"{label} 无推荐")
+    return " · ".join(parts)
+
+
+def run_review(db_path: str | Path, issue: str, refresh: bool) -> str:
+    """跑一次复盘并返回展示文案；异常向上抛给调用方记录。"""
+    from .main import review_issue
+
+    return format_review(review_issue(Path(db_path), issue, refresh=refresh, cache_dir=None))
+
+
 def serve_query(
     db_path: str | Path,
     *,
@@ -79,25 +99,13 @@ def serve_query(
     review_lock = threading.Lock()
 
     def _do_review(issue: str, refresh: bool) -> None:
-        from .main import review_issue
-
         with review_lock:
             if review_state["running"]:
                 review_state["error"] = "复盘任务进行中"
                 return
             review_state.update(running=True, issue=issue, result="", error="")
         try:
-            summary = review_issue(Path(db_path), issue, refresh=refresh, cache_dir=None)
-            parts = [f"{summary['issue']} 已完成 {summary['scored']}/{summary['match_count']} 场"]
-            for label, key in (("亚盘", "asian"), ("大小球", "total")):
-                hits = summary[f"{key}_hits"]
-                total_n = summary[f"{key}_total"]
-                if total_n:
-                    pct = f" ({hits / total_n * 100:.0f}%)"
-                    parts.append(f"{label} {hits}/{total_n}{pct}")
-                else:
-                    parts.append(f"{label} 无推荐")
-            review_state["result"] = " · ".join(parts)
+            review_state["result"] = run_review(db_path, issue, refresh)
         except Exception as exc:  # noqa: BLE001
             review_state["error"] = f"复盘失败：{exc}"
         finally:
