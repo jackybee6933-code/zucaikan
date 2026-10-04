@@ -53,7 +53,9 @@ def asian_display(analysis: dict) -> str:
     water = ""
     if asian.get("home_water") or asian.get("away_water"):
         water = f" {asian['home_water']:.2f}/{asian['away_water']:.2f}"
-    return f"{line}{water}"
+    source = str(asian.get("source") or "")
+    suffix = f"（{source}）" if source else ""
+    return f"{line}{water}{suffix}"
 
 
 def total_display(analysis: dict) -> str:

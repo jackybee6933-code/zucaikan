@@ -40,6 +40,7 @@ class FakeResponse:
 class RecordingFetcher:
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self.cache = PageCache(None)
 
     def fetch(
         self,

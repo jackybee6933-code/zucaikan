@@ -10,6 +10,7 @@ from urllib.parse import parse_qs, urlparse
 from .http import Fetcher
 from .open_browser import open_in_chrome
 from .pipeline import analyze_issue
+from .report_index import build_issue_report_index
 from .query_report import render_query_html
 from .store import (
     default_db_path,
@@ -31,8 +32,11 @@ def serve_query(
     host: str = "127.0.0.1",
     port: int = 8765,
     open_browser: bool = True,
+    reports_dir: str | Path | None = None,
 ) -> None:
     db_path = str(Path(db_path))
+    reports_dir = Path(reports_dir) if reports_dir else Path(db_path).parent.parent / "reports"
+    report_links = build_issue_report_index(reports_dir)
 
     def _pick_port(preferred: int) -> int:
         """Prefer the requested port; fall back to the next free one upwards."""
@@ -70,6 +74,35 @@ def serve_query(
         finally:
             fetch_state["running"] = False
 
+    # State for the background review job
+    review_state: dict = {"running": False, "issue": "", "result": "", "error": ""}
+    review_lock = threading.Lock()
+
+    def _do_review(issue: str, refresh: bool) -> None:
+        from .main import review_issue
+
+        with review_lock:
+            if review_state["running"]:
+                review_state["error"] = "复盘任务进行中"
+                return
+            review_state.update(running=True, issue=issue, result="", error="")
+        try:
+            summary = review_issue(Path(db_path), issue, refresh=refresh, cache_dir=None)
+            parts = [f"{summary['issue']} 已完成 {summary['scored']}/{summary['match_count']} 场"]
+            for label, key in (("亚盘", "asian"), ("大小球", "total")):
+                hits = summary[f"{key}_hits"]
+                total_n = summary[f"{key}_total"]
+                if total_n:
+                    pct = f" ({hits / total_n * 100:.0f}%)"
+                    parts.append(f"{label} {hits}/{total_n}{pct}")
+                else:
+                    parts.append(f"{label} 无推荐")
+            review_state["result"] = " · ".join(parts)
+        except Exception as exc:  # noqa: BLE001
+            review_state["error"] = f"复盘失败：{exc}"
+        finally:
+            review_state["running"] = False
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
@@ -79,6 +112,33 @@ def serve_query(
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(json.dumps(fetch_state, ensure_ascii=False).encode("utf-8"))
+                return
+            if parsed.path == "/review-status":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(json.dumps(review_state, ensure_ascii=False).encode("utf-8"))
+                return
+            # Serve report HTML files by filename
+            if parsed.path.startswith("/report/"):
+                filename = parsed.path[len("/report/"):]
+                # Validate: only allow issue_*.html files in the reports directory
+                target = (reports_dir / filename).resolve()
+                safe = bool(filename) and "/" not in filename and "\\" not in filename
+                if not safe:
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+                if target.parent != reports_dir.resolve() or not target.is_file():
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                payload = target.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
                 return
             params = parse_qs(parsed.query)
             issue = _first(params, "issue")
@@ -113,6 +173,7 @@ def serve_query(
                     port=str(port),
                     analyses=analyses,
                     source_url=source_url,
+                    report_links=report_links,
                 )
             else:
                 rows = query_movements(
@@ -128,6 +189,7 @@ def serve_query(
                     issues=list_issues(Path(db_path)),
                     db_path=db_path,
                     port=str(port),
+                    report_links=report_links,
                 )
             payload = html.encode("utf-8")
             self.send_response(200)
@@ -154,11 +216,29 @@ def serve_query(
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(b'{"status":"accepted"}')
-            elif parsed.path == "/fetch-status":
+            elif parsed.path == "/review":
+                content_length = int(self.headers.get("Content-Length") or 0)
+                body = self.rfile.read(content_length).decode("utf-8")
+                data = json.loads(body) if body else {}
+                issue = data.get("issue", "")
+                if not issue:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"error":"issue is required"}')
+                    return
+                threading.Thread(
+                    target=_do_review, args=(issue, bool(data.get("refresh"))), daemon=True
+                ).start()
+                self.send_response(202)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"status":"accepted"}')
+            elif parsed.path == "/review-status":
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps(fetch_state, ensure_ascii=False).encode("utf-8"))
+                self.wfile.write(json.dumps(review_state, ensure_ascii=False).encode("utf-8"))
             else:
                 self.send_response(404)
                 self.end_headers()

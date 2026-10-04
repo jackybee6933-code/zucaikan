@@ -3,6 +3,9 @@ from __future__ import annotations
 import html
 import json
 from datetime import datetime
+from urllib.parse import quote_from_bytes
+
+from .report_index import build_issue_report_index
 
 
 def _esc(value: object) -> str:
@@ -30,6 +33,43 @@ def _kind_badge(kind: str, *, muted: bool = False) -> str:
     if muted and kind in ("降盘", "升盘"):
         css += " kind-muted"
     return f'<span class="kind {css}">{_esc(kind or "无")}</span>'
+
+def _split_html(row: dict, uid: str) -> str:
+    """盘口分歧标记 + 悬停弹层模板；弹层列出各公司初盘→即时盘口。"""
+    blocks = row.get("split") or []
+    if not isinstance(blocks, list):
+        blocks = []
+    blocks = [b for b in blocks if isinstance(b, dict) and b.get("rows")]
+    if not blocks:
+        return ""
+    parts = []
+    for block in blocks:
+        picked = str(block.get("picked") or "")
+        trs = []
+        for item in block["rows"]:
+            if not isinstance(item, dict):
+                continue
+            cid = _esc(str(item.get("cid") or ""))
+            name = _esc(str(item.get("name") or ""))
+            label = f"{name}({cid})" if name else cid
+            cur = _esc(str(item.get("current") or "—"))
+            # 报告实际采用的那家加粗，一眼看出信号来自谁
+            cur_cell = f"<b>{cur}</b>" if str(item.get("cid")) == picked else cur
+            trs.append(
+                f"<tr><td>{label}</td><td>{_esc(str(item.get('initial') or '—'))} \u2192 {cur_cell}</td></tr>"
+            )
+        parts.append(
+            f'<div class="split-card"><div class="split-card-title">'
+            f'{_esc(str(block.get("market") or ""))}</div>'
+            f'<table class="split-table"><thead><tr><th>公司</th><th>初盘 \u2192 即时</th></tr></thead>'
+            f'<tbody>{"".join(trs)}</tbody></table></div>'
+        )
+    body = "".join(parts)
+    return (
+        f'<div class="kind-split" data-split-for="{_esc(uid)}">盘口分歧</div>'
+        f'<template id="{_esc(uid)}">{body}</template>'
+    )
+
 
 def _kind_muted(row: dict) -> bool:
     """kind 升盘/降盘: when |line_change| < 0.5, strip the colored background."""
@@ -165,8 +205,10 @@ def render_query_html(
     port: str = "",
     analyses: list[dict] = [],
     source_url: str = "",
+    report_links: dict[str, str] | None = None,
 ) -> str:
     from .browser_report import render_browser_html
+    report_links = report_links or {}
     fetch_block = _FETCH_BLOCK
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     # Build the unified analysis page when a full issue is requested
@@ -192,7 +234,7 @@ def render_query_html(
         label = "全部类型" if value == "" else value
         kind_options.append(f'<option value="{_esc(value)}"{selected}>{_esc(label)}</option>')
     table_rows = []
-    for row in rows:
+    for row_idx, row in enumerate(rows):
         table_rows.append(
             f"""
             <tr>
@@ -207,7 +249,7 @@ def render_query_html(
 
               </td>
               <td class="score-cell">{_esc(row.get("final_score") or "未开赛")}</td>
-              <td>{_kind_badge(str(row.get("kind") or ""), muted=_kind_muted(row))}</td>
+              <td>{_kind_badge(str(row.get("kind") or ""), muted=_kind_muted(row))}{_split_html(row, f'splitpop-{row_idx}')}</td>
               <td class="line-change">
                 <div class="line-pair"><span class="k">初</span>{_esc(row.get("initial_line") or "无数据")}</div>
                 <div class="line-pair"><span class="k">即</span>{_esc(row.get("current_line") or "无数据")}</div>
@@ -267,6 +309,8 @@ def render_query_html(
     .alert-table .score-cell {{ width: 9%; }}
 .alert-table .lean-cell {{ width: 16%; }}
 .alert-table .total-cell {{ width: 12%; }}
+.report-btn {{ background: var(--green); color: #fff; margin-left: 8px; }}
+.report-btn:disabled {{ background: #cbd5e1; cursor: not-allowed; }}
 
     .badge, .kind {{ display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }}
     .badge-hot {{ background: var(--red-soft); color: var(--red); }}
@@ -278,6 +322,16 @@ def render_query_html(
 .line-delta.drop-big {{ color: #fff; background: var(--green); display: inline-block; padding: 1px 6px; border-radius: 4px; }}
     .kind-swing, .kind-watch {{ color: #475569; background: #eef2f7; }}
   .kind-muted {{ background: transparent; }}
+  .kind-split {{ margin-top: 4px; color: var(--amber); font-size: 11px; font-weight: 600; line-height: 1.5; cursor: help; }}
+  #split-pop {{ position: fixed; z-index: 40; min-width: 240px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 8px 24px rgba(15, 23, 42, .18); pointer-events: none; }}
+  #split-pop[hidden] {{ display: none; }}
+  .split-card + .split-card {{ margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }}
+  .split-card-title {{ margin-bottom: 6px; color: var(--muted); font-size: 11px; font-weight: 600; }}
+  .split-table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
+  .split-table th {{ padding: 3px 10px 5px 0; background: transparent; color: var(--muted); font-weight: 600; text-align: left; white-space: nowrap; }}
+  .split-table td {{ padding: 3px 10px 3px 0; border-top: 1px solid var(--line); color: #2b3644; white-space: nowrap; }}
+  .split-table td:last-child {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  .split-table b {{ color: var(--amber); font-weight: 700; }}
     .no-alert {{ padding: 18px 16px; color: var(--green); background: var(--green-soft); }}
     .table-scroll {{ overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }}
     .alert-table tbody tr:nth-child(even) td {{ background: #f8fafc; }}
@@ -306,7 +360,73 @@ def render_query_html(
         <label><input type="checkbox" name="latest" value="1" {"checked" if latest_only else ""}> 每期最新一次</label>
       </div>
       <button type="submit">查询</button>
+      <button type="button" id="report-btn" class="report-btn">分析报告</button>
+      <button type="button" id="review-btn" class="report-btn">复盘</button>
+      <label class="muted" style="font-size:12px"><input type="checkbox" id="review-refresh"> 刷新比分</label>
+      <span id="report-hint" class="muted" style="font-size:12px"></span>
+      <span id="review-hint" class="muted" style="font-size:12px"></span>
     </form>
+    <script>
+    (function() {{
+      const sel = document.querySelector('select[name="issue"]');
+      const btn = document.getElementById('report-btn');
+      const hint = document.getElementById('report-hint');
+      const reports = {json.dumps(report_links, ensure_ascii=False)};
+      const rbtn = document.getElementById('review-btn');
+      const rhint = document.getElementById('review-hint');
+      const rrefresh = document.getElementById('review-refresh');
+      function sync() {{
+        const v = sel ? sel.value : "";
+        const file = v ? (reports[v] || null) : null;
+        btn.disabled = !file;
+        if (rbtn) rbtn.disabled = !v;
+        if (file) {{
+          btn.dataset.report = file;
+          hint.textContent = "将打开 " + file;
+        }} else {{
+          btn.removeAttribute("data-report");
+          hint.textContent = v ? "该期暂无报告文件" : "选择期号后可打开分析报告";
+        }}
+      }}
+      if (sel) sel.addEventListener("change", sync);
+      if (rbtn) rbtn.addEventListener("click", async function() {{
+        const v = sel ? sel.value : "";
+        if (!v) return;
+        rbtn.disabled = true;
+        rhint.textContent = "复盘 " + v + " 中...";
+        await fetch("/review", {{
+          method: "POST",
+          headers: {{"Content-Type": "application/json"}},
+          body: JSON.stringify({{issue: v, refresh: !!(rrefresh && rrefresh.checked)}})
+        }});
+        const poll = setInterval(async () => {{
+          const r = await fetch("/review-status");
+          const s = await r.json();
+          if (s.running) return;
+          clearInterval(poll);
+          rbtn.disabled = false;
+          rhint.textContent = s.error || s.result || "完成";
+          // 只有勾了「刷新比分」才需要重载看新比分；重载前把结果暂存，载入后还原。
+          if (s.result && !s.error && rrefresh && rrefresh.checked) {{
+            try {{ sessionStorage.setItem("review-msg", s.result); }} catch (e) {{}}
+            setTimeout(function() {{ location.reload(); }}, 1200);
+          }}
+        }}, 1500);
+      }});
+      try {{
+        var savedMsg = sessionStorage.getItem("review-msg");
+        if (savedMsg) {{
+          rhint.textContent = savedMsg;
+          sessionStorage.removeItem("review-msg");
+        }}
+      }} catch (e) {{}}
+      if (btn) btn.addEventListener("click", function() {{
+        const name = btn.getAttribute("data-report");
+        if (name) window.open("/report/" + encodeURIComponent(name), "_blank");
+      }});
+      sync();
+    }})();
+    </script>
     {fetch_block}
     {empty}
     <div class="table-scroll">
@@ -322,6 +442,33 @@ def render_query_html(
       </table>
     </div>
   </div>
+  <div id="split-pop" hidden></div>
+  <script>
+  (function () {{
+    var pop = document.getElementById('split-pop');
+    if (!pop) return;
+    document.querySelectorAll('[data-split-for]').forEach(function (el) {{
+      var tpl = document.getElementById(el.getAttribute('data-split-for'));
+      if (!tpl) return;
+      function show() {{
+        pop.innerHTML = tpl.innerHTML;
+        pop.hidden = false;
+        var r = el.getBoundingClientRect();
+        var left = Math.max(8, Math.min(r.left, window.innerWidth - pop.offsetWidth - 8));
+        var top = r.bottom + 6;
+        if (top + pop.offsetHeight > window.innerHeight - 8) {{
+          top = Math.max(8, r.top - pop.offsetHeight - 6);
+        }}
+        pop.style.left = left + 'px';
+        pop.style.top = top + 'px';
+      }}
+      el.addEventListener('mouseenter', show);
+      el.addEventListener('focus', show);
+      el.addEventListener('mouseleave', function () {{ pop.hidden = true; }});
+      el.addEventListener('blur', function () {{ pop.hidden = true; }});
+    }});
+  }})();
+  </script>
 </body>
 </html>
 """

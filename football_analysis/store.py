@@ -83,6 +83,18 @@ def _normalize_kind(kind: str) -> str:
     return "降盘" if kind == "退盘" else kind
 
 
+def _extract_split(payload_json: str) -> list[dict]:
+    """从 payload_json 还原公司间盘口分歧的弹层数据块。"""
+    try:
+        movement = (json.loads(payload_json or "{}") or {}).get("odds_movement") or {}
+    except (TypeError, ValueError):
+        return []
+    split = movement.get("split")
+    if not isinstance(split, list):
+        return []
+    return [item for item in split if isinstance(item, dict)]
+
+
 def _movement_kind(reason: str) -> str:
     if "让球盘退盘" in reason or "让球盘降盘" in reason:
         return "降盘"
@@ -276,6 +288,7 @@ def query_movements(
         rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
         for row in rows:
             row["kind"] = _normalize_kind(str(row.get("kind") or ""))
+            row["split"] = _extract_split(str(row.get("payload_json") or ""))
         return rows
     finally:
         conn.close()

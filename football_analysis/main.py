@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import sys
+import traceback
 from pathlib import Path
 
 from .http import Fetcher
 from .pipeline import analyze_issue
 from .query_app import serve_query
+from .report_index import build_issue_report_index
 from .open_browser import open_in_chrome
 from .query_report import render_query_html
 from .report import print_console, write_report_files
 from .store import default_db_path, list_issues, query_movements, save_issue_movements
 from .store import update_match_scores
+
+# 查询页默认端口；analyze→serve 的组合流程没有 query 子命令的 Namespace 可取，直接用这个常量。
+DEFAULT_QUERY_PORT = 8765
+
 
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
@@ -60,7 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     query.add_argument("--limit", type=int, default=200, help="最多返回条数")
     query.add_argument("--output-dir", default="reports", help="查询 HTML 输出目录")
     query.add_argument("--serve", action="store_true", help="启动本地查询页")
-    query.add_argument("--port", type=int, default=8765, help="查询页端口")
+    query.add_argument("--port", type=int, default=DEFAULT_QUERY_PORT, help="查询页端口")
     query.add_argument("--no-open", action="store_true", help="启动查询页时不自动打开浏览器")
     query.add_argument("--refresh-scores", action="store_true", help="先刷新指定期的最终比分再输出")
 
@@ -102,7 +109,7 @@ def _backfill_previous_issue(cache_dir: Path | None, db_path: Path, fetcher: Fet
         print(f"  上期回填失败（不影响最新期）：{exc}")
 
 
-def _run_analyze(args: argparse.Namespace) -> int:
+def _run_analyze(args: argparse.Namespace, *, open_report: bool = True) -> int:
     cache_dir = None if args.no_cache or not args.cache_dir else Path(args.cache_dir)
     fetcher = Fetcher(cache_dir=cache_dir)
     if not args.issue and not args.no_cache:
@@ -124,7 +131,7 @@ def _run_analyze(args: argparse.Namespace) -> int:
         source_url,
     )
     print(f"\nHTML 报告: {html_path}")
-    if not args.no_open:
+    if open_report and not args.no_open:
         open_in_chrome(html_path)
     if not args.no_db:
         saved = save_issue_movements(
@@ -153,8 +160,8 @@ def _print_query_rows(rows: list[dict]) -> None:
         )
 
 
-def _refresh_scores(db_path: Path, issue: str, cache_dir: Path | None) -> None:
-    """Fetch final scores for the latest-run rows of an issue and write them back to the DB."""
+def _refresh_scores(db_path: Path, issue: str, cache_dir: Path | None) -> dict:
+    """抓取最终比分写回 DB，返回统计摘要（不打印，CLI 与查询页共用）。"""
     from .pipeline import collect_sfc_matches, LIVE_DETAIL_URL, extract_match_score, _parse_detail_ids
     from .http import Fetcher
 
@@ -162,9 +169,9 @@ def _refresh_scores(db_path: Path, issue: str, cache_dir: Path | None) -> None:
     try:
         matches, actual = collect_sfc_matches(issue, fetcher)
     except Exception as exc:
-        print(f"无法抓取 {issue} 场次列表: {exc}")
-        return
+        return {"issue": issue, "error": f"无法抓取 {issue} 场次列表: {exc}"}
     scores: dict[str, str] = {}
+    errors: list[str] = []
     for row in matches:
         try:
             html = fetcher.fetch(
@@ -173,10 +180,53 @@ def _refresh_scores(db_path: Path, issue: str, cache_dir: Path | None) -> None:
             )
             scores[str(row["match_no"])] = extract_match_score(html)
         except Exception as exc:
-            print(f"  {row['match_no']} 场次比分抓取失败: {exc}")
+            errors.append(f"  {row['match_no']} 场次比分抓取失败: {exc}")
     updated = update_match_scores(db_path, actual, scores)
     filled = sum(1 for v in scores.values() if v)
-    print(f"刷新 {issue} 最终比分: {filled}/{len(matches)} 场有值, DB 更新 {updated} 条")
+    return {
+        "issue": actual,
+        "filled": filled,
+        "match_count": len(matches),
+        "updated": updated,
+        "errors": errors,
+    }
+
+
+def _print_refresh(result: dict) -> None:
+    """把 _refresh_scores 的摘要打印出来。"""
+    if result.get("error"):
+        print(result["error"])
+        return
+    for line in result.get("errors") or []:
+        print(line)
+    print(
+        f"刷新 {result['issue']} 最终比分: "
+        f"{result['filled']}/{result['match_count']} 场有值, DB 更新 {result['updated']} 条"
+    )
+
+
+def review_issue(
+    db_path: Path,
+    issue: str,
+    *,
+    refresh: bool,
+    cache_dir: Path | None = None,
+) -> dict:
+    """赛后复盘核心：返回该期命中率统计，不打印，供 CLI 与查询页共用。"""
+    from .store import load_issue_snapshot
+
+    refreshed: dict = {}
+    if refresh:
+        refreshed = _refresh_scores(db_path, issue, cache_dir)
+    analyses = load_issue_snapshot(db_path, issue)
+    done = [a for a in analyses if a.get("final_score")]
+    return {
+        "issue": issue,
+        "match_count": len(analyses),
+        "scored": len(done),
+        "refreshed": refreshed,
+        **_issue_hit_rates(done),
+    }
 
 
 def _issue_hit_rates(analyses: list[dict]) -> dict:
@@ -298,19 +348,20 @@ def _run_review(args: argparse.Namespace) -> int:
         issue = rows[0]["issue"]
     if args.trend:
         if args.refresh:
-            _refresh_scores(db_path, issue, cache_dir)
+            _print_refresh(_refresh_scores(db_path, issue, cache_dir))
         _print_trend(db_path)
         return 0
-    if args.refresh:
-        _refresh_scores(db_path, issue, cache_dir)
+
+    summary = review_issue(db_path, issue, refresh=args.refresh, cache_dir=cache_dir)
+    if summary["refreshed"]:
+        _print_refresh(summary["refreshed"])
     analyses = load_issue_snapshot(db_path, issue)
     done = [a for a in analyses if a.get("final_score")]
-    print(f"复盘 {issue}: 已完成 {len(done)}/{len(analyses)} 场")
+    print(f"复盘 {issue}: 已完成 {summary['scored']}/{summary['match_count']} 场")
     if not done:
         return 0
 
-    rates = _issue_hit_rates(done)
-    rates = _issue_hit_rates(done)
+    rates = summary
     asian_hits, asian_total = rates["asian_hits"], rates["asian_total"]
     total_hits, total_total = rates["total_hits"], rates["total_total"]
     print("-" * 60)
@@ -327,10 +378,63 @@ def _run_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def _app_root() -> Path:
+    """exe 所在目录；开发态为当前目录。cache/data/reports 都挂在它下面。"""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path.cwd()
+
+
+def _default_cache_dir() -> Path:
+    return _app_root() / "cache"
+
+
+def _run_analyze_then_serve(parser: argparse.ArgumentParser) -> int:
+    """exe 双击的默认流程：抓取入库后直接起异动查询服务，并打开查询页。"""
+    # 必须显式给 cache/db 路径，两者都挂 exe 目录：
+    # - cache_dir 为 None 时 Fetcher 没有 cache.root，odds_pages_<期号>.json 加载不到
+    # - db_path 缺省走 Path.cwd()，换个方式启动 exe 就会写到别处去
+    db_path = _app_root() / "data" / "football_analysis.sqlite"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    args = parser.parse_args(
+        [
+            "analyze",
+            "--cache-dir",
+            str(_default_cache_dir()),
+            "--db-path",
+            str(db_path),
+        ]
+    )
+    try:
+        result = _run_analyze(args, open_report=False)
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+        print("\n分析失败，未启动异动查询服务。")
+        if getattr(sys, "frozen", False):
+            input("按回车键退出...")
+        return 1
+    if result:
+        return result
+
+    port = DEFAULT_QUERY_PORT
+    print(f"\n即将启动异动查询服务： http://127.0.0.1:{port}/")
+    print("关闭本窗口或按 Ctrl+C 即可停止服务。\n")
+    try:
+        serve_query(
+            db_path,
+            port=port,
+            open_browser=not args.no_open,
+            reports_dir=Path(args.output_dir),
+        )
+    except KeyboardInterrupt:
+        print("\n已停止查询服务。")
+    return 0
+
+
 def _run_query(args: argparse.Namespace) -> int:
     db_path = _resolve_db_path(args.db_path)
     if args.serve:
-        serve_query(db_path, port=args.port, open_browser=not args.no_open)
+        serve_query(db_path, port=args.port, open_browser=not args.no_open, reports_dir=Path(args.output_dir))
         return 0
     rows = query_movements(
         db_path,
@@ -343,6 +447,7 @@ def _run_query(args: argparse.Namespace) -> int:
         limit=args.limit,
     )
     _print_query_rows(rows)
+    report_links = build_issue_report_index(Path(args.output_dir))
     html = render_query_html(
         rows,
         issues=list_issues(db_path),
@@ -353,6 +458,7 @@ def _run_query(args: argparse.Namespace) -> int:
         attention_only=args.attention_only,
         latest_only=not args.all_runs,
         db_path=str(db_path),
+        report_links=report_links,
     )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -364,19 +470,17 @@ def _run_query(args: argparse.Namespace) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    raw = list(argv) if argv is not None else None
-    if raw is None:
-        import sys
-        raw = sys.argv[1:]
-    if not raw or raw[0] not in {"analyze", "query", "review"}:
-        raw = ["query", "--serve", *raw] if raw else ["query", "--serve"]
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    if not raw:
+        return _run_analyze_then_serve(parser)
+    if raw[0] not in {"analyze", "query", "review"}:
+        raw = ["query", "--serve", *raw]
     args = parser.parse_args(raw)
     if args.command == "query":
         return _run_query(args)
     if args.command == "review":
         return _run_review(args)
     result = _run_analyze(args)
-    import sys
     if getattr(sys, "frozen", False):
         input("\nPress Enter to close this window...")
     return result

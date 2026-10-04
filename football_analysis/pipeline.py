@@ -14,6 +14,11 @@ from .odds import market_implied_from_odds
 from .odds_analysis import analyze_odds
 from .odds_movement import fetch_nowscore_movement
 from .odds_xml import ODDS_XML_URL, company_label, parse_odds_xml
+from .odds_pages import (
+    build_pages_movements,
+    load_odds_pages_raw,
+    parse_odds_pages,
+)
 from .sfc import ISSUE_URL, TRADE_URL, parse_sfc_html
 from .sfc import extract_match_score
 from .team import TEAM_PAGE_URL, parse_team_recent_html
@@ -93,8 +98,14 @@ def analyze_issue(
             use_cache=cache_current_sources,
         )
         odds_map = parse_odds_xml(xml_html)
+        if not odds_map:
+            # 500 会返回合法但空的 <matches/>，不抛异常；不显式提示的话报告会静默缺盘口。
+            odds_error = "odds.xml 返回空 matches（500 未发布本期盘口）"
     except Exception as exc:  # noqa: BLE001
         odds_error = f"odds.xml 不可用：{exc}"
+
+    pages_raw = load_odds_pages_raw(fetcher.cache.root, actual_issue)
+    pages_map = parse_odds_pages(pages_raw)
 
     enriched: list[dict] = []
     needs_detail: list[dict] = []
@@ -161,7 +172,9 @@ def analyze_issue(
                 row["final_score"] = extract_match_score(detail_htmls[row["fixture_id"]])
 
     _attach_titan_h2h(enriched, actual_issue, fetcher, max_workers=max_workers)
-    _attach_odds_movement(enriched, fetcher, max_workers=max_workers)
+    _attach_odds_movement(
+        enriched, fetcher, max_workers=max_workers, pages_raw=pages_raw
+    )
 
     team_ids = {
         row.get("home_id", "")
@@ -177,6 +190,12 @@ def analyze_issue(
     results: list[dict] = []
     for row in enriched:
         odds = odds_map.get(row.get("info_match_id", ""), {})
+        # jczq 失效时 info_match_id 为空，odds.xml 永远匹配不上；单场页产物按 fixture_id 索引。
+        pages = pages_map.get(row.get("fixture_id", ""), {})
+        if pages:
+            merged = dict(odds)
+            merged.update({k: v for k, v in pages.items() if v not in (0.0, "")})
+            odds = merged
         home_id = row.get("home_id", "")
         away_id = row.get("away_id", "")
         analysis = _build_single_analysis(
@@ -279,6 +298,7 @@ def _attach_odds_movement(
     fetcher: Fetcher,
     *,
     max_workers: int,
+    pages_raw: dict | None = None,
 ) -> None:
     by_fixture = {
         str(row.get("fixture_id", "")): row["titan_match_id"]
@@ -321,6 +341,17 @@ def _attach_odds_movement(
                     "_error": str(exc),
                 }
 
+    if pages_raw:
+        from_pages = build_pages_movements(
+            pages_raw,
+            {fid: teams_by_fixture[fid] for fid in teams_by_fixture},
+        )
+        for fixture_id, payload in from_pages.items():
+            current = movements.get(fixture_id) or {}
+            if (current.get("asian") or {}).get("available"):
+                continue
+            movements[fixture_id] = payload
+
     for row in rows:
         payload = movements.get(str(row.get("fixture_id", "")))
         if payload is not None:
@@ -339,6 +370,21 @@ def _total_from_movement(movement: dict | None) -> tuple[float, str, float, floa
     if line <= 0 and not text:
         return None
     return line, text or f"{line:g}", over_water, under_water, "赛前指数"
+
+
+def _asian_from_movement(movement: dict | None) -> tuple[float, str, float, float, str] | None:
+    """odds.xml 无 asian 时，回落到 Nowscore 赛前指数的即时亚盘。
+
+    line_text 与 line 的正负约定相反，这里只取已转成主队视角的 line_display。
+    """
+    current = (((movement or {}).get("asian") or {}).get("current")) or {}
+    line = float(current.get("line") or 0)
+    text = str(current.get("line_display") or "").strip()
+    home_water = float(current.get("home_water") or 0)
+    away_water = float(current.get("away_water") or 0)
+    if not line and not text:
+        return None
+    return line, text, home_water, away_water, "赛前指数"
 
 def _build_single_analysis(
     row: dict,
@@ -382,11 +428,22 @@ def _build_single_analysis(
         asian_text = odds.get("asian_line_text", "")
         asian_home_water = float(odds.get("asian_home_water") or 0)
         asian_away_water = float(odds.get("asian_away_water") or 0)
-    else:
+        asian_source = company_label(odds.get("asian_company") or "")
+    elif row.get("asian_line_text") or row.get("asian_home_water") or row.get("asian_away_water"):
         asian_line = float(row.get("asian_home_line") or 0)
         asian_text = row.get("asian_line_text", "")
         asian_home_water = float(row.get("asian_home_water") or 0)
         asian_away_water = float(row.get("asian_away_water") or 0)
+        asian_source = ""
+    else:
+        fallback = _asian_from_movement(row.get("odds_movement"))
+        if fallback:
+            asian_line, asian_text, asian_home_water, asian_away_water, asian_source = fallback
+        else:
+            asian_line = 0.0
+            asian_text = ""
+            asian_home_water = asian_away_water = 0.0
+            asian_source = ""
     has_asian = bool(asian_text or asian_home_water or asian_away_water)
 
     total_source = ""
@@ -445,6 +502,7 @@ def _build_single_analysis(
             "line_text": asian_text,
             "home_water": asian_home_water,
             "away_water": asian_away_water,
+            "source": asian_source,
         },
         "total": {
             "line": total_line,
