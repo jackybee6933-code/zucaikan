@@ -1,22 +1,19 @@
 """抓取 odds.500.com 单场页的亚指/大小盘，产出 cache/odds_pages_<期号>.json。
 
-两种浏览器模式：
+复用你自己 Chrome 的已验证会话（走 CDP 调试端口）。先完全退出 Chrome，再带调试端口
+启动，然后用 setup_cdp_profile.py 把默认 profile 的 cookie 复制到该 profile 下::
 
-**--cdp（推荐，复用你自己的 Chrome）**
-先完全退出 Chrome，再带调试端口重启，然后::
-
-    python tools/scrape_odds_pages.py --issue 26135 --cdp http://127.0.0.1:9222
-
-脚本只借用你的已验证会话，不会关闭浏览器，也只开一个标签页复用。
-
-**默认（自带 Chromium）**
-脚本自己拉起 Playwright Chromium，撞到 EdgeOne 验证页时需在**那个新窗口**里人工勾选::
-
+    python setup_cdp_profile.py
     python tools/scrape_odds_pages.py --issue 26135
 
-注意：单 IP 抓得太密会触发 EdgeOne「请求过于频繁」限流，脚本默认每页间隔 ``--delay``
-秒并带随机抖动，检测到限流页立即停止。窗口标题带 "Chrome for Testing" 的才是脚本的
-浏览器，和你日常用的 Chrome 互不相通。
+脚本只借用会话，不关闭浏览器，也只开一个标签页复用。撞到 EdgeOne 验证页时，
+在 Chrome 里那个标签页勾选一次即可，脚本会自动继续。
+
+单 IP 抓得太密会触发 EdgeOne「请求过于频繁」限流；脚本默认每页间隔 ``--delay``
+秒并带随机抖动，检测到限流页立即停止。
+
+只做这次改动是因为自带 Chromium 那条路已验证走不通：它没有已验证 cookie，
+实测恒定停在验证页/限流页，且窗口与日常 Chrome 难以分辨、每次都要人工勾选。
 
 依赖 playwright（仅开发期使用，不进 exe）：``pip install playwright && playwright install chromium``
 """
@@ -43,6 +40,7 @@ except ImportError:  # 缺少依赖时也要能 import 本模块
     sync_playwright = None  # type: ignore[assignment]
 
 
+DEFAULT_CDP = "http://127.0.0.1:9222"
 VERIFY_MARK = "Security Verification"
 RATE_LIMIT_MARKS = ("频繁", "过于频繁", "Too Many Requests", "too many requests")
 PAGE_TIMEOUT_MS = 25_000
@@ -71,11 +69,9 @@ EXTRACT_JS = """() => {
 
 BODY_JS = "() => (document.body ? document.body.innerText : '')"
 
-CDP_HINT = """连不上 Chrome 调试端口。请按顺序操作：
-  1) 完全退出 Chrome（窗口关掉还不够，要托盘图标也退出 / 任务管理器无 chrome.exe）
-  2) 用带调试端口的方式启动：
-     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222
-  3) 确认 http://127.0.0.1:9222/json/version 能打开，再重跑本脚本"""
+CDP_HINT = """\u8fde\u4e0d\u4e0a Chrome \u8c03\u8bd5\u7aef\u53e3\u3002\u8bf7\u6309\u987a\u5e8f\u64cd\u4f5c\uff1a
+  1) \u5148\u5b8c\u5168\u9000\u51fa Chrome\uff08\u7a97\u53e3\u5173\u6389\u8fd8\u4e0d\u591f\uff0c\u6258\u76d8\u56fe\u6807\u4e5f\u8981\u9000\uff09
+  2) \u8fd0\u884c  python setup_cdp_profile.py  \u2014\u2014 \u5b83\u4f1a\u590d\u5236\u5df2\u9a8c\u8bc1 cookie \u5e76\u542f\u52a8\u5e26\u8c03\u8bd5\u7aef\u53e3\u7684 Chrome\n  3) \u786e\u8ba4 http://127.0.0.1:9222/json/version \u80fd\u6253\u5f00\uff0c\u518d\u91cd\u8dd1\u672c\u811a\u672c\nCookie \u590d\u5236\u4e0d\u80fd\u7701\uff1a\u6ca1\u5b83\u4f1a\u4e00\u76f4\u5361\u5728\u9a8c\u8bc1\u9875\u3002"""
 
 
 class RateLimited(Exception):
@@ -95,29 +91,16 @@ def log(message: str) -> None:
     print(_safe(message), flush=True)
 
 
-def acquire(pw, args, profile: Path):
-    """返回 (context, page, owned)；owned=False 时不能关闭 context（那是用户的浏览器）。"""
-    if args.cdp:
-        browser = pw.chromium.connect_over_cdp(args.cdp)
-        if not browser.contexts:
-            raise RuntimeError("CDP 连上了但没有可用上下文")
-        context = browser.contexts[0]
-        page = context.new_page()
-        return context, page, False
+def acquire(pw, endpoint: str):
+    """连上已启动的 Chrome，返回 (context, page)。这是唯一模式。
 
-    profile.mkdir(parents=True, exist_ok=True)
-    context = pw.chromium.launch_persistent_context(
-        str(profile),
-        headless=args.headless,
-        viewport={"width": 1280, "height": 900},
-        locale="zh-CN",
-        user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-        ),
-    )
-    page = context.pages[0] if context.pages else context.new_page()
-    return context, page, True
+    context 属于用户，不能关；调用方只负责关自己开的那一个标签页。
+    """
+    browser = pw.chromium.connect_over_cdp(endpoint)
+    if not browser.contexts:
+        raise RuntimeError("CDP 连上了但没有可用上下文")
+    context = browser.contexts[0]
+    return context, context.new_page()
 
 
 def browser_alive(page) -> bool:
@@ -174,9 +157,8 @@ def fetch_page(page, url: str, wait_seconds: float) -> dict:
                 except PWError:
                     pass
                 log("    [!] EdgeOne 验证页。")
-                log("        请切到**新弹出的那个 Chromium 窗口**（标题含 Security Verification），")
-                log("        在里面勾选一次复选框。注意：不是你已经开着的 Chrome —— 两者互不相通。")
-                log("        勾完本脚本会自动继续。")
+                log("        请切到 Chrome 里刚打开的那个标签页（标题 Security Verification），")
+                log("        勾选一次复选框；勾完本脚本会自动继续。")
         elif not title:
             # 还在导航，等下一轮
             settled = 0
@@ -216,13 +198,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--cdp",
-        default="",
-        help="连已启动的 Chrome 调试端口，如 http://127.0.0.1:9222；留空则用自带 Chromium",
+        default=DEFAULT_CDP,
+        help=f"已启动 Chrome 的调试端口，默认 {DEFAULT_CDP}",
     )
     parser.add_argument(
         "--max-seconds", type=float, default=900.0, help="总时长上限（看门狗），默认 900"
     )
-    parser.add_argument("--headless", action="store_true", help="仅自带 Chromium 模式可用")
     args = parser.parse_args(argv)
 
     if sync_playwright is None:
@@ -233,8 +214,7 @@ def main(argv: list[str] | None = None) -> int:
     matches, issue = collect_sfc_matches(args.issue, Fetcher(cache_dir))
     fids = [row["fixture_id"] for row in matches]
     total = len(fids) * len(KINDS)
-    mode = f"CDP {args.cdp}" if args.cdp else "自带 Chromium"
-    log(f"期号 {issue}：{len(fids)} 场，{total} 个页面，浏览器模式：{mode}")
+    log(f"期号 {issue}：{len(fids)} 场，{total} 个页面，Chrome 调试端口：{args.cdp}")
     log(f"页面间隔约 {args.delay:.1f}s，预计耗时 {args.delay * total:.0f}s")
 
     result: dict[str, dict] = {}
@@ -242,14 +222,13 @@ def main(argv: list[str] | None = None) -> int:
 
     with sync_playwright() as pw:
         try:
-            context, page, owned = acquire(pw, args, cache_dir / ".browser-profile")
+            context, page = acquire(pw, args.cdp)
         except PWError as exc:
             log("")
-            log(f"[x] 无法连接浏览器：{str(exc).splitlines()[0][:100]}")
-            if args.cdp:
-                log("")
-                for line in CDP_HINT.splitlines():
-                    log(line)
+            log(f"[x] 无法连接 Chrome 调试端口：{str(exc).splitlines()[0][:100]}")
+            log("")
+            for line in CDP_HINT.splitlines():
+                log(line)
             return 4
 
         deadline = time.time() + args.max_seconds
@@ -285,12 +264,11 @@ def main(argv: list[str] | None = None) -> int:
                     log(f"  [{done:>2}/{total}] {kind}-{fid}: {len(payload['rows'])} 家{note}")
                     time.sleep(args.delay * random.uniform(0.6, 1.4))
         finally:
-            # 只关自己开的；用户的浏览器绝不碰
-            for closer in (lambda: page.close(), lambda: context.close() if owned else None):
-                try:
-                    closer()
-                except PWError:
-                    pass
+            # 只关自己开的那一个标签页；用户的浏览器和其余标签一律不碰
+            try:
+                page.close()
+            except PWError:
+                pass
 
     out = cache_dir / f"odds_pages_{issue}.json"
     out.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
