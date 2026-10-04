@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 
 from .odds import fmt_handicap, handicap_line_to_float, total_line_to_float
@@ -39,6 +40,20 @@ def _status(page: dict) -> str:
     if status:
         return status
     return "ok" if page.get("rows") else "empty"
+
+
+# 盘口每场都在动，产物放太久就可能不是最新；超过该小时数在报告里告警。
+PAGES_STALE_HOURS = 6.0
+
+
+def pages_age_hours(cache_root: str | Path | None, issue: str) -> float | None:
+    """产物距今多少小时；文件不存在或没给 cache 目录时返回 None。"""
+    if not cache_root:
+        return None
+    path = Path(cache_root) / PAGES_FILENAME.format(issue=issue)
+    if not path.exists():
+        return None
+    return max(0.0, (time.time() - path.stat().st_mtime) / 3600)
 
 
 def page_failures(raw: dict) -> list[str]:

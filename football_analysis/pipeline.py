@@ -16,8 +16,10 @@ from .odds_movement import fetch_nowscore_movement
 from .odds_xml import ODDS_XML_URL, company_label, parse_odds_xml
 from .odds_pages import (
     build_pages_movements,
+    PAGES_STALE_HOURS,
     load_odds_pages_raw,
     page_failures,
+    pages_age_hours,
     parse_odds_pages,
 )
 from .sfc import ISSUE_URL, TRADE_URL, parse_sfc_html
@@ -108,12 +110,21 @@ def analyze_issue(
     pages_raw = load_odds_pages_raw(fetcher.cache.root, actual_issue)
     pages_map = parse_odds_pages(pages_raw)
     # 抓取失败与「上游没开盘」是两回事，必须分开报，否则报告会缺盘口却看不出原因
+    pages_warnings: list[str] = []
     failed_pages = page_failures(pages_raw)
-    pages_error = ""
     if failed_pages:
         preview = "、".join(failed_pages[:5])
         more = f" 等 {len(failed_pages)} 个" if len(failed_pages) > 5 else ""
-        pages_error = f"单场页有 {len(failed_pages)} 个页面抓取失败，盘口可能缺失：{preview}{more}"
+        pages_warnings.append(
+            f"单场页有 {len(failed_pages)} 个页面抓取失败，盘口可能缺失：{preview}{more}"
+        )
+    age_hours = pages_age_hours(fetcher.cache.root, actual_issue)
+    if pages_map and age_hours is not None and age_hours > PAGES_STALE_HOURS:
+        pages_warnings.append(
+            f"单场页盘口产物已过去 {age_hours:.0f} 小时"
+            f"（阈值 {PAGES_STALE_HOURS:.0f}h），盘口可能不是最新；"
+            f"重抓：python tools/scrape_odds_pages.py --issue {actual_issue}"
+        )
 
     enriched: list[dict] = []
     needs_detail: list[dict] = []
@@ -125,8 +136,7 @@ def analyze_issue(
             detail["warnings"].append(jczq_error)
         if odds_error:
             detail["warnings"].append(odds_error)
-        if pages_error:
-            detail["warnings"].append(pages_error)
+        detail["warnings"].extend(pages_warnings)
         enrichment = jczq_map.get(row["fixture_id"])
         if enrichment:
             display_time = enrichment["match_time"]
