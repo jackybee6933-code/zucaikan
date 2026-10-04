@@ -66,19 +66,21 @@ python run.py query --serve
 
 ## 独立版 exe
 
-已打包的 Windows 单文件程序位于 `dist/足球胜负彩分析工具.exe`，不依赖本机 Python。把它放到任意可写目录后双击运行，程序会自动抓取最新一期，在同目录的 `cache/` 保存可复用抓取缓存、在 `reports/` 生成报告，并在结束后自动打开浏览器页面。
+已打包的 Windows 单文件程序位于 `dist/足球胜负彩分析工具.exe`，不依赖本机 Python。放到任意可写目录后双击运行，程序会抓取最新一期、入库，并在同目录的 `cache/` 保存可复用抓取缓存、在 `reports/` 生成报告，随后起动异动查询服务并打开浏览器（关闭窗口或 Ctrl+C 停止）。
 
 命令行缺省自动抓取最新一期；也可指定缓存目录或历史期号：
 
 ```powershell
-.\dist\足球胜负彩分析工具.exe --cache-dir .\cache --no-open
+.\dist\足球胜负彩分析工具.exe            # 默认：抓最新一期 → 入库 → 起异动查询服务 → 打开查询页
+
+.\dist\足球胜负彩分析工具.exe analyze --cache-dir .\cache --no-open   # 只分析，不起服务、不开浏览器
 ```
 
 重新打包：
 
 ```powershell
 python -m pip install pyinstaller
-python -m PyInstaller --noconfirm --clean --onefile --console --name "足球胜负彩分析工具" --distpath dist --workpath build --specpath build standalone.py
+python -m PyInstaller --noconfirm "足球胜负彩分析工具.spec"
 ```
 
 ## 归档
