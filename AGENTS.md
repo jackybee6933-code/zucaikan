@@ -12,7 +12,7 @@
 python run.py --cache-dir cache
 ```
 
-运行后会先自动抓取胜负彩最新一期，再在 `reports/` 生成 `md`、`csv`、`json`、`html` 四类报告，并把亚洲盘让球异动写入 `data/football_analysis.sqlite`。查询：`python run.py query --serve`。独立版 Windows 程序位于源码树 `dist/足球胜负彩分析工具.exe`；解压正式归档包后位于压缩包顶层 `足球胜负彩分析工具.exe`，双击后会自动抓取最新一期、入库并打开 HTML 报告。
+运行后会先自动抓取胜负彩最新一期，再在 `reports/` 生成一份 HTML 报告，并把亚洲盘让球异动写入 `data/football_analysis.sqlite`。查询：`python run.py query --serve`。独立版 Windows 程序位于源码树 `dist/足球胜负彩分析工具.exe`；解压正式归档包后位于压缩包顶层 `足球胜负彩分析工具.exe`，双击后会自动抓取最新一期、入库并打开 HTML 报告。
 常用命令：
 
 ```powershell

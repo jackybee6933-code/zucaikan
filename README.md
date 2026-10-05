@@ -104,7 +104,7 @@ football_analysis/
   query_app.py 本地查询服务
   browser_report.py 浏览器报告页 HTML 渲染
   pipeline.py  数据流编排
-  report.py    MD/CSV/JSON/控制台报告
+  report.py    HTML 报告 / 控制台摘要
   main.py      CLI
 docs/
   数据源与限制.md
