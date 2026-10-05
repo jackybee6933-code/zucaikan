@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--no-db", action="store_true", help="不写入本地异动数据库")
     analyze.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
     analyze.add_argument("--narrate", action="store_true", help="调用大模型为变盘异动场次生成解读（需设置 LLM_API_KEY）")
+    analyze.add_argument("--scout", action="store_true", help="对观望场次联网检索伤停/战意等软信息（需 LLM_API_KEY，默认开启检索）")
 
     query = subparsers.add_parser("query", help="查询已入库的变盘异动")
     _add_common_args(query)
@@ -78,7 +79,6 @@ def build_parser() -> argparse.ArgumentParser:
     refresh.add_argument(
         "--cache-dir", default="", help="产物所在目录，缺省用 exe 所在目录下的 cache"
     )
-
     refresh.add_argument("--delay", type=float, default=8.0, help="抓取时页面间隔秒数")
     refresh.add_argument("--cdp", default="http://127.0.0.1:9222", help="Chrome 调试端口")
     refresh.add_argument("--force", action="store_true", help="即使未过期也重抓")
@@ -136,6 +136,11 @@ def _run_analyze(args: argparse.Namespace, *, open_report: bool = True) -> int:
         from .llm import narrate_movements
 
         narrate_movements(analyses)
+
+    if args.scout:
+        from .scout import scout_matches
+
+        scout_matches(analyses)
     print_console(analyses, issue)
     html_path = write_report_files(
         args.output_dir,
@@ -355,7 +360,7 @@ def _run_refresh(args: argparse.Namespace) -> int:
 
     # 不传时跟 app_root，否刹手动跑 exe refresh 会找不到产物
     cache_dir = Path(args.cache_dir) if args.cache_dir else _default_cache_dir()
-
+    issue = args.issue
     if not issue:
         rows = list_issues(_resolve_db_path(args.db_path))
         if not rows:

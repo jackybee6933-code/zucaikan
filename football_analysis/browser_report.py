@@ -454,6 +454,7 @@ def _render_body(analyses: list[dict], issue: str, source_url: str, generated_at
       </div>
       <div id="alert-empty" class="no-alert" hidden>没有符合筛选的异动。</div>
     </section>
+    {_render_scout_section(analyses)}
     <section class="table-section">
       <div class="section-heading">
         <h2>整期推荐</h2>
@@ -653,6 +654,18 @@ td { color: #2b3644; }
 .alert-table tbody tr.narration-row { background: #f6f9ff; }
 .alert-table .narration-row td { padding-top: 0; border-top: 1px dashed var(--line); color: #334155; line-height: 1.7; }
 .narration-label { display: inline-block; margin-right: 8px; padding: 1px 7px; border-radius: 5px; background: #e8efff; color: var(--blue); font-size: 11px; font-weight: 600; white-space: nowrap; }
+.scout-section { margin-top: 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; }
+.scout-card { padding: 12px 16px; border-top: 1px solid var(--line); }
+.scout-card:first-child { border-top: 0; }
+.scout-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.scout-head strong { font-size: 14px; }
+.scout-badge { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.scout-sync { background: var(--green-soft); color: var(--green); }
+.scout-conflict { background: var(--red-soft); color: var(--red); }
+.scout-neutral { background: #eef2f7; color: #475569; }
+.scout-conf { color: var(--muted); font-size: 11px; font-weight: 600; }
+.scout-facts { margin: 8px 0 6px; padding-left: 20px; color: #334155; font-size: 13px; line-height: 1.7; }
+.scout-summary { color: #334155; font-size: 13px; line-height: 1.7; }
 .alert-table .empty-alert td { text-align: center; color: var(--green); background: var(--green-soft); }
 .badge {
   display: inline-block;
@@ -788,3 +801,53 @@ _SCRIPT = """
   applyAlertFilter();
 })();
 """
+
+
+
+def _scout_items(analyses: list[dict]) -> list[dict]:
+    items = [item for item in analyses if item.get("scout")]
+    items.sort(key=lambda item: int(item.get("match_no") or 999))
+    return items
+
+
+def _scout_lean_badge(lean: str) -> str:
+    css = {"支持市场方向": "scout-sync", "与市场方向相反": "scout-conflict"}.get(
+        lean, "scout-neutral"
+    )
+    return f'<span class="scout-badge {css}">{_esc(lean)}</span>'
+
+
+def _render_scout_section(analyses: list[dict]) -> str:
+    items = _scout_items(analyses)
+    if not items:
+        return ""
+    cards: list[str] = []
+    for item in items:
+        scout = item["scout"]
+        facts = "".join(f"<li>{_esc(fact)}</li>" for fact in scout.get("facts") or [])
+        facts_html = f'<ul class="scout-facts">{facts}</ul>' if facts else ""
+        cards.append(
+            f"""
+            <div class="scout-card">
+              <div class="scout-head">
+                <span class="cell-no">{_esc(item.get("match_no"))}</span>
+                <strong>{_esc(item.get("home_team"))} vs {_esc(item.get("away_team"))}</strong>
+                {_scout_lean_badge(str(scout.get("lean") or ""))}
+                <span class="scout-conf">{_esc(scout.get("confidence") or "low")}</span>
+              </div>
+              {facts_html}
+              <div class="scout-summary">{_esc(scout.get("summary") or "")}</div>
+            </div>
+            """
+        )
+    return f"""
+    <section class="scout-section">
+      <div class="section-heading">
+        <div>
+          <h2>软信息补充</h2>
+          <div class="sub">大模型联网检索的伤停 / 战意 / 赛程，未经人工核实，不参与概率计算，也不改变任何推荐。</div>
+        </div>
+      </div>
+      {"".join(cards)}
+    </section>
+    """

@@ -13,6 +13,15 @@ _H2H_ROW_LIMIT = 6
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o-mini"
 
+
+def endpoint_config(*, base_url: str = "", api_key: str = "", model: str = "") -> tuple[str, str, str]:
+    """Shared LLM endpoint resolution from args or LLM_* env vars."""
+    return (
+        (base_url or os.environ.get("LLM_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
+        api_key or os.environ.get("LLM_API_KEY") or "",
+        model or os.environ.get("LLM_MODEL") or DEFAULT_MODEL,
+    )
+
 SYSTEM_PROMPT = """你是一名足球盘口数据分析师，负责把亚盘/大小盘从初盘到即时盘的结构化变化翻译成简短中文解读。
 
 要求：
@@ -141,7 +150,7 @@ def _history_detail(history: dict) -> list[str]:
     return out
 
 
-def _extract_content(payload: dict) -> str:
+def extract_content(payload: dict) -> str:
     choices = payload.get("choices") or []
     if not choices:
         return ""
@@ -160,11 +169,9 @@ class MovementNarrator:
         model: str = "",
         timeout: float = 30.0,
     ) -> None:
-        self.base_url = (
-            base_url or os.environ.get("LLM_BASE_URL") or DEFAULT_BASE_URL
-        ).rstrip("/")
-        self.api_key = api_key or os.environ.get("LLM_API_KEY") or ""
-        self.model = model or os.environ.get("LLM_MODEL") or DEFAULT_MODEL
+        self.base_url, self.api_key, self.model = endpoint_config(
+            base_url=base_url, api_key=api_key, model=model
+        )
         self.timeout = timeout
 
     @property
@@ -192,7 +199,7 @@ class MovementNarrator:
                 timeout=self.timeout,
             )
             response.raise_for_status()
-            text = _extract_content(response.json())
+            text = extract_content(response.json())
         except Exception as exc:  # noqa: BLE001
             print(f"  大模型解读请求失败，已跳过：{exc}")
             return ""
