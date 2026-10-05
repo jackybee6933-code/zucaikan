@@ -51,6 +51,7 @@ python -m unittest discover -s tests       # 测试
 - 跨期趋势：`review --trend` 按期号升序输出亚盘/大小琄命中率与环比变化，作为后续反馈学习的净基线。
 - 裸跑 `python run.py`（即 exe 双击，spec 入口是 run.py）的默认流程：**analyze → 写入 SQLite → 起异动查询服务 → 浏览器打开查询页**，不再直接弹单期 HTML 报告（该报告仍会生成到 reports/）。流程显式传 `--cache-dir` 和 `--db-path`（都挂在 `main._app_root()`，即 exe 所在目录）：前者不传 `Fetcher.cache.root` 为 None 则 `odds_pages_<期号>.json` 加载不到（让球/大小球整体变「无市场」），后者不传会走 `default_db_path()` 的 `Path.cwd()`，换个方式启动 exe 就写到别处。
 - 查询页工具条在「分析报告」旁新增「复盘」按钮（可勾「刷新比分」）：POST `/review` 起后台线程跑 `main.review_issue()`，前端轮询 `/review-status`。复盘核心 `review_issue` / `_refresh_scores` 不打印、只返回结构化结果，CLI 与查询页共用。
+- 查询服务路由契约：`do_GET` **没有 404 兜底**，未知路径会回落到查询页（单页应用式）；`do_POST` 则对未知路径返回 404。`/report/` 空文件名返回 400，路径逃逸被拒（400/404）。上述行为均有集成测试覆盖（tests/test_query_server.py，真起服务打真请求，跑在 daemon 线程里随进程退出回收，因此不需要给 serve_query 加 shutdown 钩子）。
 - 复盘的文案格式化在 `query_app.format_review()`，`run_review()` 调 `main.review_issue()` 并返回可直接展示的文本；闭包内的 `_do_review` 只负责状态与异常。两者均有单元测试（tests/test_review.py）。
 - 当前验证基线（2026-10-04）：109 项单测通过；裸跑流程、查询页复盘按钮、exe（13:29 重新打包）均已实测。历史期可用 `--issue 26129 --cache-dir cache --no-db` 离线重跑；查询页同步更新为 `reports/movement_query.html`。
 - 数据源故障记录（2026-10-04，26135 期）：500 竞彩 `odds.xml` 返回合法但空的 `<matches/>`（上游未发布本期盘口），胜负彩交易页 14 场中仅 4 场有 `data-asian`、欧赔 `data-bjpl` 全空，Nowscore 赛前指数仅 2/14 —— 该期实测欧赔 0/14、让球 4/14、大小球 2/14；接入 `odds_pages` 单场页后升至让球 12/14、大小球 12/14。缺的两场（`1494417` 中国-塔吉克斯坦 2026 友谊赛、`1398668` 卢森堡-保加利亚）在 500 单场页上确认零公司行，等上游开盘即可补齐。空 `odds.xml` 现已显式告警，不再静默出无盘口报告。
