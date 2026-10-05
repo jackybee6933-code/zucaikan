@@ -265,12 +265,9 @@ def _issue_hit_rates(analyses: list[dict]) -> dict:
         asian_rec = odds.get("asian_handicap") or {}
         if asian_rec.get("available") and asian_rec.get("action") in ("主推", "轻仓"):
             line = float((item.get("market", {}).get("asian") or {}).get("home_line") or 0)
-            if line < 0:
-                home_handicap = goal_diff + line
-            elif line > 0:
-                home_handicap = goal_diff - line
-            else:
-                home_handicap = goal_diff
+            # home_line 符号约定：负=主让、正=主受让，两种情况统一为 goal_diff + line。
+            # 受让半球时主队赢或平局都算打出，旧写法在 line>0 时反号，把平局归为未打出。
+            home_handicap = goal_diff + line
             is_home_upper = asian_rec.get("recommended_side") == "主队赢盘"
             win_side = home_handicap if is_home_upper else -home_handicap
             asian_total += 1

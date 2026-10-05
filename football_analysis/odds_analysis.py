@@ -51,7 +51,7 @@ def _two_way_decision(
     # 量上 —— 24 期 / 328 场实测 confidence 上限 0.589，margin 上限 0.178。
     # 不要为了“修主推”而调低这里的阈值：超过轻仓的分档只有 7 场和 5 场，
     # 命中率分别是 71% 和 40%，都是噪声；真调低会把项目最高置信标签
-    # 贴在噪声的子集上。真正携带信号的是 margin，margin>=0.10 比低于其约好 6 个百分点，
+    # 贴在噪声的子集上。真正携带信号的是 margin，margin>=0.10 比低于其约好 7.7 个百分点，
     # 而轻仓档已经用了这个门槛。
     blended_home = 0.85 * home_market_prob + 0.15 * home_model_prob
     final_side = "home" if blended_home >= 0.5 else "away"
