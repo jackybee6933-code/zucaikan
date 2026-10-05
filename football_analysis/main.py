@@ -391,9 +391,10 @@ def _default_cache_dir() -> Path:
 
 def _run_analyze_then_serve(parser: argparse.ArgumentParser) -> int:
     """exe 双击的默认流程：抓取入库后直接起异动查询服务，并打开查询页。"""
-    # 必须显式给 cache/db 路径，两者都挂 exe 目录：
+    # cache / db / reports 三者都必须挂 exe 目录：
     # - cache_dir 为 None 时 Fetcher 没有 cache.root，odds_pages_<期号>.json 加载不到
     # - db_path 缺省走 Path.cwd()，换个方式启动 exe 就会写到别处去
+    # - output_dir 同理，报告与查询页的「分析报告」链接会指到别处
     db_path = _app_root() / "data" / "football_analysis.sqlite"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     args = parser.parse_args(
@@ -403,6 +404,8 @@ def _run_analyze_then_serve(parser: argparse.ArgumentParser) -> int:
             str(_default_cache_dir()),
             "--db-path",
             str(db_path),
+            "--output-dir",
+            str(_app_root() / "reports"),
         ]
     )
     try:

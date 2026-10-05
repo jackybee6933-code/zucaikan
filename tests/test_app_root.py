@@ -60,6 +60,7 @@ class DefaultFlowTests(unittest.TestCase):
             self.assertEqual(
                 Path(args.db_path), root / "data" / "football_analysis.sqlite"
             )
+            self.assertEqual(Path(args.output_dir), root / "reports")
 
     def test_creates_db_parent_directory(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -82,6 +83,15 @@ class DefaultFlowTests(unittest.TestCase):
             _, captured, serve = self._run(root)
             self.assertEqual(
                 Path(serve.call_args.args[0]), Path(captured["args"].db_path)
+            )
+
+    def test_serves_reports_from_app_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "app"
+            root.mkdir()
+            _, captured, serve = self._run(root)
+            self.assertEqual(
+                Path(serve.call_args.kwargs["reports_dir"]), root / "reports"
             )
 
     def test_analyze_failure_stops_before_serving(self):
