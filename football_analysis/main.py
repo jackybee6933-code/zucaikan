@@ -75,7 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
         "refresh", help="按产物年龄决定是否重抓单场页盘口"
     )
     refresh.add_argument("--issue", default="", help="期号；留空则用库里最新一期")
-    refresh.add_argument("--cache-dir", default="cache", help="产物所在目录，缺省 cache")
+    refresh.add_argument(
+        "--cache-dir", default="", help="产物所在目录，缺省用 exe 所在目录下的 cache"
+    )
+
     refresh.add_argument("--delay", type=float, default=8.0, help="抓取时页面间隔秒数")
     refresh.add_argument("--cdp", default="http://127.0.0.1:9222", help="Chrome 调试端口")
     refresh.add_argument("--force", action="store_true", help="即使未过期也重抓")
@@ -350,8 +353,9 @@ def _run_refresh(args: argparse.Namespace) -> int:
 
     from .odds_pages import PAGES_STALE_HOURS, pages_age_hours
 
-    cache_dir = Path(args.cache_dir)
-    issue = args.issue
+    # 不传时跟 app_root，否刹手动跑 exe refresh 会找不到产物
+    cache_dir = Path(args.cache_dir) if args.cache_dir else _default_cache_dir()
+
     if not issue:
         rows = list_issues(_resolve_db_path(args.db_path))
         if not rows:

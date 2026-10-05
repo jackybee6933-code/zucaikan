@@ -103,6 +103,19 @@ class RefreshTests(unittest.TestCase):
             rc = main._run_refresh(_args(self.cache))
         self.assertEqual(rc, 1)
 
+
+    def test_default_cache_dir_follows_app_root(self):
+        """不传 --cache-dir 时要落到 app_root，否则手动跑 exe refresh 找不到产物。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "app"
+            (root / "cache").mkdir(parents=True)
+            _artifact(str(root / "cache"), 0.5)
+            with mock.patch.object(main, "_app_root", return_value=root), \
+                 mock.patch.object(subprocess, "call") as call:
+                rc = main._run_refresh(_args(cache_dir=""))
+            self.assertEqual(rc, 0)
+            call.assert_not_called()   # 新鲜即跳过，不该真的去抓
+
     def test_empty_db_without_issue_is_an_error(self):
         with mock.patch.object(main, "list_issues", return_value=[]):
             rc = main._run_refresh(_args(self.cache, issue=""))
