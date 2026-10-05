@@ -323,7 +323,7 @@ def render_query_html(
     .kind-swing, .kind-watch {{ color: #475569; background: #eef2f7; }}
   .kind-muted {{ background: transparent; }}
   .kind-split {{ margin-top: 4px; color: var(--amber); font-size: 11px; font-weight: 600; line-height: 1.5; cursor: help; }}
-  #split-pop {{ position: fixed; z-index: 40; min-width: 240px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 8px 24px rgba(15, 23, 42, .18); pointer-events: none; }}
+  #split-pop {{ position: fixed; z-index: 40; min-width: 240px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, .82); backdrop-filter: blur(3px); box-shadow: 0 8px 24px rgba(15, 23, 42, .18); pointer-events: none; }}
   #split-pop[hidden] {{ display: none; }}
   .split-card + .split-card {{ margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }}
   .split-card-title {{ margin-bottom: 6px; color: var(--muted); font-size: 11px; font-weight: 600; }}
