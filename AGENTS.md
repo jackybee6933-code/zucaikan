@@ -48,12 +48,13 @@ python -m unittest discover -s tests       # 测试
 - 异动提醒消费亚盘让球初盘/即时盘 + 大小盘初盘/即时盘；欧赔不触发异动提醒。
 - 赛后复盘：`review` 子命令回写最终比分并统计亚盘/大小琄推荐命中率（主推/轻仓口径，走水不计）。
 - 大模型解读（可选）：`analyze --narrate` 对达到关注线的变盘异动调用 OpenAI 兼容接口生成 3-4 句综合解读（先要点近况与当前对手的过去对战，再解读盘口异动），挂在 HTML 异动表行下方；需环境变量 `LLM_API_KEY`（可选 `LLM_BASE_URL`/`LLM_MODEL` 指向 DeepSeek 等），无 Key 或请求失败时静默回退，不影响报告生成。
+- 软信息检索（可选）：`analyze --scout` 对本期「观望」场次（`prediction.action == 观望` 且双方队名齐全）调用 OpenAI 兼容接口的联网检索（请求体 `enable_search`，可用 `LLM_SEARCH=0` 关闭）采集伤停/战意/赛程，强约束返回 JSON（检索不到必须 `found:false`，禁止凭记忆编造），解析失败回退为原文总结 + 倾向「无明确指向」。结果挂在 analysis["scout"]，只在 HTML 报告渲染独立的「软信息补充」区块（带溯源标签与置信度），不进入概率计算、不改动作门禁。无 Key 或请求失败静默跳过。
 - 跨期趋势：`review --trend` 按期号升序输出亚盘/大小琄命中率与环比变化，作为后续反馈学习的净基线。
 - 裸跑 `python run.py`（即 exe 双击，spec 入口是 run.py）的默认流程：**analyze → 写入 SQLite → 起异动查询服务 → 浏览器打开查询页**，不再直接弹单期 HTML 报告（该报告仍会生成到 reports/）。流程显式传 `--cache-dir` 和 `--db-path`（都挂在 `main._app_root()`，即 exe 所在目录）：前者不传 `Fetcher.cache.root` 为 None 则 `odds_pages_<期号>.json` 加载不到（让球/大小球整体变「无市场」），后者不传会走 `default_db_path()` 的 `Path.cwd()`，换个方式启动 exe 就写到别处。
 - 查询页工具条在「分析报告」旁新增「复盘」按钮（可勾「刷新比分」）：POST `/review` 起后台线程跑 `main.review_issue()`，前端轮询 `/review-status`。复盘核心 `review_issue` / `_refresh_scores` 不打印、只返回结构化结果，CLI 与查询页共用。
 - 查询服务路由契约：`do_GET` **没有 404 兜底**，未知路径会回落到查询页（单页应用式）；`do_POST` 则对未知路径返回 404。`/report/` 空文件名返回 400，路径逃逸被拒（400/404）。上述行为均有集成测试覆盖（tests/test_query_server.py，真起服务打真请求，跑在 daemon 线程里随进程退出回收，因此不需要给 serve_query 加 shutdown 钩子）。
 - 复盘的文案格式化在 `query_app.format_review()`，`run_review()` 调 `main.review_issue()` 并返回可直接展示的文本；闭包内的 `_do_review` 只负责状态与异常。两者均有单元测试（tests/test_review.py）。
-- 当前验证基线（2026-10-04）：109 项单测通过；裸跑流程、查询页复盘按钮、exe（13:29 重新打包）均已实测。历史期可用 `--issue 26129 --cache-dir cache --no-db` 离线重跑；查询页同步更新为 `reports/movement_query.html`。
+- 当前验证基线（2026-10-05）：183 项单测通过；裸跑流程、查询页复盘按钮、exe（13:29 重新打包）均已实测。历史期可用 `--issue 26129 --cache-dir cache --no-db` 离线重跑；查询页同步更新为 `reports/movement_query.html`。
 - 数据源故障记录（2026-10-04，26135 期）：500 竞彩 `odds.xml` 返回合法但空的 `<matches/>`（上游未发布本期盘口），胜负彩交易页 14 场中仅 4 场有 `data-asian`、欧赔 `data-bjpl` 全空，Nowscore 赛前指数仅 2/14 —— 该期实测欧赔 0/14、让球 4/14、大小球 2/14；接入 `odds_pages` 单场页后升至让球 12/14、大小球 12/14。缺的两场（`1494417` 中国-塔吉克斯坦 2026 友谊赛、`1398668` 卢森堡-保加利亚）在 500 单场页上确认零公司行，等上游开盘即可补齐。空 `odds.xml` 现已显式告警，不再静默出无盘口报告。
 - titan007 盘口可达性：公开域只有欧赔（`op1/1x2.titan007.com/oddslist/{id}.htm` + `1x2d.titan007.com/{id}.js`）；亚盘与大小盘仅在会员区 `vip.titan007.com/AsianOdds_n.aspx`、`OverDown_n.aspx`，带 session 仍断连。`bf.titan007.com/football/Next_*.htm` 是纯赛程页，无盘口。
 - `odds.500.com/fenxi/*` 单场赔率页（`yazhi-<fid>` 亚指 / `daxiao-<fid>` 大小指数）：`requests` 直连会被腾讯 EdgeOne 拦（先是 JS cookie 挑战，再跳 `TEOCaptchaWidget` 交互验证），但真实浏览器会话可正常打开。`football_analysis/odds_pages.py` 负责把抓取产物（`{"<fixture_id>|<kind>": {"rows": [[cid, 即时主水, 即时盘, 即时客水, 初主水, 初盘, 初客水]]}}`）转成与 `parse_odds_xml` 同构的结构，按 fixture_id 索引（jczq 失效时 `info_match_id` 为空，`odds.xml` 永远匹配不上）。公司优先澳门(cid=5，仅部分页面有)，兜底威廉(cid=293，实测 24/24 覆盖)。

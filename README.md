@@ -38,7 +38,10 @@ python run.py --issue 26120 --cache-dir cache
 --no-cache         不使用缓存
 --no-db            本次不写入本地异动库
 --narrate          为变盘异动场次调用大模型生成解读（需 LLM_API_KEY）
+--scout            对观望场次联网检索伤停/战意等软信息（需 LLM_API_KEY）
 ```
+
+加 `--scout` 会对「观望」场次联网检索伤停、停赛、战意、赛程等软信息，单独渲染成「软信息补充」区块并标注是否与市场方向一致；检索依赖服务商的 `enable_search` 能力（DeepSeek 等支持），接口不认时设 `LLM_SEARCH=0` 关掉。软信息未经人工核实，不参与概率计算，也不改变任何推荐。
 
 启用大模型解读（可选，需 OpenAI 兼容接口的 API Key）：
 
