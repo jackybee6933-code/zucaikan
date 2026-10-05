@@ -58,6 +58,7 @@ python -m unittest discover -s tests       # 测试
 - `odds.500.com/fenxi/*` 单场赔率页（`yazhi-<fid>` 亚指 / `daxiao-<fid>` 大小指数）：`requests` 直连会被腾讯 EdgeOne 拦（先是 JS cookie 挑战，再跳 `TEOCaptchaWidget` 交互验证），但真实浏览器会话可正常打开。`football_analysis/odds_pages.py` 负责把抓取产物（`{"<fixture_id>|<kind>": {"rows": [[cid, 即时主水, 即时盘, 即时客水, 初主水, 初盘, 初客水]]}}`）转成与 `parse_odds_xml` 同构的结构，按 fixture_id 索引（jczq 失效时 `info_match_id` 为空，`odds.xml` 永远匹配不上）。公司优先澳门(cid=5，仅部分页面有)，兜底威廉(cid=293，实测 24/24 覆盖)。
 - 产物需浏览器会话抓取后落盘，程序本身不负责自动刷新；缺失时静默跳过，交给下层兜底。
 - 单场页产物过期同样会静默降级：`pages_age_hours()` 按文件 mtime 判定，超过 `PAGES_STALE_HOURS`(6h) 就在报告告警并给出重抓命令，但**不阻断使用**。阈值取 6h 的依据：26135 实测 11:52 → 14:29（隔 2.6h）异动从 8/14 变到 10/14，2.6 小时就能让三分之一场次的信号翻新。
+- 盘口刷新常态化：`python run.py refresh --issue 26135` 按产物年龄决定是否重抓——尚未过期（≤ `PAGES_STALE_HOURS`）则直接跳过并退出 0，**不需要启动 Chrome**；过期了才启动抓取，且先探测 CDP 端口，不通则打印启动步骤并退 1。`--force` 可强制重抓。抓取本体仍由 `tools/scrape_odds_pages.py` 完成，中途失败不覆盖原产物。
 - 单场页抓取产物的每个页面带 status 字段：ok（拿到公司行）/ empty（页面正常但零公司行 = 上游确实未开盘）/ timeout 与 error（抓取失败）。parse_odds_pages 只信 ok/empty，page_failures() 返回失败页面并在报告中告警——抓取失败不得被当成「上游没开盘」。旧产物无 status 时按有无公司行推断，向后兼容。
 - 刷新工具 `tools/scrape_odds_pages.py`，**唯一模式：CDP**（2026-10-04 验证通过，28 页全量约 4 分钟）：Chrome 136+ 禁止在默认 profile 上开 `--remote-debugging-port`，所以用 `setup_cdp_profile.py` 把默认 profile 的 `Local State` / `Default/Preferences` / `Default/Network/Cookies` 复制到 `%LOCALAPPDATA%/fb-chrome-profile`，再以该目录 + 调试端口启动。复制过去的 EdgeOne 验证 cookie 可用（页面会短暂显示 Security Verification 后**自动通过，无需点击**）。脚本只开一个标签页复用，且**不会关闭用户的浏览器**。
 - 脚本只在完整跑完后写文件，中途限流/断连/超时一律不写；`--delay 8` 起步（默认），带 ±40% 抖动，触发「请求过于频繁」立即停。

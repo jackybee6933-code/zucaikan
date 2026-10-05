@@ -71,6 +71,16 @@ def build_parser() -> argparse.ArgumentParser:
     query.add_argument("--no-open", action="store_true", help="启动查询页时不自动打开浏览器")
     query.add_argument("--refresh-scores", action="store_true", help="先刷新指定期的最终比分再输出")
 
+    refresh = subparsers.add_parser(
+        "refresh", help="按产物年龄决定是否重抓单场页盘口"
+    )
+    refresh.add_argument("--issue", default="", help="期号；留空则用库里最新一期")
+    refresh.add_argument("--cache-dir", default="cache", help="产物所在目录，缺省 cache")
+    refresh.add_argument("--delay", type=float, default=8.0, help="抓取时页面间隔秒数")
+    refresh.add_argument("--cdp", default="http://127.0.0.1:9222", help="Chrome 调试端口")
+    refresh.add_argument("--force", action="store_true", help="即使未过期也重抓")
+    refresh.add_argument("--db-path", default=None, help="仅用于确定期号")
+
     review = subparsers.add_parser("review", help="赛后复盘: 刷新比分并统计推荐命中率")
     _add_common_args(review)
     review.add_argument("--cache-dir", default=None, help="原始页面缓存目录, 缺省不使用缓存")
@@ -333,6 +343,74 @@ def _print_trend(db_path: Path) -> None:
 
 
 
+def _run_refresh(args: argparse.Namespace) -> int:
+    """产物还新就直接返回；过期了才启动抓取。"""
+    import subprocess
+    import urllib.request
+
+    from .odds_pages import PAGES_STALE_HOURS, pages_age_hours
+
+    cache_dir = Path(args.cache_dir)
+    issue = args.issue
+    if not issue:
+        rows = list_issues(_resolve_db_path(args.db_path))
+        if not rows:
+            print("库中暂无数据，先用 analyze 抓取一期。")
+            return 1
+        issue = rows[0]["issue"]
+
+    age = pages_age_hours(cache_dir, issue)
+    if age is None:
+        print(f"{issue} 尚无盘口产物，需要抓取。")
+    elif age <= PAGES_STALE_HOURS:
+        if not args.force:
+            print(
+                f"{issue} 盘口产物是 {age:.1f} 小时前抓的，"
+                f"未超过 {PAGES_STALE_HOURS:.0f}h 阈值，跳过。"
+            )
+            return 0
+        print(f"{issue} 产物仅 {age:.1f} 小时，但 --force 指定重抓。")
+    else:
+        print(
+            f"{issue} 盘口产物已过期 {age:.1f} 小时"
+            f"（阈值 {PAGES_STALE_HOURS:.0f}h），开始重抓。"
+        )
+
+    endpoint = args.cdp.rstrip("/")
+    try:
+        with urllib.request.urlopen(f"{endpoint}/json/version", timeout=5) as resp:
+            resp.read()
+    except OSError:
+        print(f"\n连不上 {endpoint}，请先把 Chrome 启动到调试模式：")
+        print("  1) 完全退出 Chrome（托盘图标也要退）")
+        print("  2) python setup_cdp_profile.py")
+        return 1
+
+    script = Path(__file__).resolve().parent.parent / "tools" / "scrape_odds_pages.py"
+    if not script.is_file():
+        print(f"找不到抓取脚本 {script}")
+        return 2
+
+    cmd = [
+        sys.executable, str(script),
+        "--issue", issue,
+        "--cache-dir", str(cache_dir),
+        "--delay", str(args.delay),
+        "--cdp", endpoint,
+    ]
+    code = subprocess.call(cmd)
+    if code != 0:
+        print(f"\n抓取未完成（退出码 {code}），原产物未被覆盖。")
+        return code
+
+    new_age = pages_age_hours(cache_dir, issue)
+    if new_age is None:
+        print("\u4ea7物仍不存在，请查看上方输出。")
+        return 1
+    print(f"\u5b8c成，产物年龄 {new_age:.1f} 小时。")
+    return 0
+
+
 def _run_review(args: argparse.Namespace) -> int:
     """Compute hit-rate statistics for completed matches of an issue."""
     from .store import load_issue_snapshot
@@ -476,13 +554,15 @@ def main(argv: list[str] | None = None) -> int:
     raw = list(argv) if argv is not None else sys.argv[1:]
     if not raw:
         return _run_analyze_then_serve(parser)
-    if raw[0] not in {"analyze", "query", "review"}:
+    if raw[0] not in {"analyze", "query", "review", "refresh"}:
         raw = ["query", "--serve", *raw]
     args = parser.parse_args(raw)
     if args.command == "query":
         return _run_query(args)
     if args.command == "review":
         return _run_review(args)
+    if args.command == "refresh":
+        return _run_refresh(args)
     result = _run_analyze(args)
     if getattr(sys, "frozen", False):
         input("\nPress Enter to close this window...")
