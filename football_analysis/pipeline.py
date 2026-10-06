@@ -369,6 +369,9 @@ def _attach_odds_movement(
         for fixture_id, payload in from_pages.items():
             current = movements.get(fixture_id) or {}
             if (current.get("asian") or {}).get("available"):
+                # 分歧来自单场页各公司口径，与盘口采用 Nowscore 还是单场页无关，始终保留
+                if payload.get("split"):
+                    current["split"] = payload["split"]
                 continue
             movements[fixture_id] = payload
 
@@ -444,7 +447,7 @@ def _build_single_analysis(
         )
 
     if float(odds.get("asian_home_line") or 0) != 0 or odds.get("asian_line_text"):
-        asian_line = float(odds.get("asian_home_line"))
+        asian_line = float(odds.get("asian_home_line") or 0)
         asian_text = odds.get("asian_line_text", "")
         asian_home_water = float(odds.get("asian_home_water") or 0)
         asian_away_water = float(odds.get("asian_away_water") or 0)
@@ -468,7 +471,7 @@ def _build_single_analysis(
 
     total_source = ""
     if float(odds.get("total_line") or 0) != 0 or odds.get("total_line_text"):
-        total_line = float(odds.get("total_line"))
+        total_line = float(odds.get("total_line") or 0)
         total_text = odds.get("total_line_text", "")
         over_water = float(odds.get("over_water") or 0)
         under_water = float(odds.get("under_water") or 0)

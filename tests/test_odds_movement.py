@@ -1,5 +1,7 @@
 import unittest
+from unittest import mock
 
+from football_analysis import pipeline
 from football_analysis.odds import (
     nowscore_handicap_numeric,
     nowscore_handicap_to_home_line,
@@ -224,6 +226,102 @@ class PrematchMovementTests(unittest.TestCase):
         self.assertFalse(movement["attention"])
         self.assertEqual(movement["level"], "稳定")
 
+
+class PagesSplitRetentionTests(unittest.TestCase):
+    """单场页分歧不得因采用 Nowscore 盘口而丢失。"""
+
+    # [cid, 即时主水, 即时盘, 即时客水, 初主水, 初盘, 初客水]
+    SPLIT_PAGES = {
+        "9|yazhi": {
+            "status": "ok",
+            "rows": [
+                ["5", "0.90", "半球", "0.96", "0.88", "半球", "0.98"],
+                ["293", "0.95", "一球", "0.95", "0.90", "半球/一球", "0.92"],
+            ],
+        }
+    }
+
+    AGREED_PAGES = {
+        "9|yazhi": {
+            "status": "ok",
+            "rows": [
+                ["5", "0.90", "半球", "0.96", "0.88", "半球", "0.98"],
+                ["293", "0.95", "半球", "0.95", "0.90", "半球", "0.92"],
+            ],
+        }
+    }
+
+    def _rows(self):
+        return [
+            {
+                "fixture_id": "9",
+                "titan_match_id": "3001",
+                "home_name": "home",
+                "away_name": "away",
+            }
+        ]
+
+    def _run(self, pages_raw, nowscore):
+        rows = self._rows()
+        with mock.patch.object(pipeline, "fetch_nowscore_movement", return_value=nowscore):
+            pipeline._attach_odds_movement(
+                rows,
+                fetcher=mock.MagicMock(),
+                max_workers=1,
+                pages_raw=pages_raw,
+            )
+        return rows[0]["odds_movement"]
+
+    def test_split_kept_when_nowscore_covers_asian(self):
+        nowscore = {
+            "available": True,
+            "source": "nowscore_prematch",
+            "asian": {"available": True, "initial": {}, "current": {}},
+            "total": {"available": False},
+            "attention": True,
+            "level": "关注",
+            "kind": "升盘",
+            "reasons": ["让球盘升盘"],
+        }
+        movement = self._run(self.SPLIT_PAGES, nowscore)
+        # Nowscore 盘口保留，不被单场页覆盖
+        self.assertEqual(movement["source"], "nowscore_prematch")
+        self.assertTrue(movement["asian"]["available"])
+        self.assertEqual(movement["titan_match_id"], "3001")
+        # 单场页各公司分歧仍保留
+        self.assertEqual(len(movement["split"]), 1)
+        self.assertEqual(movement["split"][0]["market"], "亚盘")
+        self.assertEqual(len(movement["split"][0]["rows"]), 2)
+
+    def test_no_split_added_when_companies_agree(self):
+        nowscore = {
+            "available": True,
+            "source": "nowscore_prematch",
+            "asian": {"available": True, "initial": {}, "current": {}},
+            "total": {"available": False},
+            "attention": False,
+            "level": "稳定",
+            "kind": "",
+            "reasons": [],
+        }
+        movement = self._run(self.AGREED_PAGES, nowscore)
+        self.assertNotIn("split", movement)
+
+    def test_pages_take_over_when_nowscore_missing_asian(self):
+        nowscore = {
+            "available": False,
+            "source": "nowscore_prematch",
+            "asian": {"available": False},
+            "total": {"available": False},
+            "attention": False,
+            "level": "无数据",
+            "kind": "",
+            "reasons": [],
+        }
+        movement = self._run(self.SPLIT_PAGES, nowscore)
+        # 单场页整体接管，盘口与分歧都来自单场页
+        self.assertTrue(movement["asian"]["available"])
+        self.assertEqual(movement["split"][0]["market"], "亚盘")
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,8 @@
 import math
 import unittest
 
+from football_analysis import pipeline
+
 from football_analysis.model import (
     ModelInput,
     blend_with_market,
@@ -81,6 +83,32 @@ class ModelTests(unittest.TestCase):
             self.assertGreaterEqual(prediction["expected_goals_away"], 0.2)
             self.assertLessEqual(prediction["expected_goals_away"], 3.2)
 
+
+class BuildSingleAnalysisMissingLineTests(unittest.TestCase):
+    """盘口文案在但数值键缺失时不能崩（odds.xml 无记录，单场页平手盘被合并逻辑排除）。"""
+
+    def _row(self):
+        return {
+            "match_no": "1",
+            "league": "test",
+            "match_time": "10-06 00:00",
+            "home_team": "home",
+            "away_team": "away",
+        }
+
+    def test_asian_line_text_without_home_line_key(self):
+        analysis = pipeline._build_single_analysis(
+            self._row(), {"asian_line_text": "平手"}, home_record={}, away_record={}
+        )
+        self.assertTrue(analysis["market"]["has_asian"])
+        self.assertAlmostEqual(analysis["market"]["asian"]["home_line"], 0.0)
+
+    def test_total_line_text_without_line_key(self):
+        analysis = pipeline._build_single_analysis(
+            self._row(), {"total_line_text": "3"}, home_record={}, away_record={}
+        )
+        self.assertTrue(analysis["market"]["has_total"])
+        self.assertAlmostEqual(analysis["market"]["total"]["line"], 0.0)
 
 if __name__ == "__main__":
     unittest.main()
