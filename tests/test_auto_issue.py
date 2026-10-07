@@ -1,10 +1,16 @@
 import tempfile
 import unittest
 from unittest import mock
+from datetime import datetime
 
 from football_analysis import pipeline
 from football_analysis.http import Fetcher, PageCache
-from football_analysis.sfc import ISSUE_URL, TRADE_URL, extract_issue
+from football_analysis.sfc import (
+    ISSUE_URL,
+    TRADE_URL,
+    extract_issue,
+    extract_match_score,
+)
 
 
 def sfc_html(issue: str) -> str:
@@ -138,5 +144,43 @@ class AutoLatestTests(unittest.TestCase):
         self.assertTrue(all(call["use_cache"] for call in current_calls))
 
 
+
+
+def _detail_page(score: str, kickoff: str) -> str:
+    return (
+        '<html><head><title>A VS B</title></head><body>'
+        f'<span class="score">{score}</span>'
+        f'<div class="h"><a>2026-2027 欧国联第4轮 {kickoff}</a></div>'
+        "</body></html>"
+    )
+
+
+class ExtractMatchScoreTests(unittest.TestCase):
+    """未开赛页面的比分牌默认是 0 - 0，不能当成终场比分。"""
+
+    def _extract(self, html: str, now: datetime) -> str:
+        with mock.patch("football_analysis.sfc.datetime") as dt:
+            dt.now.return_value = now
+            dt.strptime.side_effect = datetime.strptime
+            return extract_match_score(html)
+
+    def test_unstartedMatchScoreIsDiscarded(self):
+        page = _detail_page("0 - 0", "2026-10-07 02:45")
+        self.assertEqual(self._extract(page, datetime(2026, 10, 6, 22, 0)), "")
+
+    def test_finishedMatchScoreIsKept(self):
+        page = _detail_page("2 - 1", "2026-10-06 02:45")
+        self.assertEqual(self._extract(page, datetime(2026, 10, 6, 22, 0)), "2 - 1")
+
+    def test_zeroZeroAfterKickoffIsKept(self):
+        page = _detail_page("0 - 0", "2026-10-06 02:45")
+        self.assertEqual(self._extract(page, datetime(2026, 10, 6, 22, 0)), "0 - 0")
+
+    def test_missingKickoffTimeFallsBackToScore(self):
+        self.assertEqual(extract_match_score('<span class="score">1 - 0</span>'), "1 - 0")
+
+    def test_malformedScoreIsEmpty(self):
+        page = _detail_page("VS", "2026-10-06 02:45")
+        self.assertEqual(self._extract(page, datetime(2026, 10, 6, 22, 0)), "")
 if __name__ == "__main__":
     unittest.main()

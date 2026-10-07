@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 
 from bs4 import BeautifulSoup
+from datetime import datetime
 
 from .odds import fmt_handicap, handicap_line_to_float, parse_floats, split_csv
 
@@ -111,9 +112,25 @@ def sfc_fetch_url(issue: str | None = None) -> str:
     return ISSUE_URL.format(issue=issue)
 
 def extract_match_score(html: str) -> str:
-    """Extract the current score from a live/detail page, e.g. '2 - 1'. Empty string if not found."""
+    """Extract the final score from a live/detail page, e.g. '2 - 1'. Empty string if not found.
+
+    未开赛页面的比分牌默认就是 0 - 0，直接采信会把没打的比赛当成 0-0 结束。
+    页面正文第一个完整日期时间（如 2026-10-07 02:45）是开赛时间，晚于现在
+    就说明比赛还没打，返回空串。取不到开赛时间时保持原行为。
+    """
     match = re.search(r'class="score"[^>]*>([^<]{0,40})</span>', html)
     if not match:
         return ""
     score = match.group(1).strip()
-    return score if re.fullmatch(r"\d+\s*-\s*\d+", score) else ""
+    if not re.fullmatch(r"\d+\s*-\s*\d+", score):
+        return ""
+    kickoff = re.search(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2})", html)
+    if kickoff:
+        try:
+            starts_at = datetime.strptime(kickoff.group(1), "%Y-%m-%d %H:%M")
+        except ValueError:
+            return score
+        # 页面时间是东八区，本机时区须与之一致
+        if starts_at > datetime.now():
+            return ""
+    return score

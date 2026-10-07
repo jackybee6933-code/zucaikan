@@ -6,6 +6,7 @@ import traceback
 from pathlib import Path
 
 from .http import Fetcher
+from .ev_ledger import save_ev_ledger
 from .pipeline import analyze_issue
 from .query_app import serve_query
 from .report_index import build_issue_report_index
@@ -89,6 +90,11 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--cache-dir", default=None, help="原始页面缓存目录, 缺省不使用缓存")
     review.add_argument("--refresh", action="store_true", help="复盘前先重新抓取最终比分")
     review.add_argument("--trend", action="store_true", help="跨期命中率趋势统计")
+
+    ledger = subparsers.add_parser("ledger", help="ev 差排序快照的对账（只记录，不改推荐）")
+    _add_common_args(ledger)
+    ledger.add_argument("--trend", action="store_true", help="跨期对账趋势")
+    ledger.add_argument("--limit", type=int, default=10, help="列出排序最高的前 N 场")
     return parser
 
 
@@ -159,6 +165,14 @@ def _run_analyze(args: argparse.Namespace, *, open_report: bool = True) -> int:
             source_url,
         )
         print(f"  DB:   {saved['db_path']}  run_id={saved['run_id']}  异动={saved['attention_count']}/{saved['match_count']}")
+        ledger_n = save_ev_ledger(
+            _resolve_db_path(args.db_path),
+            analyses,
+            issue,
+            saved["run_id"],
+            saved["captured_at"],
+        )
+        print(f"  对账: ev 排序快照 {ledger_n} 场（只记录，不改推荐）")
     return 0
 
 
@@ -192,9 +206,12 @@ def _refresh_scores(db_path: Path, issue: str, cache_dir: Path | None) -> dict:
     errors: list[str] = []
     for row in matches:
         try:
+            # 赛前缓存的详情页会一直显示 0 - 0，必须踢掉重抓才能拿到赛后比分
+            cache_key = f"detail:{row['fixture_id']}"
+            fetcher.cache.evict(cache_key)
             html = fetcher.fetch(
                 LIVE_DETAIL_URL.format(fixture_id=row["fixture_id"]),
-                cache_key=f"detail:{row['fixture_id']}",
+                cache_key=cache_key,
             )
             scores[str(row["match_no"])] = extract_match_score(html)
         except Exception as exc:
@@ -346,6 +363,69 @@ def _print_trend(db_path: Path) -> None:
     return None
 
 
+
+
+def _print_ledger_trend(db_path: Path) -> None:
+    """跨期对账趋势：ev 差排序快照的前瞻性命中率（走水不计）。"""
+    from .ev_ledger import ledger_trend
+
+    trend = ledger_trend(db_path)
+    print("=" * 70)
+    print("ev 差排序对账趋势（只记录，未参与生产推荐）")
+    print("=" * 70)
+    if not trend:
+        print("暂无快照。analyze 时会自动写入 ev_ledger。")
+        return
+    print(f"{'期号':<8}{'已对账':<10}{'命中':<10}{'命中率':<8}")
+    agg_hits = agg_decided = 0
+    for row in trend:
+        decided = row["settled"] - row["push"]
+        rate = f"{row['hits'] / decided * 100:.0f}%" if decided else "-"
+        print(f"{row['issue']:<8}{decided:<10}{row['hits']:<10}{rate:<8}")
+        agg_hits += row["hits"]
+        agg_decided += decided
+    print("-" * 70)
+    total_rate = f"{agg_hits / agg_decided * 100:.0f}%" if agg_decided else "-"
+    print(f"{'合计':<8}{agg_decided:<10}{agg_hits:<10}{total_rate:<8}")
+    print("口径: 按 |ev_home - ev_away| 排序选边，走水不计入命中率")
+
+
+def _run_ledger(args: argparse.Namespace) -> int:
+    """ev 差排序快照的对账：列出一期排序并对账比分；--trend 看跨期。"""
+    from .ev_ledger import reconcile_ledger, top_picks
+
+    db_path = _resolve_db_path(args.db_path)
+    if args.trend:
+        _print_ledger_trend(db_path)
+        return 0
+
+    issue = args.issue
+    if not issue:
+        rows = list_issues(db_path)
+        if not rows:
+            print("库中暂无数据，先用 analyze 抓取一期。")
+            return 1
+        issue = rows[0]["issue"]
+
+    summary = reconcile_ledger(db_path, issue)
+    print("=" * 70)
+    print(f"{issue} ev 差排序快照（只记录，不改生产推荐）")
+    print("=" * 70)
+    decided = summary["settled"] - summary["push"]
+    if decided:
+        rate = summary["hits"] / decided * 100
+        print(f"已对账 {summary['settled']}/{summary['rows']} 场，命中 {summary['hits']}/{decided}（{rate:.0f}%），走水 {summary['push']} 不计")
+    else:
+        print(f"快照 {summary['rows']} 场，尚无比分可对账（先用 review --issue {issue} --refresh 刷新比分）")
+    print("-" * 70)
+    for pick in top_picks(db_path, issue, limit=args.limit):
+        side = {"home": "主队", "away": "客队", "": "-"}[pick["picked_side"]]
+        score = pick["final_score"] or "-"
+        print(
+            f"{pick['match_no']:>2} {pick['home_team']} vs {pick['away_team']} "
+            f"ev差 {pick['ev_diff']:+.2f}  选边 {side}  盘口 {pick['asian_line_text']}  比分 {score}"
+        )
+    return 0
 
 
 def _run_refresh(args: argparse.Namespace) -> int:
@@ -560,7 +640,7 @@ def main(argv: list[str] | None = None) -> int:
     raw = list(argv) if argv is not None else sys.argv[1:]
     if not raw:
         return _run_analyze_then_serve(parser)
-    if raw[0] not in {"analyze", "query", "review", "refresh"}:
+    if raw[0] not in {"analyze", "query", "review", "refresh", "ledger"}:
         raw = ["query", "--serve", *raw]
     args = parser.parse_args(raw)
     if args.command == "query":
@@ -569,6 +649,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_review(args)
     if args.command == "refresh":
         return _run_refresh(args)
+    if args.command == "ledger":
+        return _run_ledger(args)
     result = _run_analyze(args)
     if getattr(sys, "frozen", False):
         input("\nPress Enter to close this window...")

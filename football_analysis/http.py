@@ -62,6 +62,11 @@ class PageCache:
         self.root.mkdir(parents=True, exist_ok=True)
         self.key_path(key).write_bytes(raw)
 
+    def evict(self, key: str) -> None:
+        if not self.root:
+            return
+        self.key_path(key).unlink(missing_ok=True)
+
 
 def _is_challenge(raw: bytes) -> bool:
     """EdgeOne 等反爬返回 200 但内容是 JS 挑战脚本，不含页面数据。"""

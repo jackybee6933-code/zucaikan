@@ -21,6 +21,7 @@ python run.py --issue 26129 --cache-dir cache --no-db   # 用缓存重跑历史�
 python run.py query --serve                # 异动查询页（自选 8765 附近空闲端口）
 python run.py review --issue 26120 [--refresh]   # 赛后复盘：刷新比分并统计推荐命中率
 python run.py review --trend [--refresh]    # 跨期命中率趋势
+python run.py ledger --issue 26135          # ev 差排序快照对账（只记录，不改推荐）
 python -m unittest discover -s tests       # 测试
 ```
 
@@ -46,7 +47,8 @@ python -m unittest discover -s tests       # 测试
 - 现役功能：自动抓取最新一期胜负彩、往绩/H2H、泊松模型、欧赔/亚盘/大小盘分析、亚洲盘让球异动提醒、本地 SQLite 异动库、浏览器 HTML 报告、独立 exe。
 - 亚盘/大小球兜底顺序一致：`odds.xml`（`asian`/`dxq`）→ `cache/odds_pages_<期号>.json` 单场页产物 → 胜负彩交易页每行 `data-asian` → Nowscore 赛前指数即时盘，报告标注来源（`澳门`/`威廉`/`赛前指数`），异动提醒仍只消费亚盘。
 - 异动提醒消费亚盘让球初盘/即时盘 + 大小盘初盘/即时盘；欧赔不触发异动提醒。
-- 赛后复盘：`review` 子命令回写最终比分并统计亚盘/大小琄推荐命中率（主推/轻仓口径，走水不计）。
+- 赛后复盘：`review` 子命令回写最终比分并统计亚盘/大小球推荐命中率（主推/轻仓口径，走水不计）。
+- 比分采集门禁（2026-10-07 修复）：500 详情页未开赛时比分牌默认就是 0 - 0，`extract_match_score` 原来照单全收，把没打的比赛当成 0-0 存进 `final_score`，污染复盘命中率。现在取页面正文第一个完整日期时间作开赛时间，晚于现在就返回空串；取不到时保持原行为。配套修了「赛前缓存永不过期」：`PageCache.evict` + `_refresh_scores` 每次先踢掉 `detail:<fid>` 再抓，保证 `review --refresh` 拿的是赛后页面（无缓存目录时 evict 是空操作）。
 - 大模型解读（可选）：`analyze --narrate` 对达到关注线的变盘异动调用 OpenAI 兼容接口生成 3-4 句综合解读（先要点近况与当前对手的过去对战，再解读盘口异动），挂在 HTML 异动表行下方；需环境变量 `LLM_API_KEY`（可选 `LLM_BASE_URL`/`LLM_MODEL` 指向 DeepSeek 等），无 Key 或请求失败时静默回退，不影响报告生成。
 - 软信息检索（可选）：`analyze --scout` 对本期「观望」场次（`prediction.action == 观望` 且双方队名齐全）调用 OpenAI 兼容接口的联网检索（请求体 `enable_search`，可用 `LLM_SEARCH=0` 关闭）采集伤停/战意/赛程，强约束返回 JSON（检索不到必须 `found:false`，禁止凭记忆编造），解析失败回退为原文总结 + 倾向「无明确指向」。结果挂在 analysis["scout"]，只在 HTML 报告渲染独立的「软信息补充」区块（带溯源标签与置信度），不进入概率计算、不改动作门禁。无 Key 或请求失败静默跳过。
 - 跨期趋势：`review --trend` 按期号升序输出亚盘/大小琄命中率与环比变化，作为后续反馈学习的净基线。
@@ -54,7 +56,7 @@ python -m unittest discover -s tests       # 测试
 - 查询页工具条在「分析报告」旁新增「复盘」按钮（可勾「刷新比分」）：POST `/review` 起后台线程跑 `main.review_issue()`，前端轮询 `/review-status`。复盘核心 `review_issue` / `_refresh_scores` 不打印、只返回结构化结果，CLI 与查询页共用。
 - 查询服务路由契约：`do_GET` **没有 404 兜底**，未知路径会回落到查询页（单页应用式）；`do_POST` 则对未知路径返回 404。`/report/` 空文件名返回 400，路径逃逸被拒（400/404）。上述行为均有集成测试覆盖（tests/test_query_server.py，真起服务打真请求，跑在 daemon 线程里随进程退出回收，因此不需要给 serve_query 加 shutdown 钩子）。
 - 复盘的文案格式化在 `query_app.format_review()`，`run_review()` 调 `main.review_issue()` 并返回可直接展示的文本；闭包内的 `_do_review` 只负责状态与异常。两者均有单元测试（tests/test_review.py）。
-- 当前验证基线（2026-10-06）：193 项单测通过；裸跑流程、查询页复盘按钮、exe（21:43 重新打包，含分歧保留与 float(None) 两个修复）均已实测。历史期可用 `--issue 26129 --cache-dir cache --no-db` 离线重跑；查询页同步更新为 `reports/movement_query.html`。
+- 当前验证基线（2026-10-07）：214 项单测通过；裸跑流程、查询页复盘按钮、exe（21:43 重新打包，含分歧保留与 float(None) 两个修复）均已实测。历史期可用 `--issue 26129 --cache-dir cache --no-db` 离线重跑；查询页同步更新为 `reports/movement_query.html`。
 - 数据源故障记录（2026-10-04，26135 期）：500 竞彩 `odds.xml` 返回合法但空的 `<matches/>`（上游未发布本期盘口），胜负彩交易页 14 场中仅 4 场有 `data-asian`、欧赔 `data-bjpl` 全空，Nowscore 赛前指数仅 2/14 —— 该期实测欧赔 0/14、让球 4/14、大小球 2/14；接入 `odds_pages` 单场页后升至让球 12/14、大小球 12/14。缺的两场（`1494417` 中国-塔吉克斯坦 2026 友谊赛、`1398668` 卢森堡-保加利亚）在 500 单场页上确认零公司行，等上游开盘即可补齐。空 `odds.xml` 现已显式告警，不再静默出无盘口报告。
 - titan007 盘口可达性：公开域只有欧赔（`op1/1x2.titan007.com/oddslist/{id}.htm` + `1x2d.titan007.com/{id}.js`）；亚盘与大小盘仅在会员区 `vip.titan007.com/AsianOdds_n.aspx`、`OverDown_n.aspx`，带 session 仍断连。`bf.titan007.com/football/Next_*.htm` 是纯赛程页，无盘口。
 - `odds.500.com/fenxi/*` 单场赔率页（`yazhi-<fid>` 亚指 / `daxiao-<fid>` 大小指数）：`requests` 直连会被腾讯 EdgeOne 拦（先是 JS cookie 挑战，再跳 `TEOCaptchaWidget` 交互验证），但真实浏览器会话可正常打开。`football_analysis/odds_pages.py` 负责把抓取产物（`{"<fixture_id>|<kind>": {"rows": [[cid, 即时主水, 即时盘, 即时客水, 初主水, 初盘, 初客水]]}}`）转成与 `parse_odds_xml` 同构的结构，按 fixture_id 索引（jczq 失效时 `info_match_id` 为空，`odds.xml` 永远匹配不上）。公司优先澳门(cid=5，仅部分页面有)，兜底威廉(cid=293，实测 24/24 覆盖)。
@@ -66,8 +68,8 @@ python -m unittest discover -s tests       # 测试
 - 脚本只在完整跑完后写文件，中途限流/断连/超时一律不写；`--delay 8` 起步（默认），带 ±40% 抖动，触发「请求过于频繁」立即停。限流是 IP 级的：2026-10-06 实测一小时内连抓两期共 56 页后，EdgeOne 从「自动通过」降级为要求人工勾选的交互验证，复制的 cookie 兜不住——此时应停手改天再抓，不要干等（每页 120s 超时 × 28 页 ≈ 一小时纯等待）。
 - 零盘口场次（如 1494417、1398668）是**上游没开盘的正常结果**：页面标题已是真实赔率页但公司行为空，此时等 `SETTLE_POLLS` 拍让 JS 渲染后即返回空，不要当成失败空转到超时。
 - 异动检测同样吃单场页：`build_pages_movements` 把初盘/即时盘转成与 Nowscore 同构的结构，在 Nowscore 赛前指数缺失的场次兜底（26135 实测异动从 0/14 升到 8/14）。
-- **命中率现状（2026-10-06 实测，25 期 / 349 场 / 亚盘 328 场有盘口）**：修正主受让符号 bug 后亚盘 31/49 = 63.3%（n=49，95%CI 约 50%~77%，仍排除不了 50%）。**始终跟融合概率、不设门槛是 63.2%（307 场，±5.4pp）**，与现有门槛的 65.3% 在统计上无差异——现有 confidence/margin 门禁未证明带来收益，只把可下注场次从 307 压到 49。融合权重 0.85/0.15 也非最优：Brier 在模型权重 0.65 处最低（0.2327 vs 当前 0.2430，纯模型 0.2374 优于纯市场 0.2500），但调权重后命中率横在 62%~67% 不动，说明门禁吃不到这份信息。
-- **待验证候选：按 `ev_home - ev_away` 期望值差排序**（有理论依据，n=120 时 68.3% ±8.3pp，是 3 种候选中形态最稳的）。**2026-10-05 决定暂不改动生产逻辑**，等新比赛数据沉淀后做前瞻性对账——在 3 种策略 × 多个 N = 10 个比较点里挑最优必然带乐观偏差，回头看同一批 307 场无法证伪。届时应锁定单一候选、每期只记录不调参。
+- **命中率现状（2026-10-06 实测，25 期 / 349 场 / 亚盘 328 场有盘口）**：修正主受让符号 bug 后亚盘 31/49 = 63.3%（n=49，95%CI 约 50%~77%，仍排除不了 50%）。**始终跟融合概率、不设门槛是 63.2%（307 场，±5.4pp）**，与现有门槛的 65.3% 在统计上无差异——现有 confidence/margin 门禁未证明带来收益，只把可下注场次从 307 压到 49。融合权重 0.85/0.15 也非最优：Brier 在模型权重 0.65 处最低（0.2327 vs 当前 0.2430，纯模型 0.2374 优于纯市场 0.2500），但调权重后命中率横在 62%~67% 不动，说明门禁吃不到这份信息。**该基线混过假比分**：复盘前若详情页是赛前缓存的，`final_score` 会被写成占位 0-0（见下条「比分采集门禁」），2026-10-07 体检发现 26129-26136 的历史 run 共 506 条假 0-0；最新 run 里只有 26135/26136 中招并已修复（26135 重抓后 8/14 已完成），26129-26134 的最新 run 无假数据，修复后 `review --trend` 合计为亚盘 30/48 = 62%。
+- **待验证候选：按 `ev_home - ev_away` 期望值差排序**（有理论依据，n=120 时 68.3% ±8.3pp，是 3 种候选中形态最稳的）。**2026-10-05 决定暂不改动生产逻辑**，等新比赛数据沉淀后做前瞻性对账——在 3 种策略 × 多个 N = 10 个比较点里挑最优必然带乐观偏差，回头看同一批 307 场无法证伪。届时应锁定单一候选、每期只记录不调参。**已落地为 `ev_ledger` 前瞻性对账（2026-10-07）**：`analyze` 时把每期 |ev_home - ev_away| 快照冻结入库（`football_analysis/ev_ledger.py`，`ev_ledger` 表跟 `issue_runs` 同一 run_id），`python run.py ledger --issue <期号>` 用真实比分对账并按 ev 差排序列出，`ledger --trend` 出跨期净基线（走水不计），符号口径与 `_issue_hit_rates` 一致。快照在 analyze 时写、比分在复盘时回填，**不参与任何生产门禁**。首个诚实样本：26135 = 2/7（29%，n=7 纯噪声），26136 未开赛。
 - **主推档当前不可达，且不要为“修主推”而调低阈值**：`_two_way_decision` 的 `blended = 0.85*市场概率 + 0.15*模型概率`，而亚盘/大小球水位天然接近平衡，市场概率实测仅 0.51~0.60，85% 权重压在这个几乎常数的量上 —— 25 期 / 349 场实测 confidence 上限 0.589、margin 上限 0.178，而主推门槛是 0.65 / 0.28，**两个市场都从未触发过**。超过轻仓的分档只有 7 场和 5 场，命中率分别 71% 和 40%，全是噪声；Kendall tau = +0.03，confidence 与命中率几乎无相关。真正携带信号的是 margin（≥0.10 比低于其好约 7.7 个百分点），而轻仓档已经用了这个门槛。tests/test_main_tier.py 把这个事实钉住了。
 - 盘口分歧提示：单场页各公司即时盘口差距 >= `SPLIT_WATCH`(0.5) 时，`build_pages_movements` 在 movement 里写 `split` 数据块列表：`[{"market": "大小球", "picked": "293", "rows": [{"cid", "name", "initial", "current"}]}]`，保留页面原有公司顺序。查询页「类型」列显示「盘口分歧」四字，鼠标悬停弹出 `#split-pop` 卡片，按市场分块列出「公司 / 初盘 → 即时」，报告实际采用的那家（`picked`）即时盘口加粗。弹层用 `position: fixed` + JS 定位，避开 `.table-scroll` 的 overflow 裁剪；内容放 `<template>` 由 JS 注入，天然规避属性转义问题。
 - 盘口分歧只要有对应期的单场页产物（`cache/odds_pages_<期号>.json`）就始终挂载：`_attach_odds_movement` 里，单场页算出的 `split` 不再因 Nowscore 覆盖亚盘而被丢弃（2026-10-06 修复，tests/test_odds_movement.py `PagesSplitRetentionTests`）。前提是产物存在——exe 双击不会自动抓单场页，新期需 `python run.py refresh --issue <期号>`（走 Chrome CDP）才有分歧数据。

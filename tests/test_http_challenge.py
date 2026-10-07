@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-from football_analysis.http import Fetcher, _is_challenge
+from football_analysis.http import Fetcher, PageCache, _is_challenge
 
 
 CHALLENGE_BODY = (
@@ -40,5 +40,20 @@ class ChallengeGuardTests(unittest.TestCase):
             self.assertEqual(fetcher.cache.load("k2", "html"), "<html>ok</html>")
 
 
+
+
+class PageCacheEvictTests(unittest.TestCase):
+    def test_evict_removes_cached_page(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = PageCache(tmp)
+            cache.save("detail:1", b"<html>old</html>")
+            cache.evict("detail:1")
+            self.assertIsNone(cache.load("detail:1", "html"))
+
+    def test_evict_missing_key_is_noop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = PageCache(tmp)
+            cache.evict("never:saved")  # 不存在也不报错
+            self.assertIsNone(cache.load("never:saved", "html"))
 if __name__ == "__main__":
     unittest.main()
