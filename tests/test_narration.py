@@ -1,4 +1,6 @@
 import unittest
+import os
+from unittest import mock
 
 from football_analysis.browser_report import render_browser_html
 from football_analysis.llm import MovementNarrator, build_prompt, narrate_movements
@@ -118,9 +120,10 @@ class BuildPromptTest(unittest.TestCase):
 
 class NarratorTest(unittest.TestCase):
     def test_disabled_without_key(self):
-        narrator = MovementNarrator(api_key="")
-        self.assertFalse(narrator.enabled)
-        self.assertEqual(narrator.narrate(_analysis()), "")
+        with mock.patch.dict(os.environ, {}, clear=True):
+            narrator = MovementNarrator(api_key="")
+            self.assertFalse(narrator.enabled)
+            self.assertEqual(narrator.narrate(_analysis()), "")
 
     def test_enabled_with_key(self):
         self.assertTrue(MovementNarrator(api_key="secret").enabled)

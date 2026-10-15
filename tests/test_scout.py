@@ -1,4 +1,6 @@
 import unittest
+import os
+from unittest import mock
 
 from football_analysis.browser_report import render_browser_html
 from football_analysis.llm import endpoint_config
@@ -79,9 +81,10 @@ class ParseScoutTextTest(unittest.TestCase):
 
 class MatchScoutTest(unittest.TestCase):
     def test_disabled_without_key(self):
-        scout = MatchScout(api_key="")
-        self.assertFalse(scout.enabled)
-        self.assertEqual(scout.scout(_analysis()), {})
+        with mock.patch.dict(os.environ, {}, clear=True):
+            scout = MatchScout(api_key="")
+            self.assertFalse(scout.enabled)
+            self.assertEqual(scout.scout(_analysis()), {})
 
     def test_endpoint_config_from_args(self):
         base, key, model = endpoint_config(
