@@ -72,9 +72,16 @@ def parse_sfc_html(html: str, source_url: str = "") -> list[dict]:
         match_time = ""
         if row.find("td", class_="td-endtime"):
             match_time = row.find("td", class_="td-endtime").get_text(" ", strip=True)
-        league = row.find("td", class_="td-evt").get_text(" ", strip=True) if row.find(
-            "td", class_="td-evt"
-        ) else ""
+        league = ""
+        league_color = ""
+        evt_cell = row.find("td", class_="td-evt")
+        if evt_cell:
+            league = evt_cell.get_text(" ", strip=True)
+            # 500 联赛标签是内联背景色（跨期固定），抄到报告页
+            evt_link = evt_cell.find("a")
+            if evt_link:
+                bg = re.search(r"background\s*:\s*(#[0-9A-Fa-f]{6})", str(evt_link.get("style") or ""))
+                league_color = bg.group(1) if bg else ""
 
         rows.append(
             {
@@ -86,6 +93,7 @@ def parse_sfc_html(html: str, source_url: str = "") -> list[dict]:
                 if row.find("td", class_="td-no")
                 else "",
                 "league": league,
+                "league_color": league_color,
                 "match_time": match_time,
                 "home_team": home_team,
                 "away_team": away_team,

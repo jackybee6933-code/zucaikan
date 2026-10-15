@@ -21,6 +21,7 @@ from .odds_pages import (
     page_failures,
     pages_age_hours,
     parse_odds_pages,
+    shuju_text,
 )
 from .sfc import ISSUE_URL, TRADE_URL, parse_sfc_html
 from .sfc import extract_match_score
@@ -74,6 +75,7 @@ def analyze_issue(
     *,
     fetcher: Fetcher | None = None,
     max_workers: int = 4,
+    team_read: bool = False,
 ) -> tuple[list[dict], str, str]:
     fetcher = fetcher or Fetcher()
     matches, actual_issue = collect_sfc_matches(issue, fetcher)
@@ -150,6 +152,7 @@ def analyze_issue(
                     "home_name": enrichment["home_name"],
                     "away_name": enrichment["away_name"],
                     "league": enrichment["league"] or row["league"],
+                    "league_color": enrichment.get("league_color") or row.get("league_color") or "",
                     "match_date": enrichment["match_date"],
                     "match_time": display_time,
                     "match_no_display": enrichment["match_no"],
@@ -225,7 +228,16 @@ def analyze_issue(
             away_record=records.get(away_id, {}),
         )
         analysis["final_score"] = row.get("final_score", "")
+        analysis["fixture_id"] = str(row.get("fixture_id") or "")
         results.append(analysis)
+    if team_read and results:
+        # 大模型读球队资料给倾向（只展示，不进概率/门禁）；没有 key 时静默跳过。
+        from .llm import enrich_team_reads
+
+        page_texts = [
+            shuju_text(pages_raw, str(row.get("fixture_id") or "")) for row in enriched
+        ]
+        enrich_team_reads(results, page_texts=page_texts)
     return results, actual_issue, ISSUE_URL.format(issue=actual_issue)
 
 def _attach_titan_h2h_schedules(rows: list[dict], issue: str, fetcher: Fetcher, *, max_workers: int) -> None:
@@ -547,6 +559,7 @@ def _build_single_analysis(
         "match_no": row.get("match_no", ""),
         "jczq_no": row.get("match_no_display", ""),
         "league": row.get("league", ""),
+        "league_color": row.get("league_color", ""),
         "match_time": row.get("match_time", ""),
         "home_team": home_team,
         "away_team": away_team,

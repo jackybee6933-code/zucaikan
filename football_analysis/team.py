@@ -40,7 +40,6 @@ class TeamRecord:
 
     def to_dict(self) -> dict:
         payload = asdict(self)
-        payload.pop("rows", None)
         payload["points_per_game"] = (
             (self.wins * 3 + self.draws) / self.matches if self.matches else 0.0
         )

@@ -1,9 +1,22 @@
 from __future__ import annotations
 
 from bs4 import BeautifulSoup
+import re
 
 
 JCZQ_URL = "https://trade.500.com/jczq/?playid=312&g=2"
+
+
+def _evt_color(row) -> str:
+    """500 赛事栏的联赛标签是内联背景色（跨期固定），取出来供报告页沿用。"""
+    cell = row.find("td", class_="td-evt")
+    if not cell:
+        return ""
+    link = cell.find("a")
+    if not link:
+        return ""
+    bg = re.search(r"background\s*:\s*(#[0-9A-Fa-f]{6})", str(link.get("style") or ""))
+    return bg.group(1) if bg else ""
 
 
 def parse_jczq_html(html: str) -> dict[str, dict]:
@@ -31,6 +44,7 @@ def parse_jczq_html(html: str) -> dict[str, dict]:
             "home_name": home_name,
             "away_name": away_name,
             "league": str(row.get("data-simpleleague") or "").strip(),
+            "league_color": _evt_color(row),
             "match_no": str(row.get("data-matchnum") or "").strip(),
             "match_date": str(row.get("data-matchdate") or "").strip(),
             "match_time": str(row.get("data-matchtime") or "").strip(),

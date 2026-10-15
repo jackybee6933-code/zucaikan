@@ -192,6 +192,14 @@ def _badge(level: str) -> str:
     return f'<span class="badge badge-{css}">{_esc(level)}</span>'
 
 
+def _league_badge(league: str, color: str) -> str:
+    """500 赛事栏配色：有颜色走实心标签，没颜色退回纯文本。"""
+    name = _esc(league)
+    if not color:
+        return name
+    return f'<span class="league-badge" style="background:{color};">{name}</span>'
+
+
 def _sorted_matches(analyses: list[dict]) -> list[dict]:
     return sorted(analyses, key=lambda item: int(item.get("match_no") or 0))
 
@@ -313,7 +321,7 @@ def _render_alert_rows(analyses: list[dict]) -> str:
                   {_badge(level)}
                 </div>
                 <strong>{_esc(item.get("home_team"))} vs {_esc(item.get("away_team"))}</strong>
-                <div class="muted">{_esc(item.get("league"))} · {_esc(item.get("match_time"))}</div>
+                <div class="muted">{_league_badge(item.get("league"), item.get("league_color"))} · {_esc(item.get("match_time"))}</div>
               </td>
               <td class="score-cell">{_esc(item.get("final_score") or "未开赛")}</td>
 <td class="kind-cell">{_kind_badge(kind, muted=_kind_muted(item))}</td>
@@ -357,7 +365,7 @@ def _render_summary_rows(analyses: list[dict]) -> str:
             f"""
             <tr>
               <td class="cell-no">{_esc(item.get('match_no'))}</td>
-              <td>{_esc(item.get('league'))}</td>
+              <td>{_league_badge(item.get('league'), item.get('league_color'))}</td>
               <td class="time-cell">{_esc(item.get('match_time'))}</td>
               <td><strong>{_esc(item.get('home_team'))} vs {_esc(item.get('away_team'))}</strong></td>
               <td>{_esc(_rec_cell(odds.get('asian_handicap'), '主队赢盘'))}</td>
@@ -383,7 +391,7 @@ def _render_detail_rows(analyses: list[dict]) -> str:
               <td class="cell-no">{_esc(item.get('match_no'))}</td>
               <td>
                 <strong>{_esc(item.get('home_team'))} vs {_esc(item.get('away_team'))}</strong>
-                <div class="muted">{_esc(item.get('league'))}</div>
+                <div class="muted">{_league_badge(item.get('league'), item.get('league_color'))}</div>
               </td>
               <td class="time-cell">{_esc(item.get('match_time'))}</td>
               <td>{_esc(_asian_display(item))}</td>
@@ -678,6 +686,10 @@ td { color: #2b3644; }
 .badge-hot { background: var(--red-soft); color: var(--red); }
 .badge-watch { background: #fff3d6; color: var(--amber); }
 .badge-stable { background: var(--green-soft); color: var(--green); }
+.league-badge {
+  display: inline-block; padding: 1px 7px; border-radius: 4px;
+  color: #fff; font-size: 12px; font-weight: 600; line-height: 1.6;
+}
 .kind {
   display: inline-block;
   padding: 2px 8px;
