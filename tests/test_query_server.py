@@ -13,6 +13,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 from football_analysis.query_app import serve_query
 from football_analysis.store import save_issue_movements
@@ -63,17 +64,17 @@ def _post(url: str, payload: dict):
         return exc.code, exc.read().decode("utf-8", "replace")
 
 
-def _wait_idle(base: str, timeout: float = 30) -> dict:
-    """等复盘任务结束再发下一个，避免用例之间抢 running 锁。"""
+def _wait_idle(base: str, path: str = "/review-status", timeout: float = 30) -> dict:
+    """等后台任务结束再发下一个，避免用例之间抢 running 锁。"""
     deadline = time.time() + timeout
     payload = {}
     while time.time() < deadline:
-        _, body = _get(base + "/review-status")
+        _, body = _get(base + path)
         payload = json.loads(body)
         if not payload["running"]:
             return payload
         time.sleep(0.2)
-    raise AssertionError("复盘任务未在超时前结束")
+    raise AssertionError(f"{path} 任务未在超时前结束")
 
 
 class QueryServerTests(unittest.TestCase):
@@ -140,6 +141,133 @@ class QueryServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("running", json.loads(body))
 
+    def test_refresh_odds_status_is_json(self):
+        status, body = _get(self.base + "/refresh-odds-status")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertIn("running", payload)
+        self.assertFalse(payload["running"])
+
+    def test_post_refresh_odds_requires_issue(self):
+        status, _ = _post(self.base + "/refresh-odds", {})
+        self.assertEqual(status, 400)
+
+    def test_second_refresh_click_returns_busy_without_clobbering(self):
+        """进行中的任务，重复点击返回 busy，且不写脏 error 字段。"""
+        import threading as _t
+
+        release = _t.Event()
+
+        def slow_refresh(issue, db_path=""):
+            release.wait(10)
+            return f"{issue} 刷新完成"
+
+        _wait_idle(self.base, "/refresh-odds-status")
+        try:
+            with mock.patch("football_analysis.query_app.run_refresh_odds", side_effect=slow_refresh):
+                status1, _ = _post(self.base + "/refresh-odds", {"issue": ISSUE})
+                self.assertEqual(status1, 202)
+                # running 在 POST 返回前已置位：立刻查状态必为进行中
+                _, body = _get(self.base + "/refresh-odds-status")
+                self.assertTrue(json.loads(body)["running"])
+                # 第二次点击：busy，不会触发第二次抓取
+                status2, body2 = _post(self.base + "/refresh-odds", {"issue": ISSUE})
+                self.assertEqual(status2, 200)
+                busy = json.loads(body2)
+                self.assertEqual(busy["status"], "busy")
+                # busy 响应不碰 error，正在跑的任务完成时结果干净
+                _, body3 = _get(self.base + "/refresh-odds-status")
+                self.assertEqual(json.loads(body3)["error"], "")
+                release.set()
+                payload = _wait_idle(self.base, "/refresh-odds-status")
+                self.assertEqual(payload["error"], "")
+                self.assertIn("刷新完成", payload["result"])
+        finally:
+            release.set()
+
+    def test_refresh_odds_failure_clears_running_and_reports_error(self):
+        """抓取失败时 error 有值、running 复位，前端据此恢复按钮。"""
+
+        def boom(issue, db_path=""):
+            raise RuntimeError("连接中断")
+
+        _wait_idle(self.base, "/refresh-odds-status")
+        with mock.patch("football_analysis.query_app.run_refresh_odds", side_effect=boom):
+            status, _ = _post(self.base + "/refresh-odds", {"issue": ISSUE})
+            self.assertEqual(status, 202)
+            payload = _wait_idle(self.base, "/refresh-odds-status")
+        self.assertFalse(payload["running"])
+        self.assertIn("连接中断", payload["error"])
+        self.assertEqual(payload["result"], "")
+
+    def test_query_page_has_refresh_odds_button(self):
+        status, body = _get(self.base + "/")
+        self.assertEqual(status, 200)
+        self.assertIn("refresh-odds-btn", body)
+        self.assertIn("/refresh-odds-status", body)
+
+    def test_query_page_has_ai_analyze_button(self):
+        status, body = _get(self.base + "/")
+        self.assertEqual(status, 200)
+        self.assertIn("ai-analyze-btn", body)
+        self.assertIn("/ai-analyze-status", body)
+        refresh_at = body.find('id="refresh-odds-btn"')
+        ai_at = body.find('id="ai-analyze-btn"')
+        self.assertGreater(ai_at, refresh_at)
+        ai_tag = body[ai_at:body.find(">", ai_at)]
+        self.assertNotIn("margin-left", ai_tag)
+
+    # --- /ai-analyze ---
+
+    def test_post_ai_analyze_requires_issue(self):
+        status, _ = _post(self.base + "/ai-analyze", {})
+        self.assertEqual(status, 400)
+
+    def test_ai_analyze_status_is_json(self):
+        status, body = _get(self.base + "/ai-analyze-status")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertIn("running", payload)
+        self.assertFalse(payload["running"])
+
+    def test_ai_analyze_unknown_issue_reports_hint(self):
+        from football_analysis.store import connect, default_db_path
+
+        def fake_run(issue, db_path=""):
+            return f"{issue} 未入库，请先「抓取并入库」再做 AI 分析"
+
+        with mock.patch("football_analysis.query_app.run_ai_analyze", side_effect=fake_run):
+            status, _ = _post(self.base + "/ai-analyze", {"issue": "99999"})
+            self.assertEqual(status, 202)
+            payload = _wait_idle(self.base, "/ai-analyze-status")
+        self.assertFalse(payload["running"])
+        self.assertIn("未入库", payload["result"])
+
+    def test_second_ai_click_returns_busy(self):
+        import threading as _t
+
+        release = _t.Event()
+
+        def slow_ai(issue, db_path=""):
+            release.wait(10)
+            return f"{issue} AI 分析完成"
+
+        _wait_idle(self.base, "/ai-analyze-status")
+        try:
+            with mock.patch("football_analysis.query_app.run_ai_analyze", side_effect=slow_ai):
+                status1, _ = _post(self.base + "/ai-analyze", {"issue": ISSUE})
+                self.assertEqual(status1, 202)
+                _, body = _get(self.base + "/ai-analyze-status")
+                self.assertTrue(json.loads(body)["running"])
+                status2, body2 = _post(self.base + "/ai-analyze", {"issue": ISSUE})
+                self.assertEqual(status2, 200)
+                self.assertEqual(json.loads(body2)["status"], "busy")
+                release.set()
+                payload = _wait_idle(self.base, "/ai-analyze-status")
+                self.assertIn("AI 分析完成", payload["result"])
+        finally:
+            release.set()
+
     # --- /review ---
 
     def test_post_review_requires_issue(self):
@@ -184,6 +312,14 @@ class QueryServerTests(unittest.TestCase):
     def test_unknown_post_path_returns_404(self):
         status, _ = _post(self.base + "/nope", {})
         self.assertEqual(status, 404)
+
+    def test_fetch_dedup_finishes_instead_of_hanging(self):
+        status, _ = _post(self.base + "/fetch", {"issue": ISSUE})
+        self.assertEqual(status, 202)
+        payload = _wait_idle(self.base, "/fetch-status")
+        self.assertEqual(payload["error"], "")
+        self.assertFalse(payload["running"])
+        self.assertIn("不重复入库", payload["result"])
 
 
 if __name__ == "__main__":
