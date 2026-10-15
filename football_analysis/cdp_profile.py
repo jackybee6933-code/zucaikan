@@ -1,0 +1,101 @@
+"""把默认 Chrome profile 的 EdgeOne 验证 cookie 复制到可挂调试端口的独立 profile，并启动 Chrome。
+
+Chrome >= 136 拒绝在默认 user-data-dir 上开 --remote-debugging-port，所以要用独立
+目录；cookie 靠同一 Windows 用户的 DPAPI 解密，复制过去仍可读。对源 profile 只读。
+
+原本是独立脚本 setup_cdp_profile.py；收到包内后 exe 的「刷新盘口分歧」也能直接调用，
+不必再 subprocess 一个 .py（exe 里没有 Python 解释器）。
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import time
+import urllib.request
+from pathlib import Path
+
+SRC = Path.home() / "AppData/Local/Google/Chrome/User Data"
+DST = Path.home() / "AppData/Local/fb-chrome-profile"
+CHROME = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+
+_COPY_FILES = ("Local State", "Default/Preferences", "Default/Network/Cookies")
+
+# 窗口默认待在屏幕外：复制来的 Default/Preferences 带着用户 profile 的
+# app_window_placement，新 Chrome 会开在和用户窗口一模一样的位置和大小
+# （2026-10-12 实测 left=10,top=10,1265x1372），盖住查询页，看起来就像
+# 查询页被顶掉了。屏幕外窗口实测 visibilityState 仍为 visible、定时器不被
+# 节流，抓取不受影响；碰到验证页 scraper 会调 reveal_window 把它挪回来。
+OFFSCREEN_ARGS = ("--window-position=-32000,-32000", "--window-size=1200,900")
+
+
+def copy_profile() -> tuple[list[str], list[str]]:
+    """复制验证所需文件到独立 profile 目录，返回 (已复制, 被锁跳过)。
+
+    默认 Chrome 运行时会独占锁住 Network/Cookies（SQLite），此时复制必失败。
+    目标 profile 里通常已有上次复制的可用 EdgeOne cookie，跳过即可；
+    若 cookie 真过期，Chrome 会停在验证页等人勾选，脚本本来就支持这个分支。
+    """
+    (DST / "Default" / "Network").mkdir(parents=True, exist_ok=True)
+    copied, skipped = [], []
+    for rel in _COPY_FILES:
+        s = SRC / rel
+        if not s.exists():
+            continue
+        try:
+            shutil.copy2(s, DST / rel)
+            copied.append(f"{rel} ({s.stat().st_size / 1024:.0f} KB)")
+        except OSError as exc:
+            skipped.append(f"{rel}（{type(exc).__name__} {exc.errno}，默认 Chrome 正在运行？）")
+    return copied, skipped
+
+
+def _probe(port: int, timeout: float = 2.0) -> bool:
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=timeout):
+            return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def launch_cdp_chrome(port: int = 9222, wait_seconds: float = 10.0) -> tuple[bool, list[str]]:
+    """复制 cookie 并启动带调试端口的 Chrome，等端口就绪。返回 (是否就绪, 日志)。"""
+    copied, skipped = copy_profile()
+    logs = ["已复制:"] + [f"  {c}" for c in copied]
+    if skipped:
+        logs.append("跳过（被默认 Chrome 锁住，沿用已有 cookie）:")
+        logs += [f"  {s}" for s in skipped]
+    proc = subprocess.Popen(
+        [
+            CHROME,
+            f"--remote-debugging-port={port}",
+            "--remote-allow-origins=*",
+            f"--user-data-dir={DST}",
+            "--no-first-run",
+            "--no-default-browser-check",
+            *OFFSCREEN_ARGS,
+            "about:blank",
+        ],
+        shell=False,
+    )
+    logs.append(f"Chrome 已启动 pid={proc.pid}，等待调试端口...")
+    deadline = time.time() + wait_seconds
+    while time.time() < deadline:
+        time.sleep(0.5)
+        if _probe(port):
+            logs.append(f"CDP 就绪: http://127.0.0.1:{port}")
+            return True, logs
+    logs.append("CDP 未就绪，请手动检查。")
+    return False, logs
+
+
+def ensure_cdp_chrome(port: int = 9222) -> str | None:
+    """端口通就直接返回 None；否则启动 Chrome 并等待。失败返回提示。"""
+    if _probe(port):
+        return None
+    ok, logs = launch_cdp_chrome(port)
+    for line in logs:
+        print(line)
+    if ok:
+        return None
+    return f"http://127.0.0.1:{port} 仍连不上，请检查 Chrome 是否被拦截。"

@@ -15,7 +15,7 @@
 只做这次改动是因为自带 Chromium 那条路已验证走不通：它没有已验证 cookie，
 实测恒定停在验证页/限流页，且窗口与日常 Chrome 难以分辨、每次都要人工勾选。
 
-依赖 playwright（仅开发期使用，不进 exe）：``pip install playwright && playwright install chromium``
+只用 stdlib（football_analysis/cdp.py）通过 CDP 远程端口驱动系统 Chrome，不再依赖 playwright，exe 里也能跑。
 """
 from __future__ import annotations
 
@@ -32,12 +32,7 @@ from football_analysis.http import Fetcher
 from football_analysis.pipeline import collect_sfc_matches
 
 
-try:
-    from playwright.sync_api import Error as PWError
-    from playwright.sync_api import sync_playwright
-except ImportError:  # 缺少依赖时也要能 import 本模块
-    PWError = RuntimeError  # type: ignore[assignment,misc]
-    sync_playwright = None  # type: ignore[assignment]
+from football_analysis.cdp import CdpError, CdpPage
 
 
 DEFAULT_CDP = "http://127.0.0.1:9222"
@@ -47,7 +42,8 @@ PAGE_TIMEOUT_MS = 25_000
 POLL_SECONDS = 1.5
 # 真实页面出现后，等这几拍让 JS 把公司行渲染出来；到点仍为空即视为「无盘口」
 SETTLE_POLLS = 3
-KINDS = ("yazhi", "daxiao")
+# shuju（数据分析页）只取球队资料文本，供大模型阅读；放在最后，限流中断时先保住盘口页。
+KINDS = ("yazhi", "daxiao", "shuju")
 
 
 EXTRACT_JS = """() => {
@@ -67,7 +63,45 @@ EXTRACT_JS = """() => {
   return out;
 }"""
 
-BODY_JS = "() => (document.body ? document.body.innerText : '')"
+RATECHECK_JS = (
+    "() => { const t = document.body ? document.body.innerText : '';"
+    " return %s.some(m => t.indexOf(m) >= 0); }" % json.dumps(list(RATE_LIMIT_MARKS))
+)
+
+# 数据分析页：按最近的小标题给表格分组，只留分析用的块（积分排名/交战历史/近期战绩/
+# 未来赛事/平均数据），丢掉登录框、彩票列表、预计阵容这些噪音。
+SHUJU_JS = r"""() => {
+  const HEADS = 'h1,h2,h3,h4,.tit,.sub_title,.teamTitle,.lstit,.maintitle';
+  const heads = Array.from(document.querySelectorAll(HEADS));
+  const labelFor = (el) => {
+    let best = '';
+    for (const h of heads) {
+      if (h.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING) {
+        const t = h.textContent.trim().replace(/\s+/g, ' ');
+        if (t && t.length <= 24) best = t;
+      }
+    }
+    return best;
+  };
+  const SKIP_LABEL = ['用户登录', '免费注册', '忘记密码', '500彩票', '预计阵容'];
+  const out = [];
+  document.querySelectorAll('table').forEach((t) => {
+    const rows = Array.from(t.querySelectorAll('tr'));
+    if (rows.length < 2 || rows.length > 40) return;
+    const label = labelFor(t);
+    if (SKIP_LABEL.some((s) => label.includes(s))) return;
+    const body = rows.map((tr) => tr.textContent.replace(/\s+/g, '')).join('');
+    if (body.includes('用户名') || body.includes('验证码') || body.includes('心水推荐')) return;
+    out.push('## ' + (label || '表'));
+    rows.slice(0, 14).forEach((tr) => {
+      const line = Array.from(tr.children)
+        .map((c) => c.textContent.trim().replace(/\s+/g, ' '))
+        .join(' | ');
+      if (line.replace(/[|\s]/g, '')) out.push(line);
+    });
+  });
+  return out.join('\n').slice(0, 12000);
+}"""
 
 CDP_HINT = """\u8fde\u4e0d\u4e0a Chrome \u8c03\u8bd5\u7aef\u53e3\u3002\u8bf7\u6309\u987a\u5e8f\u64cd\u4f5c\uff1a
   1) \u5148\u5b8c\u5168\u9000\u51fa Chrome\uff08\u7a97\u53e3\u5173\u6389\u8fd8\u4e0d\u591f\uff0c\u6258\u76d8\u56fe\u6807\u4e5f\u8981\u9000\uff09
@@ -91,16 +125,20 @@ def log(message: str) -> None:
     print(_safe(message), flush=True)
 
 
-def acquire(pw, endpoint: str):
-    """连上已启动的 Chrome，返回 (context, page)。这是唯一模式。
+def _write_progress(cache_dir: Path, issue: str, **fields) -> None:
+    """把进度快照写进 cache/.ai_scrape_progress.json，供查询页进度条轮询。
+    只写文件不读文件，写失败（只读目录等）直接忽略，不影响抓取主流程。"""
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path = cache_dir / ".ai_scrape_progress"
+        path.write_text(json.dumps({"issue": issue, **fields}, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
 
-    context 属于用户，不能关；调用方只负责关自己开的那一个标签页。
-    """
-    browser = pw.chromium.connect_over_cdp(endpoint)
-    if not browser.contexts:
-        raise RuntimeError("CDP 连上了但没有可用上下文")
-    context = browser.contexts[0]
-    return context, context.new_page()
+
+def acquire(endpoint: str) -> CdpPage:
+    """连接已开 CDP 端口的 Chrome，开一个新标签页（唯一模式）。"""
+    return CdpPage(endpoint)
 
 
 def browser_alive(page) -> bool:
@@ -108,7 +146,7 @@ def browser_alive(page) -> bool:
     try:
         page.evaluate("() => 1")
         return True
-    except PWError:
+    except CdpError:
         return False
 
 
@@ -121,23 +159,33 @@ STATUS_TIMEOUT = "timeout"
 STATUS_ERROR = "error"
 
 
-def _error(detail: str) -> dict:
-    return {"status": STATUS_ERROR, "rows": [], "detail": detail}
+def _error(detail: str, *, text_mode: bool = False) -> dict:
+    payload = {"status": STATUS_ERROR, "detail": detail}
+    payload["text" if text_mode else "rows"] = "" if text_mode else []
+    return payload
 
 
-def fetch_page(page, url: str, wait_seconds: float) -> dict:
+def fetch_page(
+    page,
+    url: str,
+    wait_seconds: float,
+    *,
+    extract_js: str = EXTRACT_JS,
+    text_mode: bool = False,
+) -> dict:
     """打开单场页取数据；撞到 EdgeOne 验证页则置前窗口并等待人工勾选。
 
-    返回 {"status": ..., "rows": [...]}，status 取上面四个常量之一。
+    返回 {"status": ..., "rows": [...]}；text_mode 下改为 {"status": ..., "text": "..."}
+    （数据分析页只留球队资料文本给大模型读）。status 取上面四个常量之一。
     """
     if not browser_alive(page):
         raise BrowserGone()
     try:
         page.goto(url, timeout=PAGE_TIMEOUT_MS, wait_until="domcontentloaded")
-    except PWError as exc:
+    except CdpError as exc:
         detail = str(exc).splitlines()[0][:90]
         log(f"    [x] 打开失败：{detail}")
-        return _error(detail)
+        return _error(detail, text_mode=text_mode)
 
     deadline = time.time() + wait_seconds
     warned = False
@@ -145,8 +193,8 @@ def fetch_page(page, url: str, wait_seconds: float) -> dict:
     while time.time() < deadline:
         try:
             title = page.title() or ""
-        except PWError as exc:
-            return _error(str(exc).splitlines()[0][:90])
+        except CdpError as exc:
+            return _error(str(exc).splitlines()[0][:90], text_mode=text_mode)
 
         if VERIFY_MARK in title:
             settled = 0
@@ -154,9 +202,11 @@ def fetch_page(page, url: str, wait_seconds: float) -> dict:
                 warned = True
                 try:
                     page.bring_to_front()
-                except PWError:
+                    # 窗口平时在屏幕外，验证页需要人工勾选时挪回屏幕中央
+                    page.reveal_window()
+                except CdpError:
                     pass
-                log("    [!] EdgeOne 验证页。")
+                log("    [!] EdgeOne 验证页（窗口已挪回屏幕中央）。")
                 log("        请切到 Chrome 里刚打开的那个标签页（标题 Security Verification），")
                 log("        勾选一次复选框；勾完本脚本会自动继续。")
         elif not title:
@@ -165,27 +215,26 @@ def fetch_page(page, url: str, wait_seconds: float) -> dict:
         else:
             # 标题已是真实赔率页。只给 JS 渲染留几拍时间。
             try:
-                body = page.evaluate(BODY_JS) or ""
-                if any(mark in body for mark in RATE_LIMIT_MARKS):
+                if page.evaluate(RATECHECK_JS):
                     raise RateLimited(url)
-                rows = page.evaluate(EXTRACT_JS)
+                data = page.evaluate(extract_js)
             except RateLimited:
                 raise
-            except PWError as exc:
-                return _error(str(exc).splitlines()[0][:90])
-            if rows:
-                return {"status": STATUS_OK, "rows": rows}
+            except CdpError as exc:
+                return _error(str(exc).splitlines()[0][:90], text_mode=text_mode)
+            if data:
+                return {"status": STATUS_OK, "text" if text_mode else "rows": data}
             settled += 1
             if settled >= SETTLE_POLLS:
                 # 真实页面已渲染但零公司行 = 上游确实没开盘，属正常结果
-                return {"status": STATUS_EMPTY, "rows": []}
+                return {"status": STATUS_EMPTY, "text" if text_mode else "rows": "" if text_mode else []}
 
         # 等待期间页面可能因勾选而重载，不能用 page.wait_for_timeout（会抛），
         # 也不该在循环里做别的 Playwright 调用，纯 sleep 最稳。
         time.sleep(POLL_SECONDS)
 
     # 等到超时仍未拿到真实页面，多半是没人勾验证
-    return {"status": STATUS_TIMEOUT, "rows": []}
+    return {"status": STATUS_TIMEOUT, "text" if text_mode else "rows": "" if text_mode else []}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -204,73 +253,109 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--max-seconds", type=float, default=900.0, help="总时长上限（看门狗），默认 900"
     )
+    parser.add_argument(
+        "--kinds",
+        nargs="+",
+        choices=list(KINDS),
+        default=None,
+        help="只抓指定页种；不传则抓全部 KINDS（默认 yazhi daxiao shuju）",
+    )
     args = parser.parse_args(argv)
 
-    if sync_playwright is None:
-        log("缺少 playwright：pip install playwright && playwright install chromium")
-        return 2
-
     cache_dir = Path(args.cache_dir)
-    matches, issue = collect_sfc_matches(args.issue, Fetcher(cache_dir))
+    _write_progress(cache_dir, args.issue, phase="collect", total=0, done=0, failed=0)
+    try:
+        matches, issue = collect_sfc_matches(args.issue, Fetcher(cache_dir))
+    except Exception:
+        _write_progress(cache_dir, args.issue, phase="collect_error", total=0, done=0, failed=0)
+        raise
     fids = [row["fixture_id"] for row in matches]
-    total = len(fids) * len(KINDS)
+    active_kinds = args.kinds or list(KINDS)
+    total = len(fids) * len(active_kinds)
     log(f"期号 {issue}：{len(fids)} 场，{total} 个页面，Chrome 调试端口：{args.cdp}")
     log(f"页面间隔约 {args.delay:.1f}s，预计耗时 {args.delay * total:.0f}s")
 
     result: dict[str, dict] = {}
     done = 0
+    failed = 0
+    _write_progress(cache_dir, issue, phase="scrape", total=total, done=0, failed=0)
 
-    with sync_playwright() as pw:
-        try:
-            context, page = acquire(pw, args.cdp)
-        except PWError as exc:
-            log("")
-            log(f"[x] 无法连接 Chrome 调试端口：{str(exc).splitlines()[0][:100]}")
-            log("")
-            for line in CDP_HINT.splitlines():
-                log(line)
-            return 4
+    try:
+        page = acquire(args.cdp)
+    except CdpError as exc:
+        log("")
+        log(f"[x] 无法连接 Chrome 调试端口：{str(exc).splitlines()[0][:100]}")
+        log("")
+        for line in CDP_HINT.splitlines():
+            log(line)
+        return 4
 
-        deadline = time.time() + args.max_seconds
+    deadline = time.time() + args.max_seconds
+    try:
+        for fid in fids:
+            for kind in active_kinds:
+                page_no = done + 1
+                if time.time() > deadline:
+                    log("")
+                    log(f"[!] 超过总时长 {args.max_seconds}s，中止（未写入文件）。")
+                    _write_progress(cache_dir, issue, phase="aborted", total=total, done=page_no - 1, failed=failed, reason="timeout")
+                    return 5
+                url = f"https://odds.500.com/fenxi/{kind}-{fid}.shtml"
+                text_mode = kind == "shuju"
+                try:
+                    payload = fetch_page(
+                        page,
+                        url,
+                        args.wait,
+                        extract_js=SHUJU_JS if text_mode else EXTRACT_JS,
+                        text_mode=text_mode,
+                    )
+                except BrowserGone:
+                    log("")
+                    log("[!] 浏览器已断开（多半是被关掉了），中止（未写入文件）。")
+                    log("    重跑前请先重新启动带调试端口的 Chrome，且中途不要关闭窗口。")
+                    _write_progress(cache_dir, issue, phase="aborted", total=total, done=page_no - 1, failed=failed, reason="browser_gone")
+                    return 4
+                except RateLimited:
+                    log("")
+                    log("[!] 触发 EdgeOne「请求过于频繁」限流，已停止（未写入文件）。")
+                    log("    等几十分钟再跑，或调大 --delay。")
+                    _write_progress(cache_dir, issue, phase="aborted", total=total, done=page_no - 1, failed=failed, reason="rate_limited")
+                    return 3
+                except CdpError as exc:
+                    log("")
+                    log(f"[!] 浏览器中断：{str(exc).splitlines()[0][:90]}")
+                    log("    未写入文件，重新运行即可。")
+                    _write_progress(cache_dir, issue, phase="aborted", total=total, done=page_no - 1, failed=failed, reason="cdp_error")
+                    return 4
+                done += 1
+                failed += 1 if payload.get("status") not in (STATUS_OK, STATUS_EMPTY) else 0
+                result[f"{fid}|{kind}"] = payload
+                st = payload.get("status")
+                note = "" if st == STATUS_OK else f"  <{st}>"
+                if text_mode:
+                    log(f"  [{done:>2}/{total}] {kind}-{fid}: {len(payload.get('text') or '')} 字{note}")
+                else:
+                    log(f"  [{done:>2}/{total}] {kind}-{fid}: {len(payload.get('rows') or [])} 家{note}")
+                _write_progress(cache_dir, issue, phase="scrape", total=total, done=done, failed=failed, last=f"{kind}-{fid}")
+                time.sleep(args.delay * random.uniform(0.6, 1.4))
+    finally:
+        # 只关自己开的那一个标签页；用户的浏览器和其余标签一律不碰
         try:
-            for fid in fids:
-                for kind in KINDS:
-                    done += 1
-                    if time.time() > deadline:
-                        log("")
-                        log(f"[!] 超过总时长 {args.max_seconds}s，中止（未写入文件）。")
-                        return 5
-                    url = f"https://odds.500.com/fenxi/{kind}-{fid}.shtml"
-                    try:
-                        payload = fetch_page(page, url, args.wait)
-                    except BrowserGone:
-                        log("")
-                        log("[!] 浏览器已断开（多半是被关掉了），中止（未写入文件）。")
-                        log("    重跑前请先重新启动带调试端口的 Chrome，且中途不要关闭窗口。")
-                        return 4
-                    except RateLimited:
-                        log("")
-                        log("[!] 触发 EdgeOne「请求过于频繁」限流，已停止（未写入文件）。")
-                        log("    等几十分钟再跑，或调大 --delay。")
-                        return 3
-                    except PWError as exc:
-                        log("")
-                        log(f"[!] 浏览器中断：{str(exc).splitlines()[0][:90]}")
-                        log("    未写入文件，重新运行即可。")
-                        return 4
-                    result[f"{fid}|{kind}"] = payload
-                    st = payload.get("status")
-                    note = "" if st == STATUS_OK else f"  <{st}>"
-                    log(f"  [{done:>2}/{total}] {kind}-{fid}: {len(payload['rows'])} 家{note}")
-                    time.sleep(args.delay * random.uniform(0.6, 1.4))
-        finally:
-            # 只关自己开的那一个标签页；用户的浏览器和其余标签一律不碰
-            try:
-                page.close()
-            except PWError:
-                pass
+            page.close()
+        except CdpError:
+            pass
 
     out = cache_dir / f"odds_pages_{issue}.json"
+    # 只抓了部分页种（--kinds）时，与已有产物合并，避免覆盖 yazhi/daxiao 数据。
+    if args.kinds and out.exists():
+        try:
+            existing = json.loads(out.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                existing.update(result)
+                result = existing
+        except (json.JSONDecodeError, OSError):
+            pass  # 旧产物损坏则只用新数据
     out.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
     ok = sum(1 for page in result.values() if page.get("status") == STATUS_OK)
     empty = sum(1 for page in result.values() if page.get("status") == STATUS_EMPTY)
@@ -278,7 +363,14 @@ def main(argv: list[str] | None = None) -> int:
            if page.get("status") not in (STATUS_OK, STATUS_EMPTY)]
     log("")
     log(f"落盘 {out}")
-    log(f"有盘口 {ok}   上游无盘口 {empty}   抓取失败 {len(bad)}")
+    log(f"成功 {ok}   上游无数据 {empty}   抓取失败 {len(bad)}（含 shuju 资料页）")
+    _write_progress(cache_dir, issue, phase="done", total=total, done=done, failed=len(bad))
+    # 等几秒让查询页轮询到「完成」态，再清掉进度文件
+    time.sleep(5)
+    try:
+        (cache_dir / ".ai_scrape_progress").unlink(missing_ok=True)
+    except OSError:
+        pass
     if bad:
         log("以下页面抓取失败（已带 status 标记，下游会忽略并告警，不会当成「无盘口」）：")
         for key in bad:
