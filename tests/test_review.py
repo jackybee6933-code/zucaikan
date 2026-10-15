@@ -56,9 +56,9 @@ ITEMS = [
 
 # 亚盘分母 = 1,2,3,4,6 = 5；大小球分母 = 1,2,4,5 = 4。
 # 两者刻意不同，用来验证「观望」是按市场分别排除的，而不是一刀切。
-EXPECTED = {"issue": "26135", "match_count": 7, "scored": 6,
+EXPECTED = {"issue": "26135", "match_count": 7, "scored": 6, "run_id": 1,
             "asian_hits": 2, "asian_total": 5, "total_hits": 2, "total_total": 4}
-TEXT = "26135 已完成 6/7 场 · 亚盘 2/5 (40%) · 大小球 2/4 (50%)"
+TEXT = "26135 已完成 6/7 场（run #1） · 亚盘 2/5 (40%) · 大小球 2/4 (50%)"
 
 
 def _seed(tmp: str, issue: str = "26135") -> Path:
@@ -105,6 +105,21 @@ class ReviewIssueTests(unittest.TestCase):
                 review_issue(_seed(tmp), "26135", refresh=False)["refreshed"], {}
             )
 
+    def test_empty_refresh_score_does_not_clobber_real_score(self):
+        """复盘抓到空比分（未开赛/失败）时不得冲掉已有真比分。"""
+        from unittest import mock
+        from football_analysis import main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _seed(tmp)
+            # 场次 1 已有真比分 3-1；模拟复盘只拿到空串
+            with mock.patch.object(main, "_refresh_scores", return_value={"issue": "26135", "filled": 0, "match_count": 7, "updated": 0, "errors": []}):
+                review_issue(db, "26135", refresh=True, cache_dir=None)
+            from football_analysis.store import query_movements
+            rows = query_movements(db, latest_only=True)
+            first = next(r for r in rows if r["match_no"] == "1")
+            self.assertEqual(first["final_score"], "3-1")
+
 
 class FormatReviewTests(unittest.TestCase):
     def test_formats_hits_and_percentages(self):
@@ -124,6 +139,14 @@ class FormatReviewTests(unittest.TestCase):
         )
         self.assertIn("亚盘 1/3 (33%)", text)
         self.assertIn("大小球 2/3 (67%)", text)
+
+    def test_appends_refresh_errors(self):
+        text = format_review(
+            {"issue": "26135", "scored": 0, "match_count": 14,
+             "asian_hits": 0, "asian_total": 0, "total_hits": 0, "total_total": 0,
+             "refreshed": {"error": "网络失败", "errors": ["场次 1"]}}
+        )
+        self.assertIn("比分刷新失败：网络失败；场次 1", text)
 
 
 class RunReviewTests(unittest.TestCase):

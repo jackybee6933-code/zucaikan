@@ -12,6 +12,7 @@ from .query_app import serve_query
 from .report_index import build_issue_report_index
 from .open_browser import open_in_chrome
 from .query_report import render_query_html
+from .store import list_leagues
 from .report import print_console, write_report_files
 from .store import default_db_path, list_issues, query_movements, save_issue_movements
 from .store import update_match_scores
@@ -58,6 +59,11 @@ def build_parser() -> argparse.ArgumentParser:
     analyze.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
     analyze.add_argument("--narrate", action="store_true", help="调用大模型为变盘异动场次生成解读（需设置 LLM_API_KEY）")
     analyze.add_argument("--scout", action="store_true", help="对观望场次联网检索伤停/战意等软信息（需 LLM_API_KEY，默认开启检索）")
+    analyze.add_argument(
+        "--team-read",
+        action="store_true",
+        help="读 500 数据分析页的球队资料，用大模型给出亚盘赢盘倾向（需 LLM_API_KEY，只展示不进决策）",
+    )
 
     query = subparsers.add_parser("query", help="查询已入库的变盘异动")
     _add_common_args(query)
@@ -137,6 +143,7 @@ def _run_analyze(args: argparse.Namespace, *, open_report: bool = True) -> int:
         args.issue,
         fetcher=fetcher,
         max_workers=args.workers,
+        team_read=bool(getattr(args, "team_read", False)),
     )
     if args.narrate:
         from .llm import narrate_movements
@@ -216,7 +223,9 @@ def _refresh_scores(db_path: Path, issue: str, cache_dir: Path | None) -> dict:
             scores[str(row["match_no"])] = extract_match_score(html)
         except Exception as exc:
             errors.append(f"  {row['match_no']} 场次比分抓取失败: {exc}")
-    updated = update_match_scores(db_path, actual, scores)
+    # 只写非空比分：空串意味着未开赛或抓取失败，写回会冲掉已有真比分
+    filled_scores = {no: s for no, s in scores.items() if s}
+    updated = update_match_scores(db_path, actual, filled_scores)
     filled = sum(1 for v in scores.values() if v)
     return {
         "issue": actual,
@@ -249,17 +258,22 @@ def review_issue(
 ) -> dict:
     """赛后复盘核心：返回该期命中率统计，不打印，供 CLI 与查询页共用。"""
     from .store import load_issue_snapshot
+    from .store import connect
 
     refreshed: dict = {}
     if refresh:
         refreshed = _refresh_scores(db_path, issue, cache_dir)
     analyses = load_issue_snapshot(db_path, issue)
     done = [a for a in analyses if a.get("final_score")]
+    conn = connect(db_path)
+    run_id = conn.execute("SELECT MAX(run_id) FROM issue_runs WHERE issue = ?", (issue,)).fetchone()[0]
+    conn.close()
     return {
         "issue": issue,
         "match_count": len(analyses),
         "scored": len(done),
         "refreshed": refreshed,
+        "run_id": run_id,
         **_issue_hit_rates(done),
     }
 
@@ -472,19 +486,31 @@ def _run_refresh(args: argparse.Namespace) -> int:
         print("  2) python setup_cdp_profile.py")
         return 1
 
-    script = Path(__file__).resolve().parent.parent / "tools" / "scrape_odds_pages.py"
+    script = _app_root() / "tools" / "scrape_odds_pages.py"
+    if not script.is_file():
+        script = Path(__file__).resolve().parent.parent / "tools" / "scrape_odds_pages.py"
     if not script.is_file():
         print(f"找不到抓取脚本 {script}")
         return 2
 
-    cmd = [
-        sys.executable, str(script),
-        "--issue", issue,
-        "--cache-dir", str(cache_dir),
-        "--delay", str(args.delay),
-        "--cdp", endpoint,
-    ]
-    code = subprocess.call(cmd)
+    # exe 里 sys.executable 是 exe 本身，subprocess 跑不了 .py；
+    # 抓取脚本已不依赖 playwright，直接 import 加载即可。
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("scrape_odds_pages", script)
+    if spec is None or spec.loader is None:
+        print(f"无法加载抓取脚本 {script}")
+        return 2
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    code = mod.main(
+        [
+            "--issue", issue,
+            "--cache-dir", str(cache_dir),
+            "--delay", str(args.delay),
+            "--cdp", endpoint,
+        ]
+    )
     if code != 0:
         print(f"\n抓取未完成（退出码 {code}），原产物未被覆盖。")
         return code
@@ -618,6 +644,7 @@ def _run_query(args: argparse.Namespace) -> int:
     html = render_query_html(
         rows,
         issues=list_issues(db_path),
+        leagues=list_leagues(db_path, args.issue),
         issue=args.issue,
         team=args.team,
         level=args.level,
