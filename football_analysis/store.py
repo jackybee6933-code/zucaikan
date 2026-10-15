@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS match_movements (
     captured_at TEXT NOT NULL,
     match_no TEXT NOT NULL DEFAULT '',
     league TEXT NOT NULL DEFAULT '',
+    league_color TEXT NOT NULL DEFAULT '',
     match_time TEXT NOT NULL DEFAULT '',
     home_team TEXT NOT NULL DEFAULT '',
     away_team TEXT NOT NULL DEFAULT '',
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS match_movements (
     asian_rec TEXT NOT NULL DEFAULT '',
     payload_json TEXT NOT NULL DEFAULT '',
     final_score TEXT NOT NULL DEFAULT '',
+    team_read TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(run_id) REFERENCES issue_runs(run_id)
 );
 
@@ -131,6 +133,33 @@ def _line_text(side: dict) -> str:
     return line
 
 
+def _load_prev_splits(conn: sqlite3.Connection, issue: str, run_id: int) -> dict[str, list[dict]]:
+    """取上一 run 的公司盘口分歧快照，供新 run 继承。
+
+    split 只在「刷新盘口分歧」时由单场页产物生成；普通抓取走网络不读产物，
+    新 run 会缺失 split，而查询页只展示最新 run——不继承的话盘口分歧会消失。
+    """
+    prev = conn.execute(
+        """
+        SELECT m.match_no, m.payload_json
+        FROM match_movements m
+        WHERE m.issue = ? AND m.run_id < ?
+          AND m.payload_json LIKE '%split%'
+        ORDER BY m.run_id DESC
+        """,
+        (issue, run_id),
+    ).fetchall()
+    splits: dict[str, list[dict]] = {}
+    for match_no, payload_json in prev:
+        if match_no in splits:
+            continue
+        movement = (json.loads(payload_json or "{}") or {}).get("odds_movement") or {}
+        block = movement.get("split")
+        if isinstance(block, list) and block:
+            splits[match_no] = block
+    return splits
+
+
 def save_issue_movements(
     db_path: str | Path,
     analyses: list[dict],
@@ -152,9 +181,17 @@ def save_issue_movements(
             (issue, captured, source_url, len(analyses), attention_count),
         )
         run_id = int(cur.lastrowid)
+        # split（公司间盘口分歧）来自单场页产物，只在「刷新盘口分歧」时生成；
+        # 普通抓取走网络不读产物，新 run 会没有 split。继承上一 run 的 split，
+        # 避免查询页只看最新 run 时盘口分歧「消失」。
+        prev_splits = _load_prev_splits(conn, issue, run_id)
         rows = []
         for item in analyses:
             movement = item.get("odds_movement") or {}
+            if prev_splits and not movement.get("split"):
+                inherited = prev_splits.get(str(item.get("match_no") or ""))
+                if inherited:
+                    movement["split"] = inherited
             asian = movement.get("asian") or {}
             initial = asian.get("initial") or {}
             current = asian.get("current") or {}
@@ -168,6 +205,7 @@ def save_issue_movements(
                     captured,
                     str(item.get("match_no") or ""),
                     str(item.get("league") or ""),
+                    str(item.get("league_color") or ""),
                     str(item.get("match_time") or ""),
                     str(item.get("home_team") or ""),
                     str(item.get("away_team") or ""),
@@ -188,17 +226,23 @@ def save_issue_movements(
                     _asian_rec(item),
                     json.dumps(snapshot, ensure_ascii=False),
                     str(item.get("final_score") or ""),
+                    (
+                        json.dumps(item.get("team_read"), ensure_ascii=False)
+                        if item.get("team_read")
+                        else ""
+                    ),
                 )
             )
         conn.executemany(
             """
             INSERT INTO match_movements (
-                run_id, issue, captured_at, match_no, league, match_time,
+                run_id, issue, captured_at, match_no, league, league_color, match_time,
                 home_team, away_team, titan_match_id, attention, level,
                 direction, lean, kind, reason, initial_line, current_line,
                 initial_home_water, initial_away_water, current_home_water,
-                current_away_water, line_change, asian_rec, payload_json, final_score
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                current_away_water, line_change, asian_rec, payload_json, final_score,
+                team_read
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
         )
@@ -211,6 +255,37 @@ def save_issue_movements(
             "match_count": len(analyses),
             "attention_count": attention_count,
         }
+    finally:
+        conn.close()
+
+
+def list_leagues(db_path: str | Path, issue: str = "") -> list[str]:
+    """League names for the filter dropdown; limited to one issue when given."""
+    conn = connect(db_path)
+    try:
+        if issue:
+            rows = conn.execute(
+                "SELECT DISTINCT league FROM match_movements WHERE issue = ? AND league <> '' ORDER BY league",
+                (issue,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT DISTINCT league FROM match_movements WHERE league <> '' ORDER BY league"
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+    finally:
+        conn.close()
+
+
+def latest_captured_at(db_path: str | Path, issue: str) -> str | None:
+    """Return the most recent captured_at for an issue, or None if it has no runs."""
+    conn = connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT MAX(captured_at) FROM issue_runs WHERE issue = ?",
+            (issue,),
+        ).fetchone()
+        return row[0] if row and row[0] else None
     finally:
         conn.close()
 
@@ -298,6 +373,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     existing = {row["name"] for row in cursor.fetchall()}
     if "final_score" not in existing:
         conn.execute("ALTER TABLE match_movements ADD COLUMN final_score TEXT NOT NULL DEFAULT ''")
+    if "league_color" not in existing:
+        conn.execute("ALTER TABLE match_movements ADD COLUMN league_color TEXT NOT NULL DEFAULT ''")
+    if "team_read" not in existing:
+        conn.execute("ALTER TABLE match_movements ADD COLUMN team_read TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 def rebuild_analyses_from_db(db_path: str | Path, issue: str) -> list[dict]:
@@ -330,6 +409,7 @@ def rebuild_analyses_from_db(db_path: str | Path, issue: str) -> list[dict]:
                 analyses.append({
                     "match_no": row["match_no"],
                     "league": row["league"],
+                    "league_color": row["league_color"],
                     "match_time": row["match_time"],
                     "home_team": row["home_team"],
                     "away_team": row["away_team"],
@@ -352,6 +432,7 @@ def rebuild_analyses_from_db(db_path: str | Path, issue: str) -> list[dict]:
             analysis["final_score"] = row["final_score"]
             analysis["captured_at"] = row["captured_at"]
             analysis["source_url"] = row["source_url"]
+            analysis["league_color"] = row["league_color"]
             analyses.append(analysis)
         return analyses
     finally:
@@ -365,23 +446,54 @@ def update_match_scores(
     issue: str,
     scores: dict[str, str],
 ) -> int:
-    """Write final scores keyed by match_no into the latest run for an issue."""
+    """Write final scores keyed by match_no into every run of an issue that lacks them.
+
+    比分是事实不随 run 漂移：同一期若已抓取多个 run（「抓取并入库」可重复点击），
+    只写最新 run 会让旧 run 的复盘统计口径失效；统一回填所有 run，
+    让「复盘」的命中率统计在任一下一次「抓取并入库」后仍可复现。
+
+    用新取到的非空比分覆盖旧值，而非只回填空值：门禁修复（2026-10-07）前，
+    赛前缓存的详情页会把未开赛比赛写成占位 0-0，这些假 0-0 非空，只回填空值
+    时赛后复盘拿到真比分也覆盖不进去（26135 期曾因此卡住 156 行假 0-0）。"""
     conn = connect(db_path)
     try:
-        run_id = conn.execute(
-            "SELECT MAX(run_id) FROM issue_runs WHERE issue = ?",
-            (issue,),
-        ).fetchone()[0]
-        if run_id is None:
-            return 0
         updated = 0
         for match_no, score in scores.items():
             cur = conn.execute(
                 """
                 UPDATE match_movements SET final_score = ?
-                WHERE run_id = ? AND match_no = ? AND final_score = ''
+                WHERE issue = ? AND match_no = ?
                 """,
-                (score, run_id, match_no),
+                (score, issue, match_no),
+            )
+            updated += cur.rowcount
+        conn.commit()
+        return updated
+    finally:
+        conn.close()
+
+
+def update_team_reads(
+    db_path: str | Path,
+    issue: str,
+    team_reads: dict[str, dict],
+) -> int:
+    """Write team-read (LLM tendency) per match_no into every run of an issue.
+
+    Display-only info, overwritten by the newest AI analyze pass; same scope
+    as final scores: written to all runs so the query page (latest run) and
+    review stats always see the same tendency.
+    """
+    conn = connect(db_path)
+    try:
+        updated = 0
+        for match_no, payload in team_reads.items():
+            cur = conn.execute(
+                """
+                UPDATE match_movements SET team_read = ?
+                WHERE issue = ? AND match_no = ?
+                """,
+                (json.dumps(payload, ensure_ascii=False), issue, match_no),
             )
             updated += cur.rowcount
         conn.commit()
