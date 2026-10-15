@@ -1,10 +1,11 @@
-import tempfile
+﻿import tempfile
 import unittest
 from pathlib import Path
 
 from football_analysis.browser_report import render_browser_html
 from football_analysis.query_report import render_query_html
-from football_analysis.store import list_issues, query_movements, save_issue_movements, update_match_scores
+from football_analysis.store import latest_captured_at, list_issues, list_leagues, query_movements, save_issue_movements, update_match_scores
+from football_analysis.store import rebuild_analyses_from_db
 
 
 def _item(match_no: str, home: str, away: str, *, attention: bool, level: str, reason: str, direction: str = "") -> dict:
@@ -186,13 +187,55 @@ class UpdateMatchScoresTests(unittest.TestCase):
             # first update fills empty
             updated = update_match_scores(db, "26120", {"1": "2 - 1"})
             self.assertEqual(updated, 1)
-            # second update is a no-op because score already filled
+            # 相同比分重写仍计入行数（覆盖语义），值不变
             updated = update_match_scores(db, "26120", {"1": "2 - 1"})
-            self.assertEqual(updated, 0)
+            self.assertEqual(updated, 1)
             # unknown issue returns 0
             self.assertEqual(update_match_scores(db, "99999", {"1": "0 - 0"}), 0)
 
+    def test_backfills_every_run_that_lacks_score(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            item = _item("1", "H", "A", attention=False, level="稳定", reason="")
+            save_issue_movements(db, [item], "26120")
+            save_issue_movements(db, [item], "26120")
+            # one backfill fills both runs, since score is a fact not a per-run snapshot
+            updated = update_match_scores(db, "26120", {"1": "2 - 1"})
+            self.assertEqual(updated, 2)
+            # 覆盖语义下同样计入行数（每行都被重写为相同值）
+            updated = update_match_scores(db, "26120", {"1": "2 - 1"})
+            self.assertEqual(updated, 2)
 
+    def test_real_score_overwrites_placeholder_zeros(self):
+        """假 0-0（赛前占位）必须能被赛后真比分覆盖，这是复盘能修正历史期的关键。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            item = _item("1", "H", "A", attention=False, level="稳定", reason="")
+            item["final_score"] = "0 - 0"
+            save_issue_movements(db, [item], "26120")
+            # 复盘拿到真比分，覆盖占位 0-0
+            updated = update_match_scores(db, "26120", {"1": "0 - 1"})
+            self.assertEqual(updated, 1)
+            rows = query_movements(db, latest_only=True)
+            self.assertEqual(rows[0]["final_score"], "0 - 1")
+
+
+class LatestCapturedAtTests(unittest.TestCase):
+    def test_returns_none_when_issue_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            item = _item("1", "H", "A", attention=False, level="稳定", reason="")
+            save_issue_movements(db, [item], "26120")
+            self.assertIsNone(latest_captured_at(db, "99999"))
+
+    def test_returns_latest_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            item = _item("1", "H", "A", attention=False, level="稳定", reason="")
+            save_issue_movements(db, [item], "26120")
+            stamp = latest_captured_at(db, "26120")
+            self.assertIsNotNone(stamp)
+            self.assertRegex(stamp, r"^\d{4}-\d{2}-\d{2}T")
 
 
 class IssueHitRatesTests(unittest.TestCase):
@@ -239,5 +282,81 @@ class IssueHitRatesTests(unittest.TestCase):
         self.assertEqual(rates["total_hits"], 2)
 
 
+class ListLeaguesTests(unittest.TestCase):
+    def test_scoped_to_issue_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "t.sqlite"
+            a = _item("1", "巴萨", "皇马", attention=True, level="重点关注", reason="让球盘降盘")
+            a["league"] = "西甲"
+            b = _item("2", "曼联", "曼城", attention=True, level="重点关注", reason="让球盘升盘")
+            b["league"] = "英超"
+            save_issue_movements(db, [a], "26120")
+            save_issue_movements(db, [b], "26121")
+            # 指定期号：只列该期出现过的联赛（下拉只显示当前 14 场的联赛）
+            self.assertEqual(list_leagues(db, "26120"), ["西甲"])
+            self.assertEqual(list_leagues(db, "26121"), ["英超"])
+            # 不指定期号：全部去重联赛
+            self.assertEqual(list_leagues(db), ["英超", "西甲"])
+
+    def test_skips_empty_league(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "t.sqlite"
+            a = _item("1", "巴萨", "皇马", attention=True, level="重点关注", reason="让球盘降盘")
+            a["league"] = ""
+            save_issue_movements(db, [a], "26120")
+            self.assertEqual(list_leagues(db, "26120"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class LeagueColorTests(unittest.TestCase):
+    def test_color_persisted_and_rebuilt(self):
+        """league_color 入库后，查询页与重建分析都能拿到。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            item = _item("1", "巴萨", "费耶诺德", attention=True, level="重点关注", reason="让球盘降盘")
+            item["league"] = "英超"
+            item["league_color"] = "#FF1717"
+            save_issue_movements(db, [item], "26121", "https://trade.500.com/sfc/")
+
+            rows = query_movements(db, latest_only=True)
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["league"], "英超")
+            self.assertEqual(rows[0]["league_color"], "#FF1717")
+
+            rebuilt = rebuild_analyses_from_db(db, "26121")
+            self.assertEqual(rebuilt[0]["league_color"], "#FF1717")
+
+    def test_query_page_renders_colored_badge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            item = _item("1", "巴萨", "费耶诺德", attention=True, level="重点关注", reason="让球盘降盘")
+            item["league_color"] = "#006633"
+            save_issue_movements(db, [item], "26121", "https://trade.500.com/sfc/")
+            rows = query_movements(db, latest_only=True)
+            html = render_query_html(rows, issues=[], latest_only=True)
+            self.assertIn('style="background:#006633;"', html)
+
+    def test_browser_report_renders_colored_badge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            item = _item("1", "巴萨", "费耶诺德", attention=True, level="重点关注", reason="让球盘降盘")
+            item["league_color"] = "#006633"
+            save_issue_movements(db, [item], "26121", "https://trade.500.com/sfc/")
+            analyses = rebuild_analyses_from_db(db, "26121")
+            html = render_browser_html(analyses, "26121", "https://trade.500.com/sfc/")
+            self.assertIn('style="background:#006633;"', html)
+
+    def test_missing_color_falls_back_to_plain_text(self):
+        """没颜色的联赛（如新杯赛）不应输出空标签；AI 按钮固定色不在排查范围。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            item = _item("1", "巴萨", "费耶诺德", attention=True, level="重点关注", reason="让球盘降盘")
+            item["league"] = "新杯赛"
+            save_issue_movements(db, [item], "26121", "https://trade.500.com/sfc/")
+            rows = query_movements(db, latest_only=True)
+            html = render_query_html(rows, issues=[], latest_only=True)
+            self.assertNotIn('<span class="league-badge"', html)
+            self.assertIn("新杯赛", html)
