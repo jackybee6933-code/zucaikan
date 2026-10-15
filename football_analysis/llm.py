@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
+import re
+import time
+from pathlib import Path
 
 import requests
 
@@ -20,6 +24,15 @@ def endpoint_config(*, base_url: str = "", api_key: str = "", model: str = "") -
         (base_url or os.environ.get("LLM_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
         api_key or os.environ.get("LLM_API_KEY") or "",
         model or os.environ.get("LLM_MODEL") or DEFAULT_MODEL,
+    )
+
+
+def fallback_config(*, base_url: str = "", api_key: str = "", model: str = "") -> tuple[str, str, str]:
+    """Backup LLM endpoint from LLM_FALLBACK_* env vars; empty api_key means "not configured"."""
+    return (
+        (base_url or os.environ.get("LLM_FALLBACK_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
+        api_key or os.environ.get("LLM_FALLBACK_API_KEY") or "",
+        model or os.environ.get("LLM_FALLBACK_MODEL") or DEFAULT_MODEL,
     )
 
 SYSTEM_PROMPT = """你是一名足球盘口数据分析师，负责把亚盘/大小盘从初盘到即时盘的结构化变化翻译成简短中文解读。
@@ -233,4 +246,257 @@ def narrate_movements(
             item["narration"] = text
             count += 1
     print(f"  大模型解读：{count}/{len(items)} 场变盘异动已生成")
+    return count
+
+
+# --- 球队资料分析：读 500 数据分析页的资料，给亚盘让球倾向（只展示，不进任何门禁） ---
+
+TEAM_READ_TENDENCIES = ("主队赢盘", "客队赢盘", "观望")
+
+TEAM_READ_SYSTEM_PROMPT = """你是一名足球盘口分析师，负责读完一场比赛的球队资料后，给出这场球的亚盘让球倾向。
+
+要求：
+- 只使用输入里给出的资料（近期战绩、主客场表现、赢盘率、大小球率、历史交锋、积分排名、盘口与概率）。
+- 只能输出一个 JSON 对象，不要任何额外文字、不要代码块围栏，格式：
+  {"tendency": "主队赢盘", "confidence": 0.0, "reason": "一句话，40 字以内"}
+- tendency 只能取三个值之一：主队赢盘、客队赢盘、观望。
+- 资料不足、双方势均力敌或无法判断时，tendency 必须是「观望」。
+- 不要编造伤停、转会、内幕等资料里没有的信息，也不要预测比分。"""
+
+
+def _team_form_line(label: str, record: dict | None) -> str:
+    """One team's form line for the prompt: 近10场 + 主客拆分 + 赢盘率 + 大小球率."""
+    record = record or {}
+    if not record.get("matches"):
+        return f"{label}：无近期战绩数据"
+    parts = [
+        f"近{record['matches']}场 {record['wins']}胜{record['draws']}平{record['losses']}负"
+        f" 进{record['goals_for']}失{record['goals_against']}"
+    ]
+    if record.get("home_matches"):
+        parts.append(
+            f"主场{record['home_matches']}场{record['home_wins']}胜"
+            f"{record['home_draws']}平{record['home_losses']}负"
+        )
+    if record.get("away_matches"):
+        parts.append(
+            f"客场{record['away_matches']}场{record['away_wins']}胜"
+            f"{record['away_draws']}平{record['away_losses']}负"
+        )
+    if record.get("handicap_win_rate") is not None:
+        parts.append(
+            f"赢盘率{_pct(record['handicap_win_rate'])}"
+            f"（{record.get('handicap_win', 0)}赢{record.get('handicap_push', 0)}走）"
+        )
+    if record.get("over_rate") is not None:
+        parts.append(f"大球率{_pct(record['over_rate'])}")
+    return f"{label}：" + "，".join(parts)
+
+
+def build_team_read_prompt(analysis: dict, page_text: str = "") -> str:
+    """One match's team data -> LLM prompt. Pure, no I/O."""
+    movement = analysis.get("odds_movement") or {}
+    asian = movement.get("asian") or {}
+    total = movement.get("total") or {}
+    history = analysis.get("history") or {}
+    prediction = analysis.get("prediction") or {}
+
+    lines = [
+        f"联赛：{analysis.get('league') or '未知'}",
+        f"比赛：{analysis.get('home_team') or '?'}（主） vs "
+        f"{analysis.get('away_team') or '?'}（客）（{analysis.get('match_time') or '时间未知'}）",
+    ]
+    if asian.get("available"):
+        lines.append(f"亚盘初盘：{_asian_line_text(asian.get('initial'))}")
+        lines.append(f"亚盘即时盘：{_asian_line_text(asian.get('current'))}")
+        if asian.get("lean"):
+            lines.append(f"盘口异动倾向：{asian['lean']}赢盘")
+    else:
+        lines.append("亚盘：无数据")
+    if total.get("available"):
+        lines.append(f"大小盘初盘：{_total_line_text(total.get('initial'))}")
+        lines.append(f"大小盘即时盘：{_total_line_text(total.get('current'))}")
+
+    probs = prediction.get("final_probabilities") or {}
+    if probs:
+        lines.append(
+            "模型概率："
+            + " / ".join(
+                f"{OUTCOME_LABELS.get(key, key)} {_pct(probs.get(key, 0.0))}"
+                for key in ("home", "draw", "away")
+            )
+        )
+    lines.append(_team_form_line("主队近况", history.get("home")))
+    lines.append(_team_form_line("客队近况", history.get("away")))
+    lines.extend(_history_detail(history))
+    if page_text:
+        lines.append("500 数据分析页资料（原样摘录，含积分排名/交战历史/近期战绩/未来赛事/平均数据）：")
+        lines.append(page_text[:6000])
+    else:
+        lines.append("500 数据分析页资料：未抓到")
+    lines.append(
+        "\n请判断这场比赛主队还是客队更可能赢下亚盘让球（主队赢盘 / 客队赢盘 / 观望），"
+        "只用上面给出的资料，资料不足就给观望。只输出 JSON，不要解释。"
+    )
+    return "\n".join(lines)
+
+
+def parse_team_read(text: str) -> dict | None:
+    """严格解析模型返回；不合法一律返回 None（调用方跳过，不写脏数据）。"""
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("```"):
+        raw = re.sub(r"^```[A-Za-z]*\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw).strip()
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        match = re.search(r"\{.*\}", raw, re.S)
+        if not match:
+            return None
+        try:
+            data = json.loads(match.group(0))
+        except ValueError:
+            return None
+    if not isinstance(data, dict):
+        return None
+    tendency = str(data.get("tendency") or "").strip()
+    if tendency not in TEAM_READ_TENDENCIES:
+        return None
+    try:
+        confidence = float(data.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = min(1.0, max(0.0, confidence))
+    reason = re.sub(r"\s+", " ", str(data.get("reason") or "")).strip()[:80]
+    return {"tendency": tendency, "confidence": confidence, "reason": reason}
+
+
+class TeamReader:
+    """Reads one match's team data and asks the LLM for an Asian-handicap lean."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str = "",
+        api_key: str = "",
+        model: str = "",
+        fallback: tuple[str, str, str] | None = None,
+        timeout: float = 45.0,
+        retry_wait: float = 5.0,
+        attempts: int = 4,
+    ) -> None:
+        self.base_url, self.api_key, self.model = endpoint_config(
+            base_url=base_url, api_key=api_key, model=model
+        )
+        # 主接入点限流/挂掉时自动切备用接入点（LLM_FALLBACK_*）；没配就只有一个。
+        if fallback is None:
+            fallback = fallback_config()
+        self.endpoints = [(self.base_url, self.api_key, self.model)]
+        if fallback and fallback[1]:
+            self.endpoints.append(tuple(fallback))
+        self.timeout = timeout
+        # 接入点（实测 agnes-ai）有每分钟调用上限，14 场连着打会 429；退避重试即可跑完。
+        self.retry_wait = retry_wait
+        self.attempts = max(1, attempts)
+
+    @property
+    def enabled(self) -> bool:
+        return any(api_key for _, api_key, _ in self.endpoints)
+
+    def read(self, analysis: dict, page_text: str = "") -> dict | None:
+        if not self.enabled:
+            return None
+        body = {
+            "messages": [
+                {"role": "system", "content": TEAM_READ_SYSTEM_PROMPT},
+                {"role": "user", "content": build_team_read_prompt(analysis, page_text)},
+            ],
+            "temperature": 0.2,
+        }
+        for index, (base_url, api_key, model) in enumerate(self.endpoints):
+            if index:
+                print(f"  主接入点没给出结果，改用备用接入点 {model}")
+            result = self._read_endpoint(base_url, api_key, model, body)
+            if result is not None:
+                return result
+        return None
+
+    def _read_endpoint(self, base_url: str, api_key: str, model: str, body: dict) -> dict | None:
+        payload = dict(body, model=model)
+        for attempt in range(1, self.attempts + 1):
+            try:
+                response = requests.post(
+                    f"{base_url}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=self.timeout,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"  球队资料分析请求失败，已跳过：{exc}")
+                return None
+            if response.status_code == 429 or response.status_code >= 500:
+                if attempt < self.attempts:
+                    time.sleep(self.retry_wait * attempt)
+                    continue
+                print(f"  球队资料分析被限流（HTTP {response.status_code}，{model}）")
+                return None
+            try:
+                response.raise_for_status()
+                return parse_team_read(extract_content(response.json()))
+            except Exception as exc:  # noqa: BLE001
+                print(f"  球队资料分析请求失败，已跳过：{exc}")
+                return None
+        return None
+
+
+def enrich_team_reads(
+    analyses: list[dict],
+    reader: TeamReader | None = None,
+    page_texts: list[str] | None = None,
+    pace: float = 4.0,
+    progress_path: Path | None = None,
+    issue: str = "",
+) -> int:
+    """Attach a model lean to each match. Returns the enriched count."""
+    reader = reader or TeamReader()
+    if not reader.enabled:
+        print(
+            "  未启用球队资料分析：需要环境变量 LLM_API_KEY"
+            "（可用 LLM_BASE_URL / LLM_MODEL 指定服务商与模型）"
+        )
+        return 0
+
+    def _report(phase: str, done: int, total: int) -> None:
+        if progress_path is None:
+            return
+        try:
+            progress_path.parent.mkdir(parents=True, exist_ok=True)
+            progress_path.write_text(
+                json.dumps({"issue": issue, "phase": phase, "total": total, "done": done, "failed": 0},
+                           ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    count = 0
+    for index, item in enumerate(analyses):
+        _report("llm", index, len(analyses))
+        if index:
+            # 接入点通常是按分钟限流的，14 场连着打必被 429；这里主动留出间隔。
+            time.sleep(max(0.0, pace))
+        page_text = ""
+        if page_texts and index < len(page_texts):
+            page_text = str(page_texts[index] or "")
+        result = reader.read(item, page_text)
+        if result:
+            item["team_read"] = result
+            count += 1
+    _report("llm", len(analyses), len(analyses))
+    print(f"  球队资料分析：{count}/{len(analyses)} 场已生成倾向")
     return count

@@ -65,6 +65,14 @@ def page_failures(raw: dict) -> list[str]:
     ]
 
 
+def shuju_text(raw: dict, fixture_id: str) -> str:
+    """取该场「数据分析页」的球队资料文本（供大模型阅读）；没抓或抓失败返回空串。"""
+    page = (raw or {}).get(f"{fixture_id}|shuju") or {}
+    if not isinstance(page, dict) or _status(page) != "ok":
+        return ""
+    return str(page.get("text") or "").strip()
+
+
 def _pick_company(rows: list[list]) -> list | None:
     by_cid = {str(row[0]): row for row in rows}
     for cid in CID_PREFERENCE:

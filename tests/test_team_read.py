@@ -1,0 +1,324 @@
+import json
+import sqlite3
+import os
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from football_analysis import llm, odds_pages
+from football_analysis.query_report import render_query_html
+from football_analysis.store import (
+    SCHEMA,
+    connect,
+    list_issues,
+    query_movements,
+    save_issue_movements,
+    update_team_reads,
+)
+
+
+def _analysis(**over) -> dict:
+    base = {
+        "match_no": "1",
+        "league": "意甲",
+        "match_time": "10-12 02:45",
+        "home_team": "莱切",
+        "away_team": "博洛尼亚",
+        "history": {
+            "home": {
+                "matches": 10,
+                "wins": 5,
+                "draws": 1,
+                "losses": 4,
+                "goals_for": 18,
+                "goals_against": 14,
+                "home_matches": 6,
+                "home_wins": 4,
+                "home_draws": 0,
+                "home_losses": 2,
+                "away_matches": 4,
+                "away_wins": 1,
+                "away_draws": 1,
+                "away_losses": 2,
+                "handicap_win": 3,
+                "handicap_push": 0,
+                "handicap_win_rate": 0.375,
+                "over_rate": 0.6,
+                "rows": [
+                    {
+                        "date": "2026-10-10",
+                        "home": "莱切",
+                        "away": "里昂",
+                        "score": "2 :1",
+                        "league": "意甲",
+                    }
+                ],
+            },
+            "away": {
+                "matches": 10,
+                "wins": 3,
+                "draws": 3,
+                "losses": 4,
+                "goals_for": 12,
+                "goals_against": 13,
+            },
+            "h2h": {
+                "total": 2,
+                "home_wins": 1,
+                "draws": 0,
+                "away_wins": 1,
+                "goals_for": 3,
+                "goals_against": 2,
+                "rows": [
+                    {
+                        "date": "2026-04-13",
+                        "home": "博洛尼亚",
+                        "away": "莱切",
+                        "score": "2-0",
+                        "league": "意甲",
+                    }
+                ],
+            },
+        },
+        "odds_movement": {
+            "asian": {
+                "available": True,
+                "initial": {"line_text": "受平手/半球", "home_water": 1.04, "away_water": 0.80},
+                "current": {"line_text": "受半球", "home_water": 1.02, "away_water": 0.82},
+                "lean": "客队",
+            }
+        },
+        "prediction": {"final_probabilities": {"home": 0.35, "draw": 0.25, "away": 0.40}},
+    }
+    base.update(over)
+    return base
+
+
+class PromptTests(unittest.TestCase):
+    def test_prompt_carries_team_data_and_page_text(self):
+        prompt = llm.build_team_read_prompt(
+            _analysis(), "## 近期战绩\n意甲 | 26-10-11 | 莱切1:2博洛尼亚"
+        )
+        self.assertIn("莱切（主） vs 博洛尼亚（客）", prompt)
+        self.assertIn("赢盘率38%", prompt)
+        self.assertIn("2026-10-10", prompt)          # 逐场明细
+        self.assertIn("历史交锋", prompt)
+        self.assertIn("受半球", prompt)              # 即时盘
+        self.assertIn("客胜 40%", prompt)
+        self.assertIn("500 数据分析页资料", prompt)
+        self.assertIn("莱切1:2博洛尼亚", prompt)
+        self.assertIn("主队赢盘", prompt)            # 输出口径写在结尾
+
+    def test_prompt_survives_missing_data(self):
+        prompt = llm.build_team_read_prompt({})
+        self.assertIn("无近期战绩数据", prompt)
+        self.assertIn("亚盘：无数据", prompt)
+        self.assertIn("500 数据分析页资料：未抓到", prompt)
+
+
+class ParseTests(unittest.TestCase):
+    def test_accepts_plain_fenced_and_embedded_json(self):
+        body = '{"tendency": "主队赢盘", "confidence": 0.62, "reason": "主场赢盘率高"}'
+        for raw in (body, f"```json\n{body}\n```", f"好的：\n{body}\n以上。"):
+            parsed = llm.parse_team_read(raw)
+            self.assertIsNotNone(parsed, raw)
+            self.assertEqual(parsed["tendency"], "主队赢盘")
+            self.assertAlmostEqual(parsed["confidence"], 0.62)
+
+    def test_rejects_bad_payloads(self):
+        for raw in ("", "没有 JSON", '{"tendency": "主胜"}', "[1, 2]", '{"confidence": 0.5}'):
+            self.assertIsNone(llm.parse_team_read(raw), raw)
+
+    def test_clamps_confidence_and_trims_reason(self):
+        parsed = llm.parse_team_read(
+            json.dumps({"tendency": "观望", "confidence": 7, "reason": "很长 " * 60},
+                       ensure_ascii=False)
+        )
+        self.assertEqual(parsed["confidence"], 1.0)
+        self.assertLessEqual(len(parsed["reason"]), 80)
+        self.assertNotIn("  ", parsed["reason"])
+
+
+class _StubReader:
+    enabled = True
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def read(self, analysis: dict, page_text: str = "") -> dict | None:
+        self.calls.append((str(analysis.get("match_no")), page_text))
+        return {"tendency": "客队赢盘", "confidence": 0.5, "reason": "客队客场赢盘率高"}
+
+
+class EnrichTests(unittest.TestCase):
+    def test_skips_without_api_key(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            items = [_analysis(match_no="1")]
+            self.assertEqual(
+                llm.enrich_team_reads(
+                    items,
+                    reader=llm.TeamReader(api_key="", fallback=("", "", "")),
+                    pace=0,
+                ),
+                0,
+            )
+            self.assertNotIn("team_read", items[0])
+
+    def test_attaches_result_and_passes_page_text(self):
+        items = [_analysis(match_no="1"), _analysis(match_no="2")]
+        reader = _StubReader()
+        count = llm.enrich_team_reads(items, reader=reader, page_texts=["资料一"], pace=0)
+        self.assertEqual(count, 2)
+        self.assertEqual(items[0]["team_read"]["tendency"], "客队赢盘")
+        self.assertEqual(reader.calls[0], ("1", "资料一"))
+        self.assertEqual(reader.calls[1], ("2", ""))
+
+
+class ReaderTests(unittest.TestCase):
+    def _response(self, content: str):
+        response = mock.MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"choices": [{"message": {"content": content}}]}
+        response.raise_for_status.return_value = None
+        return response
+
+    def test_read_posts_prompt_and_parses(self):
+        reader = llm.TeamReader(
+            base_url="http://x/v1", api_key="k", model="m", fallback=("", "", "")
+        )
+        with mock.patch.object(llm.requests, "post", return_value=self._response(
+            '{"tendency": "观望", "confidence": 0.2, "reason": "资料不足"}'
+        )) as post:
+            result = reader.read(_analysis(), "资料")
+        self.assertEqual(result["tendency"], "观望")
+        body = post.call_args.kwargs["json"]
+        self.assertEqual(body["model"], "m")
+        self.assertEqual(body["messages"][0]["content"], llm.TEAM_READ_SYSTEM_PROMPT)
+        self.assertIn("资料", body["messages"][1]["content"])
+
+    def test_read_returns_none_on_failure(self):
+        reader = llm.TeamReader(api_key="k", fallback=("", "", ""))
+        with mock.patch.object(llm.requests, "post", side_effect=RuntimeError("boom")):
+            self.assertIsNone(reader.read(_analysis()))
+
+    def _throttled(self, status: int = 429):
+        response = mock.MagicMock()
+        response.status_code = status
+        return response
+
+    def test_read_retries_after_429(self):
+        ok = self._response('{"tendency": "观望", "confidence": 0.3, "reason": "资料不足"}')
+        ok.status_code = 200
+        reader = llm.TeamReader(api_key="k", fallback=("", "", ""), retry_wait=0.01)
+        with mock.patch.object(llm.requests, "post",
+                               side_effect=[self._throttled(), self._throttled(503), ok]) as post:
+            result = reader.read(_analysis())
+        self.assertEqual(result["tendency"], "观望")
+        self.assertEqual(post.call_count, 3)
+
+    def test_read_gives_up_when_always_throttled(self):
+        reader = llm.TeamReader(
+            api_key="k", fallback=("", "", ""), retry_wait=0.01, attempts=2
+        )
+        with mock.patch.object(llm.requests, "post",
+                               side_effect=[self._throttled(), self._throttled()]) as post:
+            self.assertIsNone(reader.read(_analysis()))
+        self.assertEqual(post.call_count, 2)
+
+    def test_falls_back_to_backup_endpoint(self):
+        ok = self._response('{"tendency": "客队赢盘", "confidence": 0.4, "reason": "备用结果"}')
+        reader = llm.TeamReader(
+            base_url="http://primary/v1",
+            api_key="k1",
+            model="m1",
+            fallback=("http://backup/v1", "k2", "m2"),
+            retry_wait=0.01,
+            attempts=1,
+        )
+        with mock.patch.object(
+            llm.requests, "post", side_effect=[self._throttled(), ok]
+        ) as post:
+            result = reader.read(_analysis())
+        self.assertEqual(result["tendency"], "客队赢盘")
+        self.assertEqual(post.call_count, 2)
+        self.assertTrue(post.call_args.args[0].startswith("http://backup/v1"))
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "m2")
+
+    def test_enabled_when_only_backup_is_configured(self):
+        reader = llm.TeamReader(api_key="", fallback=("http://backup/v1", "k2", "m2"))
+        self.assertTrue(reader.enabled)
+        self.assertEqual(reader.endpoints[1], ("http://backup/v1", "k2", "m2"))
+
+
+class ShujuTextTests(unittest.TestCase):
+    def test_only_ok_pages_are_used(self):
+        raw = {
+            "1|shuju": {"status": "ok", "text": " 球队资料 "},
+            "2|shuju": {"status": "empty", "text": ""},
+            "3|shuju": {"status": "timeout", "text": ""},
+        }
+        self.assertEqual(odds_pages.shuju_text(raw, "1"), "球队资料")
+        self.assertEqual(odds_pages.shuju_text(raw, "2"), "")
+        self.assertEqual(odds_pages.shuju_text(raw, "3"), "")
+        self.assertEqual(odds_pages.shuju_text(raw, "9"), "")
+
+
+class StoreAndReportTests(unittest.TestCase):
+    def test_team_read_round_trip_and_rendering(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "t.sqlite"
+            item = _analysis()
+            item["team_read"] = {
+                "tendency": "主队赢盘",
+                "confidence": 0.55,
+                "reason": "主场赢盘率高于客队",
+            }
+            save_issue_movements(db, [item], "26140")
+            rows = query_movements(db, issue="26140")
+            self.assertEqual(json.loads(rows[0]["team_read"])["tendency"], "主队赢盘")
+            html = render_query_html(
+                rows, issues=list_issues(db), issue="26140", db_path=str(db)
+            )
+            self.assertIn("模型 主队赢盘 55%", html)
+            self.assertIn("主场赢盘率高于客队", html)
+            self.assertIn("盘口 客队（博洛尼亚）", html)
+
+    def test_migration_adds_team_read_column(self):
+        # Windows 上 sqlite 的句柄释放比 close() 慢一拍，清理失败不算这条用例的失败点
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            db = Path(tmp) / "old.sqlite"
+            old_schema = SCHEMA.replace("    team_read TEXT NOT NULL DEFAULT '',\n", "")
+            with sqlite3.connect(db) as con:
+                con.executescript(old_schema)
+            conn = connect(db)
+            columns = {row["name"] for row in conn.execute(
+                "SELECT name FROM pragma_table_info('match_movements')"
+            )}
+            conn.close()
+            self.assertIn("team_read", columns)
+
+
+class UpdateTeamReadTests(unittest.TestCase):
+    def test_overwrites_all_runs_by_match_no(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "t.sqlite"
+            save_issue_movements(db, [_analysis(match_no="1")], "26140")
+            save_issue_movements(db, [_analysis(match_no="1"), _analysis(match_no="2")], "26140")
+            payload = {"tendency": "客队赢盘", "confidence": 0.4, "reason": "客场赢盘率高"}
+            updated = update_team_reads(db, "26140", {"1": payload, "2": payload})
+            # 两个 run × match_no=1 + 第二个 run 的 match_no=2，共 3 行
+            self.assertEqual(updated, 3)
+            rows = query_movements(db, issue="26140")
+            self.assertEqual(len(rows), 2)
+            self.assertEqual(json.loads(rows[0]["team_read"])["tendency"], "客队赢盘")
+
+    def test_empty_dict_touches_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "t.sqlite"
+            save_issue_movements(db, [_analysis(match_no="1")], "26140")
+            self.assertEqual(update_team_reads(db, "26140", {}), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()
