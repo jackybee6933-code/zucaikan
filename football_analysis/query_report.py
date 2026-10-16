@@ -463,7 +463,7 @@ def render_query_html(
       margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }}
-    .lean-note {{ margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted); }}
+    .lean-note {{ margin-top: 2px; font-weight: 600; font-size: 12px; color: #1d4ed8; }}
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}
     .alert-table {{ table-layout: fixed; }}
     .alert-table .match-cell {{ width: 26%; }}
@@ -986,7 +986,7 @@ def render_query_html(
       margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }}
-    .lean-note {{ margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted); }}
+    .lean-note {{ margin-top: 2px; font-weight: 600; font-size: 12px; color: #1d4ed8; }}
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}
     .alert-table {{ table-layout: fixed; }}
     .alert-table .match-cell {{ width: 26%; }}
@@ -1507,7 +1507,7 @@ def render_query_html(
       margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }}
-    .lean-note {{ margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted); }}
+    .lean-note {{ margin-top: 2px; font-weight: 600; font-size: 12px; color: #1d4ed8; }}
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}
     .alert-table {{ table-layout: fixed; }}
     .alert-table .match-cell {{ width: 26%; }}
@@ -2028,7 +2028,7 @@ def render_query_html(
       margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }}
-    .lean-note {{ margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted); }}
+    .lean-note {{ margin-top: 2px; font-weight: 600; font-size: 12px; color: #1d4ed8; }}
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}
     .alert-table {{ table-layout: fixed; }}
     .alert-table .match-cell {{ width: 26%; }}
