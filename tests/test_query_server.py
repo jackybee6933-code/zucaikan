@@ -232,6 +232,10 @@ class QueryServerTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("refresh-odds-btn", body)
         self.assertIn("/refresh-odds-status", body)
+        self.assertIn('id="refresh-odds-progress-bar"', body)
+        self.assertIn("_renderRefreshProgress", body)
+        # 工具条是 flex，进度条容器必须独占一行，否则宽度被压成 0、条形不可见
+        self.assertEqual(body.count("flex:1 0 100%"), 2)
 
     def test_query_page_has_ai_analyze_button(self):
         status, body = _get(self.base + "/")

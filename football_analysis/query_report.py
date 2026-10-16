@@ -212,7 +212,10 @@ _FETCH_BLOCK = \
       <span id="fetch-status" class="muted"></span>
       <span id="refresh-odds-status" class="muted"></span>
       <span id="ai-analyze-status" class="muted"></span>
-      <div id="ai-progress" style="display:none;margin:4px 0 0;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
+      <div id="refresh-odds-progress" style="display:none;flex:1 0 100%;margin:4px 0 0;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
+        <div id="refresh-odds-progress-bar" style="height:100%;width:0;background:#2563eb;transition:width .3s"></div>
+      </div>
+      <div id="ai-progress" style="display:none;flex:1 0 100%;margin:4px 0 0;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
         <div id="ai-progress-bar" style="height:100%;width:0;background:#2563eb;transition:width .3s"></div>
       </div>
     </form>
@@ -221,6 +224,29 @@ _FETCH_BLOCK = \
     const statusEl = document.getElementById("fetch-status");
     const refreshBtn = document.getElementById("refresh-odds-btn");
     const refreshStatus = document.getElementById("refresh-odds-status");
+    const refreshProgress = document.getElementById("refresh-odds-progress");
+    const refreshProgressBar = document.getElementById("refresh-odds-progress-bar");
+    function _renderRefreshProgress(s) {
+      if (!s || !s.progress) {
+        refreshProgress.style.display = "none";
+        refreshProgressBar.style.width = "0";
+        return;
+      }
+      refreshProgress.style.display = "block";
+      const p = s.progress;
+      const total = p.total || 0;
+      const done = p.done || 0;
+      const pct = total > 0 ? Math.round(done / total * 100) : 0;
+      refreshProgressBar.style.width = pct + "%";
+      if (p.phase === "aborted" && p.reason) {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " 中 — 抓取中止: " + p.reason;
+      } else if (p.phase === "done") {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " 中 — 正在入库...";
+        refreshProgressBar.style.width = "100%";
+      } else {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " 中 — 抓取 " + done + "/" + total + " (" + pct + "%)";
+      }
+    }
     if (refreshBtn) {
       refreshBtn.addEventListener("click", async () => {
         const issue = new URLSearchParams(new FormData(fetchForm)).get("issue") || "";
@@ -244,10 +270,11 @@ _FETCH_BLOCK = \
           try {
             const r = await fetch("/refresh-odds-status");
             const s = await r.json();
-            if (s.running) { refreshStatus.textContent = "盘口刷新 " + s.issue + " 中..."; return; }
+            if (s.running) { refreshStatus.textContent = "盘口刷新 " + s.issue + " 中..."; _renderRefreshProgress(s); return; }
             clearInterval(poll);
             refreshBtn.disabled = false;
             refreshStatus.textContent = s.error || s.result || "完成";
+            _renderRefreshProgress(null);
             refreshStatus.scrollIntoView({ block: "nearest" });
             if (s.result && !s.error) location.href = "?issue=" + encodeURIComponent(issue);
           } catch (e) { /* 轮询瞬时失败，下个 tick 重试 */ }
@@ -735,7 +762,10 @@ _FETCH_BLOCK = \
       <span id="fetch-status" class="muted"></span>
       <span id="refresh-odds-status" class="muted"></span>
       <span id="ai-analyze-status" class="muted"></span>
-      <div id="ai-progress" style="display:none;margin:4px 0 0;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
+      <div id="refresh-odds-progress" style="display:none;flex:1 0 100%;margin:4px 0 0;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
+        <div id="refresh-odds-progress-bar" style="height:100%;width:0;background:#2563eb;transition:width .3s"></div>
+      </div>
+      <div id="ai-progress" style="display:none;flex:1 0 100%;margin:4px 0 0;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
         <div id="ai-progress-bar" style="height:100%;width:0;background:#2563eb;transition:width .3s"></div>
       </div>
     </form>
@@ -744,6 +774,29 @@ _FETCH_BLOCK = \
     const statusEl = document.getElementById("fetch-status");
     const refreshBtn = document.getElementById("refresh-odds-btn");
     const refreshStatus = document.getElementById("refresh-odds-status");
+    const refreshProgress = document.getElementById("refresh-odds-progress");
+    const refreshProgressBar = document.getElementById("refresh-odds-progress-bar");
+    function _renderRefreshProgress(s) {
+      if (!s || !s.progress) {
+        refreshProgress.style.display = "none";
+        refreshProgressBar.style.width = "0";
+        return;
+      }
+      refreshProgress.style.display = "block";
+      const p = s.progress;
+      const total = p.total || 0;
+      const done = p.done || 0;
+      const pct = total > 0 ? Math.round(done / total * 100) : 0;
+      refreshProgressBar.style.width = pct + "%";
+      if (p.phase === "aborted" && p.reason) {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " 中 — 抓取中止: " + p.reason;
+      } else if (p.phase === "done") {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " 中 — 正在入库...";
+        refreshProgressBar.style.width = "100%";
+      } else {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " 中 — 抓取 " + done + "/" + total + " (" + pct + "%)";
+      }
+    }
     if (refreshBtn) {
       refreshBtn.addEventListener("click", async () => {
         const issue = new URLSearchParams(new FormData(fetchForm)).get("issue") || "";
@@ -767,10 +820,11 @@ _FETCH_BLOCK = \
           try {
             const r = await fetch("/refresh-odds-status");
             const s = await r.json();
-            if (s.running) { refreshStatus.textContent = "盘口刷新 " + s.issue + " 中..."; return; }
+            if (s.running) { refreshStatus.textContent = "盘口刷新 " + s.issue + " 中..."; _renderRefreshProgress(s); return; }
             clearInterval(poll);
             refreshBtn.disabled = false;
             refreshStatus.textContent = s.error || s.result || "完成";
+            _renderRefreshProgress(null);
             refreshStatus.scrollIntoView({ block: "nearest" });
             if (s.result && !s.error) location.href = "?issue=" + encodeURIComponent(issue);
           } catch (e) { /* 轮询瞬时失败，下个 tick 重试 */ }
@@ -1258,7 +1312,10 @@ _FETCH_BLOCK = \
       <span id="fetch-status" class="muted"></span>
       <span id="refresh-odds-status" class="muted"></span>
       <span id="ai-analyze-status" class="muted"></span>
-      <div id="ai-progress" style="display:none;margin:4px 0 0;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
+      <div id="refresh-odds-progress" style="display:none;flex:1 0 100%;margin:4px 0 0;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
+        <div id="refresh-odds-progress-bar" style="height:100%;width:0;background:#2563eb;transition:width .3s"></div>
+      </div>
+      <div id="ai-progress" style="display:none;flex:1 0 100%;margin:4px 0 0;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
         <div id="ai-progress-bar" style="height:100%;width:0;background:#2563eb;transition:width .3s"></div>
       </div>
     </form>
@@ -1267,6 +1324,29 @@ _FETCH_BLOCK = \
     const statusEl = document.getElementById("fetch-status");
     const refreshBtn = document.getElementById("refresh-odds-btn");
     const refreshStatus = document.getElementById("refresh-odds-status");
+    const refreshProgress = document.getElementById("refresh-odds-progress");
+    const refreshProgressBar = document.getElementById("refresh-odds-progress-bar");
+    function _renderRefreshProgress(s) {
+      if (!s || !s.progress) {
+        refreshProgress.style.display = "none";
+        refreshProgressBar.style.width = "0";
+        return;
+      }
+      refreshProgress.style.display = "block";
+      const p = s.progress;
+      const total = p.total || 0;
+      const done = p.done || 0;
+      const pct = total > 0 ? Math.round(done / total * 100) : 0;
+      refreshProgressBar.style.width = pct + "%";
+      if (p.phase === "aborted" && p.reason) {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " 中 — 抓取中止: " + p.reason;
+      } else if (p.phase === "done") {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " 中 — 正在入库...";
+        refreshProgressBar.style.width = "100%";
+      } else {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " 中 — 抓取 " + done + "/" + total + " (" + pct + "%)";
+      }
+    }
     if (refreshBtn) {
       refreshBtn.addEventListener("click", async () => {
         const issue = new URLSearchParams(new FormData(fetchForm)).get("issue") || "";
@@ -1290,10 +1370,11 @@ _FETCH_BLOCK = \
           try {
             const r = await fetch("/refresh-odds-status");
             const s = await r.json();
-            if (s.running) { refreshStatus.textContent = "盘口刷新 " + s.issue + " 中..."; return; }
+            if (s.running) { refreshStatus.textContent = "盘口刷新 " + s.issue + " 中..."; _renderRefreshProgress(s); return; }
             clearInterval(poll);
             refreshBtn.disabled = false;
             refreshStatus.textContent = s.error || s.result || "完成";
+            _renderRefreshProgress(null);
             refreshStatus.scrollIntoView({ block: "nearest" });
             if (s.result && !s.error) location.href = "?issue=" + encodeURIComponent(issue);
           } catch (e) { /* 轮询瞬时失败，下个 tick 重试 */ }
@@ -1779,7 +1860,10 @@ _FETCH_BLOCK = \
       <span id="fetch-status" class="muted"></span>
       <span id="refresh-odds-status" class="muted"></span>
       <span id="ai-analyze-status" class="muted"></span>
-      <div id="ai-progress" style="display:none;margin:4px 0 0;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
+      <div id="refresh-odds-progress" style="display:none;flex:1 0 100%;margin:4px 0 0;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
+        <div id="refresh-odds-progress-bar" style="height:100%;width:0;background:#2563eb;transition:width .3s"></div>
+      </div>
+      <div id="ai-progress" style="display:none;flex:1 0 100%;margin:4px 0 0;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
         <div id="ai-progress-bar" style="height:100%;width:0;background:#2563eb;transition:width .3s"></div>
       </div>
     </form>
@@ -1788,6 +1872,29 @@ _FETCH_BLOCK = \
     const statusEl = document.getElementById("fetch-status");
     const refreshBtn = document.getElementById("refresh-odds-btn");
     const refreshStatus = document.getElementById("refresh-odds-status");
+    const refreshProgress = document.getElementById("refresh-odds-progress");
+    const refreshProgressBar = document.getElementById("refresh-odds-progress-bar");
+    function _renderRefreshProgress(s) {
+      if (!s || !s.progress) {
+        refreshProgress.style.display = "none";
+        refreshProgressBar.style.width = "0";
+        return;
+      }
+      refreshProgress.style.display = "block";
+      const p = s.progress;
+      const total = p.total || 0;
+      const done = p.done || 0;
+      const pct = total > 0 ? Math.round(done / total * 100) : 0;
+      refreshProgressBar.style.width = pct + "%";
+      if (p.phase === "aborted" && p.reason) {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " 中 — 抓取中止: " + p.reason;
+      } else if (p.phase === "done") {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " 中 — 正在入库...";
+        refreshProgressBar.style.width = "100%";
+      } else {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " 中 — 抓取 " + done + "/" + total + " (" + pct + "%)";
+      }
+    }
     if (refreshBtn) {
       refreshBtn.addEventListener("click", async () => {
         const issue = new URLSearchParams(new FormData(fetchForm)).get("issue") || "";
@@ -1811,10 +1918,11 @@ _FETCH_BLOCK = \
           try {
             const r = await fetch("/refresh-odds-status");
             const s = await r.json();
-            if (s.running) { refreshStatus.textContent = "盘口刷新 " + s.issue + " 中..."; return; }
+            if (s.running) { refreshStatus.textContent = "盘口刷新 " + s.issue + " 中..."; _renderRefreshProgress(s); return; }
             clearInterval(poll);
             refreshBtn.disabled = false;
             refreshStatus.textContent = s.error || s.result || "完成";
+            _renderRefreshProgress(null);
             refreshStatus.scrollIntoView({ block: "nearest" });
             if (s.result && !s.error) location.href = "?issue=" + encodeURIComponent(issue);
           } catch (e) { /* 轮询瞬时失败，下个 tick 重试 */ }
