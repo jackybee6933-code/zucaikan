@@ -86,7 +86,6 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     from .cdp_profile import shutdown_cdp_chrome
     from .odds_pages import (
         PAGES_STALE_HOURS,
-        has_odds_rows,
         load_odds_pages_raw,
         pages_age_hours,
         shuju_text,
@@ -120,7 +119,16 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     cache_dir = _default_cache_dir()
     age = pages_age_hours(cache_dir, actual_issue)
     needed_pages = 0
-    if age is not None and age <= PAGES_STALE_HOURS:
+    # mtime 龄只说"文件很新"，不说里面有 shuju。产物存在但缺 shuju
+    # （比如刚被"刷新盘口分歧"全量抓过、只带了 yazhi/daxiao），也要
+    # 补抓一次 shuju，否则模型没有资料可读。
+    has_shuju = any(
+        isinstance(v, dict)
+        and str(v.get("status") or "") in ("ok", "empty")
+        for k, v in (load_odds_pages_raw(cache_dir, actual_issue) or {}).items()
+        if k.rsplit("|", 1)[-1] == "shuju"
+    )
+    if age is not None and age <= PAGES_STALE_HOURS and has_shuju:
         pass
     else:
         cdp_error = _ensure_cdp(CDP_DEFAULT)
@@ -229,29 +237,52 @@ def run_refresh_odds(issue: str, *, cdp: str = CDP_DEFAULT, db_path: str | Path 
     """
     from .cdp_profile import shutdown_cdp_chrome
     from .main import _default_cache_dir
-    from .odds_pages import PAGES_STALE_HOURS, has_odds_rows, pages_age_hours
+    from .odds_pages import (
+        PAGES_STALE_HOURS,
+        load_odds_pages_raw,
+        pages_age_hours,
+    )
 
     cache_dir = _default_cache_dir()
     age = pages_age_hours(cache_dir, issue)
-    # mtime 只说产物文件“存在且很新”，不说它里面有盘口。AI 分析补抓的
-    # shuju 页会把文件合并刷新 mtime，产物里却没有任何 yazhi 公司行，
-    # 这类残缺产物若跳过，盘口数据就永远补不上——所以内容也要过一道。
-    if (
-        age is not None
-        and age <= PAGES_STALE_HOURS
-        and has_odds_rows(cache_dir, issue)
-    ):
-        return (
-            f"{issue} \u76d8\u53e3\u4ea7\u7269\u662f {age:.1f} \u5c0f\u65f6\u524d\u7684\uff0c"
-            f"\u672a\u8d85 {PAGES_STALE_HOURS:.0f}h \u9608\u503c\uff0c\u8df3\u8fc7\u91cd\u6293"
-        )
+    # 产物里缺哪些页种（yazhi/daxiao/shuju）决定要不要抓、抓哪些：
+    # 无缺失 → 直接跳过；只有 shuju 缺失 → 补抓 shuju 但不重跑入库
+    # （shuju 由「AI 分析」按钮单独消费，重跑 analyze_issue 会冲掉
+    # split 数据）；缺盘口页种（yazhi/daxiao 有失败或缺失）→ 只补这些
+    # 页种，不重新抓 shuju（两者共享同一份文件，--kinds 合并写盘）。
+    missing = _missing_kinds(load_odds_pages_raw(cache_dir, issue), all_kinds=True)
+    if age is not None and age <= PAGES_STALE_HOURS:
+        if not missing:
+            return (
+                f"{issue} \u76d8\u53e3\u4ea7\u7269\u662f {age:.1f} \u5c0f\u65f6\u524d\u7684\uff0c"
+                f"\u672a\u8d85 {PAGES_STALE_HOURS:.0f}h \u9608\u503c\uff0c\u8df3\u8fc7\u91cd\u6293"
+            )
+        if missing == ["shuju"]:
+            endpoint = cdp.rstrip("/")
+            cdp_error = _ensure_cdp(endpoint)
+            if cdp_error:
+                return cdp_error
+            try:
+                scrape_error = _run_odds_scraper(issue, cache_dir, endpoint, kinds=missing)
+            finally:
+                shutdown_cdp_chrome()
+            if scrape_error:
+                return scrape_error
+            return (
+                f"{issue} \u76d8\u53e3\u4ea7\u7269\u5df2\u8865\u5168\u7f3a\u5931\u9875\u79cd "
+                f"({'/'.join(missing)})\uff0c\u672a\u91cd\u8dd1\u5165\u5e93"
+            )
+        # 缺盘口页种（yazhi/daxiao）：只补缺的页种，不重新抓 shuju
+        missing = [k for k in missing if k != "shuju"]
+        if not missing:
+            missing = ["shuju"]
     endpoint = cdp.rstrip("/")
     # Ensure a Chrome debug port is reachable; auto-launch setup_cdp_profile.py if not.
     cdp_error = _ensure_cdp(endpoint)
     if cdp_error:
         return cdp_error
     try:
-        scrape_error = _run_odds_scraper(issue, cache_dir, endpoint)
+        scrape_error = _run_odds_scraper(issue, cache_dir, endpoint, kinds=missing)
     finally:
         shutdown_cdp_chrome()
     if scrape_error:
@@ -281,6 +312,36 @@ def _odds_scraper_script() -> Path:
     if script.is_file():
         return script
     return Path(__file__).resolve().parent.parent / "tools" / "scrape_odds_pages.py"
+
+
+def _missing_kinds(
+    raw: dict,
+    *,
+    all_kinds: bool = False,
+) -> list[str]:
+    """产物里哪些页种缺失。
+
+    all_kinds=True 时按 scraper 的完整 KINDS（yazhi/daxiao/shuju）判断，
+    供「刷新盘口分歧」决定要不要抓、抓哪些；只关心盘口（yazhi/daxiao）
+    的调用方（旧的残缺产物判断）不带该参数，保持原语义。
+    页种完全缺失（一个 key 都没有）视为缺失；有 key 但状态为
+    timeout/error（抓取失败）也视为缺失，需要重抓；empty（上游确实
+    没开盘）不算缺失，重抓只会再拿一次同样的空结果。
+    """
+    # scraper 的 KINDS 顺序与 STATUS 常量在 exe 里是随包自带的 .py，
+    # 直接 import 可能拿不到（spec 未声明 hiddenimport），这里就地取值。
+    kinds_order = ("yazhi", "daxiao", "shuju")
+    wanted = list(kinds_order) if all_kinds else ["yazhi", "daxiao"]
+    present: set[str] = set()
+    ok: set[str] = set()
+    for key, page in (raw or {}).items():
+        kind = key.rsplit("|", 1)[-1]
+        if kind not in wanted:
+            continue
+        present.add(kind)
+        if isinstance(page, dict) and str(page.get("status") or "") in ("ok", "empty"):
+            ok.add(kind)
+    return [k for k in wanted if k not in ok]
 
 
 def _run_odds_scraper(
