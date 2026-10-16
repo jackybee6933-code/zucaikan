@@ -83,6 +83,7 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     only when a human checkbox is required).
     """
     from .llm import TeamReader, enrich_team_reads
+    from .cdp_profile import shutdown_cdp_chrome
     from .odds_pages import PAGES_STALE_HOURS, load_odds_pages_raw, pages_age_hours, shuju_text
     from .store import (
         connect,
