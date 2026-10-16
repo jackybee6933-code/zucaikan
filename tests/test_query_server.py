@@ -119,13 +119,14 @@ class QueryServerTests(unittest.TestCase):
     def test_root_serves_query_page(self):
         status, body = _get(self.base + "/")
         self.assertEqual(status, 200)
-        self.assertIn("变盘异动查询", body)
+        self.assertIn("足彩分析系统1.0", body)
+        self.assertIn(">更新比分</button>", body)
 
     def test_unknown_get_path_falls_back_to_query_page(self):
         """do_GET 没有 404 兜底，未知路径按单页应用方式回落到查询页。"""
         status, body = _get(self.base + "/nope")
         self.assertEqual(status, 200)
-        self.assertIn("变盘异动查询", body)
+        self.assertIn("足彩分析系统1.0", body)
 
     # --- 状态端点 ---
 

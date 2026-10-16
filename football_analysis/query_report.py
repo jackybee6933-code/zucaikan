@@ -454,7 +454,7 @@ def render_query_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>变盘异动查询</title>
+  <title>足彩分析系统1.0</title>
   <style>
     :root {{
       --canvas: #f3f5f7; --panel: #ffffff; --ink: #1d2733; --muted: #64748b;
@@ -529,7 +529,7 @@ def render_query_html(
 </head>
 <body>
   <div class="page">
-    <h1>变盘异动查询</h1>
+    <h1>足彩分析系统1.0</h1>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}　上盘=让球方，下盘=受让方；上盘让球增加为升盘，减少为降盘。</div>
     {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
     <form method="get">
@@ -551,7 +551,7 @@ def render_query_html(
       </div>
       <button type="submit">查询</button>
       <button type="button" id="report-btn" class="report-btn">分析报告</button>
-      <button type="button" id="review-btn" class="report-btn">复盘</button>
+      <button type="button" id="review-btn" class="report-btn">更新比分</button>
       <label class="muted" style="font-size:12px"><input type="checkbox" id="review-refresh" checked> 刷新比分</label>
       <span id="report-hint" class="muted" style="font-size:12px"></span>
       <span id="review-hint" class="muted" style="font-size:12px"></span>
@@ -583,7 +583,7 @@ def render_query_html(
         const v = sel ? sel.value : "";
         if (!v) return;
         rbtn.disabled = true;
-        rhint.textContent = "复盘 " + v + " 中...";
+        rhint.textContent = "更新比分 " + v + " 中...";
         await fetch("/review", {{
           method: "POST",
           headers: {{"Content-Type": "application/json"}},
@@ -1004,7 +1004,7 @@ def render_query_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>变盘异动查询</title>
+  <title>足彩分析系统1.0</title>
   <style>
     :root {{
       --canvas: #f3f5f7; --panel: #ffffff; --ink: #1d2733; --muted: #64748b;
@@ -1079,7 +1079,7 @@ def render_query_html(
 </head>
 <body>
   <div class="page">
-    <h1>变盘异动查询</h1>
+    <h1>足彩分析系统1.0</h1>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}　上盘=让球方，下盘=受让方；上盘让球增加为升盘，减少为降盘。</div>
     {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
     <form method="get">
@@ -1101,7 +1101,7 @@ def render_query_html(
       </div>
       <button type="submit">查询</button>
       <button type="button" id="report-btn" class="report-btn">分析报告</button>
-      <button type="button" id="review-btn" class="report-btn">复盘</button>
+      <button type="button" id="review-btn" class="report-btn">更新比分</button>
       <label class="muted" style="font-size:12px"><input type="checkbox" id="review-refresh" checked> 刷新比分</label>
       <span id="report-hint" class="muted" style="font-size:12px"></span>
       <span id="review-hint" class="muted" style="font-size:12px"></span>
@@ -1133,7 +1133,7 @@ def render_query_html(
         const v = sel ? sel.value : "";
         if (!v) return;
         rbtn.disabled = true;
-        rhint.textContent = "复盘 " + v + " 中...";
+        rhint.textContent = "更新比分 " + v + " 中...";
         await fetch("/review", {{
           method: "POST",
           headers: {{"Content-Type": "application/json"}},
@@ -1552,7 +1552,7 @@ def render_query_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>变盘异动查询</title>
+  <title>足彩分析系统1.0</title>
   <style>
     :root {{
       --canvas: #f3f5f7; --panel: #ffffff; --ink: #1d2733; --muted: #64748b;
@@ -1627,7 +1627,7 @@ def render_query_html(
 </head>
 <body>
   <div class="page">
-    <h1>变盘异动查询</h1>
+    <h1>足彩分析系统1.0</h1>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}　上盘=让球方，下盘=受让方；上盘让球增加为升盘，减少为降盘。</div>
     {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
     <form method="get">
@@ -1649,7 +1649,7 @@ def render_query_html(
       </div>
       <button type="submit">查询</button>
       <button type="button" id="report-btn" class="report-btn">分析报告</button>
-      <button type="button" id="review-btn" class="report-btn">复盘</button>
+      <button type="button" id="review-btn" class="report-btn">更新比分</button>
       <label class="muted" style="font-size:12px"><input type="checkbox" id="review-refresh" checked> 刷新比分</label>
       <span id="report-hint" class="muted" style="font-size:12px"></span>
       <span id="review-hint" class="muted" style="font-size:12px"></span>
@@ -1681,7 +1681,7 @@ def render_query_html(
         const v = sel ? sel.value : "";
         if (!v) return;
         rbtn.disabled = true;
-        rhint.textContent = "复盘 " + v + " 中...";
+        rhint.textContent = "更新比分 " + v + " 中...";
         await fetch("/review", {{
           method: "POST",
           headers: {{"Content-Type": "application/json"}},
@@ -2100,7 +2100,7 @@ def render_query_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>变盘异动查询</title>
+  <title>足彩分析系统1.0</title>
   <style>
     :root {{
       --canvas: #f3f5f7; --panel: #ffffff; --ink: #1d2733; --muted: #64748b;
@@ -2175,7 +2175,7 @@ def render_query_html(
 </head>
 <body>
   <div class="page">
-    <h1>变盘异动查询</h1>
+    <h1>足彩分析系统1.0</h1>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}　上盘=让球方，下盘=受让方；上盘让球增加为升盘，减少为降盘。</div>
     {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
     <form method="get">
@@ -2197,7 +2197,7 @@ def render_query_html(
       </div>
       <button type="submit">查询</button>
       <button type="button" id="report-btn" class="report-btn">分析报告</button>
-      <button type="button" id="review-btn" class="report-btn">复盘</button>
+      <button type="button" id="review-btn" class="report-btn">更新比分</button>
       <label class="muted" style="font-size:12px"><input type="checkbox" id="review-refresh" checked> 刷新比分</label>
       <span id="report-hint" class="muted" style="font-size:12px"></span>
       <span id="review-hint" class="muted" style="font-size:12px"></span>
@@ -2229,7 +2229,7 @@ def render_query_html(
         const v = sel ? sel.value : "";
         if (!v) return;
         rbtn.disabled = true;
-        rhint.textContent = "复盘 " + v + " 中...";
+        rhint.textContent = "更新比分 " + v + " 中...";
         await fetch("/review", {{
           method: "POST",
           headers: {{"Content-Type": "application/json"}},
