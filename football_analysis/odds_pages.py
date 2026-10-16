@@ -56,6 +56,32 @@ def pages_age_hours(cache_root: str | Path | None, issue: str) -> float | None:
     return max(0.0, (time.time() - path.stat().st_mtime) / 3600)
 
 
+def has_odds_rows(cache_root: str | Path | None, issue: str) -> bool:
+    """产物里是否至少有一个可信的 yazhi（亚指）公司行。
+
+    只看内容不看 mtime：残缺产物（如 AI 分析补抓 shuju 合并后只有
+    ``|shuju`` 键）虽然 mtime 很新，却给不出任何盘口数据。抓取失败
+    （timeout/error）的页不算，上游未开盘（empty）也不算——有可信的
+    抓取结果但确实零盘口时，重抓只会再拿一次同样的结果。
+    """
+    if not cache_root:
+        return False
+    path = Path(cache_root) / PAGES_FILENAME.format(issue=issue)
+    if not path.exists():
+        return False
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return any(
+        key.endswith("|yazhi")
+        and isinstance(page, dict)
+        and _status(page) == "ok"
+        and page.get("rows")
+        for key, page in raw.items()
+    )
+
+
 def page_failures(raw: dict) -> list[str]:
     """返回抓取失败（timeout/error）的页面 key，供上层告警。"""
     return [

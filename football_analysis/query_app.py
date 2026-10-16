@@ -84,7 +84,13 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     """
     from .llm import TeamReader, enrich_team_reads
     from .cdp_profile import shutdown_cdp_chrome
-    from .odds_pages import PAGES_STALE_HOURS, load_odds_pages_raw, pages_age_hours, shuju_text
+    from .odds_pages import (
+        PAGES_STALE_HOURS,
+        has_odds_rows,
+        load_odds_pages_raw,
+        pages_age_hours,
+        shuju_text,
+    )
     from .store import (
         connect,
         default_db_path,
@@ -107,6 +113,9 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     # artifact exists and is within PAGES_STALE_HOURS, exactly like
     # run_refresh_odds. Missing / stale → same CDP path (off-screen window,
     # auto-reveal for EdgeOne checkbox), then re-read from the fresh artifact.
+    # has_odds_rows() is intentionally not part of this condition: an artifact
+    # that carries yazhi odds but no shuju text still serves the refresh
+    # semantics, and the LLM simply reads whatever shuju text is present.
     from .main import _default_cache_dir
     cache_dir = _default_cache_dir()
     age = pages_age_hours(cache_dir, actual_issue)
@@ -220,11 +229,18 @@ def run_refresh_odds(issue: str, *, cdp: str = CDP_DEFAULT, db_path: str | Path 
     """
     from .cdp_profile import shutdown_cdp_chrome
     from .main import _default_cache_dir
-    from .odds_pages import PAGES_STALE_HOURS, pages_age_hours
+    from .odds_pages import PAGES_STALE_HOURS, has_odds_rows, pages_age_hours
 
     cache_dir = _default_cache_dir()
     age = pages_age_hours(cache_dir, issue)
-    if age is not None and age <= PAGES_STALE_HOURS:
+    # mtime 只说产物文件“存在且很新”，不说它里面有盘口。AI 分析补抓的
+    # shuju 页会把文件合并刷新 mtime，产物里却没有任何 yazhi 公司行，
+    # 这类残缺产物若跳过，盘口数据就永远补不上——所以内容也要过一道。
+    if (
+        age is not None
+        and age <= PAGES_STALE_HOURS
+        and has_odds_rows(cache_dir, issue)
+    ):
         return (
             f"{issue} \u76d8\u53e3\u4ea7\u7269\u662f {age:.1f} \u5c0f\u65f6\u524d\u7684\uff0c"
             f"\u672a\u8d85 {PAGES_STALE_HOURS:.0f}h \u9608\u503c\uff0c\u8df3\u8fc7\u91cd\u6293"

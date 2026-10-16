@@ -9,6 +9,7 @@ from unittest import mock
 from football_analysis import query_app
 from football_analysis.odds_pages import PAGES_STALE_HOURS
 from football_analysis.store import save_issue_movements
+from football_analysis.odds_pages import has_odds_rows
 
 
 def _item() -> dict:
@@ -25,9 +26,23 @@ def _item() -> dict:
     }
 
 
-def _artifact(cache_dir: Path, issue: str, age_hours: float) -> Path:
+def _artifact(
+    cache_dir: Path,
+    issue: str,
+    age_hours: float,
+    *,
+    with_rows: bool = True,
+) -> Path:
+    """默认写一份带可信 yazhi 公司行的产物；残缺产物（AI 分析合并后只有
+    shuju 键、或 yazhi 为 empty 零公司行）传 with_rows=False 模拟。"""
+    payload = {
+        "9|yazhi": {
+            "status": "ok" if with_rows else "empty",
+            "rows": [[293, "0.87", "平手", "0.95", "0.90", "平手", "0.90"]] if with_rows else [],
+        }
+    }
     path = cache_dir / f"odds_pages_{issue}.json"
-    path.write_text(json.dumps({"9|yazhi": {"status": "empty", "rows": []}}), encoding="utf-8")
+    path.write_text(json.dumps(payload), encoding="utf-8")
     stamp = time.time() - age_hours * 3600
     os.utime(path, (stamp, stamp))
     return path
@@ -63,6 +78,24 @@ class RunRefreshOddsTests(unittest.TestCase):
             self.assertIn("跳过重抓", text)
             ensure.assert_not_called()
 
+    def test_fresh_but_incomplete_artifact_forces_rescrape(self):
+        """残缺产物（AI 分析合并后只有 shuju 键、yazhi 零公司行）mtime 很新，
+        也不能跳过：内容检查不通过就得重新抓全量，否则盘口永远补不上。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "cache"
+            cache.mkdir()
+            _artifact(cache, "26135", PAGES_STALE_HOURS / 2, with_rows=False)
+            with mock.patch("football_analysis.main._app_root", return_value=root), \
+                 mock.patch.object(query_app, "_ensure_cdp", return_value=None), \
+                 mock.patch.object(
+                     query_app, "_run_odds_scraper", side_effect=RuntimeError("reached-scraper")
+                 ), \
+                 mock.patch("football_analysis.cdp_profile.shutdown_cdp_chrome"):
+                with self.assertRaises(RuntimeError) as ctx:
+                    query_app.run_refresh_odds("26135")
+                self.assertEqual(str(ctx.exception), "reached-scraper")
+
     def test_stale_without_cdp_returns_hint(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -90,3 +123,54 @@ class RunRefreshOddsTests(unittest.TestCase):
                     with self.assertRaises(RuntimeError) as ctx:
                         query_app.run_refresh_odds("26135")
                 self.assertEqual(str(ctx.exception), "reached-scraper")
+
+class HasOddsRowsTests(unittest.TestCase):
+    """has_odds_rows 只看产物内容（有无可信 yazhi 公司行），不看 mtime。"""
+
+    def _write(self, tmp: Path, payload: object) -> Path:
+        cache = tmp / "cache"
+        cache.mkdir()
+        path = cache / "odds_pages_26135.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        return cache
+
+    def test_full_artifact_with_rows_is_true(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = self._write(
+                Path(tmp),
+                {
+                    "9|yazhi": {"status": "ok", "rows": [[293, "0.87", "平手", "0.95", "0.90", "平手", "0.90"]]},
+                    "9|shuju": {"status": "ok", "text": "数据页"},
+                },
+            )
+            self.assertTrue(has_odds_rows(cache, "26135"))
+
+    def test_shuju_only_artifact_is_false(self):
+        """AI 分析补抓合并后只剩 |shuju 键的残缺产物：不算有盘口。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = self._write(Path(tmp), {"9|shuju": {"status": "ok", "text": "数据页"}})
+            self.assertFalse(has_odds_rows(cache, "26135"))
+
+    def test_empty_yazhi_is_false(self):
+        """yazhi 页是 empty（上游确实没开盘）：有可信抓取结果但零盘口，
+        也算 False（重抓只会再拿一次同样结果，由 _ensure_cdp 流程正常兜底）。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = self._write(Path(tmp), {"9|yazhi": {"status": "empty", "rows": []}})
+            self.assertFalse(has_odds_rows(cache, "26135"))
+
+    def test_failed_yazhi_is_false(self):
+        """yazhi 页是 timeout/error：不算有盘口，必须重抓。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = self._write(
+                Path(tmp), {"9|yazhi": {"status": "timeout", "rows": []}}
+            )
+            self.assertFalse(has_odds_rows(cache, "26135"))
+
+    def test_missing_file_is_false(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp) / "cache"
+            cache.mkdir()
+            self.assertFalse(has_odds_rows(cache, "26135"))
+
+    def test_none_cache_root_is_false(self):
+        self.assertFalse(has_odds_rows(None, "26135"))
