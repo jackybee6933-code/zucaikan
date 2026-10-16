@@ -92,6 +92,7 @@ python -m unittest discover -s tests       # 测试
 - 联赛标签配色（2026-10-08）：500 胜负彩/竞彩交易页「赛事」栏的联赛名是内联背景色（跨期固定，如英超 #FF1717、西甲 #006633、德甲 #990099），现在原样抄到报告页。`sfc.parse_sfc_html` 与 `jczq.parse_jczq_html` 从 `td-evt` 的 `<a>` style 里取 `background` 色，随数据流透传到 `store.match_movements.league_color`（老库 `_migrate` 自动加列），`browser_report` 三处 + `query_report` 一处联赛名经 `_league_badge()` 渲染成实心白字徽章；无颜色的联赛（如新杯赛）退回纯文本。新期需重新 analyze 才有颜色（26136 实测 10/14 个联赛带色）。
 - 注意单家口径：单场页按公司优先取一家（澳门优先，兜底威廉）作为盘口数值，个别公司会显著偏离共识（26135 第 9 场大小球威廉 3.5→2.5，其余公司多为 3.5→3 或持平）——这类场次会同时被 `split` 标出，解读重点关注项时先看分歧再下结论。
 - 合并边界：`analyze_issue` 里 `merged.update({k: v for k, v in pages.items() if v not in (0.0, "")})` 会把值为 0.0 的键排除。若某场在 `odds.xml` 里没有记录（`info_match_id` 匹配不上）且单场页盘口是平手（line=0.0），合并结果就只有 `asian_line_text` 而缺 `asian_home_line`；`_build_single_analysis` 取数值时必须与条件分支一致地 `float(... or 0)`，否则 `float(None)` 崩溃（26136 实测，tests/test_odds_and_model.py `BuildSingleAnalysisMissingLineTests`）。
+- 进度快照跨任务串味（2026-10-16 修复）：`cache/.ai_scrape_progress` 只按 issue 匹配（`/refresh-odds-status` 不知道它属于哪一次任务），上一次 AI 分析留下的 `phase=llm 14/14` 会被下一次刷新读成「抓取 14/14 (100%)」先闪几秒。现在 `query_app._clear_progress()` 在 `run_refresh_odds` / `run_ai_analyze` 动手前清掉旧快照，从清完到本次第一个快照写出之间，前端只显示"进行中"、不画进度条；tests/test_query_refresh.py 与 tests/test_query_app_ai.py 各钉一条。
 - 这是研究型原型，尚未完成长期回测、赛后反馈学习、生产部署和多公司完整赔率时间线。
 
 

@@ -228,6 +228,26 @@ class RefreshOddsOnlyMissingKindsTests(unittest.TestCase):
         scraper.assert_not_called()
 
 
+class StaleProgressSnapshotTests(unittest.TestCase):
+    """进度快照只按 issue 匹配：上一轮任务留下的 14/14 不能被本轮读成 100%。"""
+
+    def test_refresh_clears_previous_snapshot_before_deciding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "cache"
+            cache.mkdir()
+            _artifact(cache, "26135", PAGES_STALE_HOURS / 2, all_kinds=True)
+            stale = cache / ".ai_scrape_progress"
+            stale.write_text(
+                json.dumps({"issue": "26135", "phase": "llm", "total": 14, "done": 14}),
+                encoding="utf-8",
+            )
+            with mock.patch("football_analysis.main._app_root", return_value=root):
+                text = query_app.run_refresh_odds("26135")
+            self.assertIn("跳过重抓", text)
+            self.assertFalse(stale.exists())
+
+
 class HasOddsRowsTests(unittest.TestCase):
     """has_odds_rows 只看产物内容（有无可信 yazhi 公司行），不看 mtime。"""
 

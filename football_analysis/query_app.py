@@ -117,6 +117,7 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     # semantics, and the LLM simply reads whatever shuju text is present.
     from .main import _default_cache_dir
     cache_dir = _default_cache_dir()
+    _clear_progress(cache_dir)
     age = pages_age_hours(cache_dir, actual_issue)
     needed_pages = 0
     # mtime 龄只说"文件很新"，不说里面有 shuju。产物存在但缺 shuju
@@ -200,6 +201,21 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
         f"{actual_issue}：AI 分析完成 {count}/{len(analyses)} 场"
         f"（读 {needed_pages} 场数据页、更新 {updated} 行），刷新页面查看「倾向」"
     )
+
+
+def _clear_progress(cache_dir: Path) -> None:
+    """任务开头清掉上一轮留下的进度快照。
+
+    查询页只能按 issue 匹配快照（不知道它属于哪一次任务），上一次 AI 分析
+    留下的 `phase=llm 14/14` 会被下一次刷新读成「抓取 14/14 (100%)」闪一下。
+    清掉之后到本次第一个快照写出之前，前端只显示"进行中"、不画进度条。
+    """
+    try:
+        (cache_dir / ".ai_scrape_progress").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def _ensure_cdp(endpoint: str) -> str | None:
     """Probe the CDP port; if unreachable, launch Chrome with the CDP profile.
 
@@ -244,6 +260,7 @@ def run_refresh_odds(issue: str, *, cdp: str = CDP_DEFAULT, db_path: str | Path 
     )
 
     cache_dir = _default_cache_dir()
+    _clear_progress(cache_dir)
     age = pages_age_hours(cache_dir, issue)
     # 产物里缺哪些页种（yazhi/daxiao/shuju）决定要不要抓、抓哪些：
     # 无缺失 → 直接跳过；只有 shuju 缺失 → 补抓 shuju 但不重跑入库

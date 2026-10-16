@@ -2,6 +2,7 @@
 从 odds_pages 产物的 shuju key 顺序推导，match_no 做索引。"""
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -123,6 +124,35 @@ class FixtureIdFallbackTests(unittest.TestCase):
 
         self.assertIn("AI 分析完成 1/1 场", result, f"实际: {result}")
         self.assertEqual(captured["page_texts"], ["正确资料"])
+
+
+class StaleProgressSnapshotTests(unittest.TestCase):
+    """AI 分析入口也要在动手前清掉上一轮留下的进度快照（同样的 issue 匹配）。"""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.db = self.root / "ai.sqlite"
+        _make_db(self.db)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_ai_analyze_clears_previous_snapshot(self):
+        cache = self.root / "cache"
+        cache.mkdir()
+        stale = cache / ".ai_scrape_progress"
+        stale.write_text(
+            json.dumps({"issue": "26135", "phase": "scrape", "total": 42, "done": 42}),
+            encoding="utf-8",
+        )
+        with mock.patch("football_analysis.main._app_root", return_value=self.root), \
+             mock.patch("football_analysis.query_app._ensure_cdp", return_value=None), \
+             mock.patch("football_analysis.query_app._run_odds_scraper", return_value=""), \
+             mock.patch("football_analysis.store.rebuild_analyses_from_db", return_value=[]), \
+             mock.patch("football_analysis.cdp_profile.shutdown_cdp_chrome"):
+            run_ai_analyze("26135", db_path=self.db)
+        self.assertFalse(stale.exists())
 
 
 if __name__ == "__main__":
