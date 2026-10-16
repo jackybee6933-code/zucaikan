@@ -245,7 +245,7 @@ def reconcile_ledger(
 
 
 def ledger_trend(db_path: str | Path) -> list[dict]:
-    """跨期对账趋势：按期号升序，每期给出排序前 N 的命中率（走水不计）。"""
+    """跨期对账趋势：按期号升序，每期用 match_movements 最新 final_score 即时对账（走水不计）。"""
     conn = sqlite3.connect(Path(db_path))
     try:
         ensure_schema(conn)
@@ -261,8 +261,12 @@ def ledger_trend(db_path: str | Path) -> list[dict]:
                 "SELECT MAX(run_id) FROM ev_ledger WHERE issue = ?", (issue,)
             ).fetchone()[0]
             rows = [
-                dict(zip(("id", "match_no", "home_team", "away_team", "ev_diff",
-                          "picked_side", "asian_line", "final_score"), r))
+                dict(
+                    zip(
+                        ("id", "match_no", "home_team", "away_team", "ev_diff", "picked_side", "asian_line", "final_score"),
+                        r,
+                    )
+                )
                 for r in conn.execute(
                     """
                     SELECT id, match_no, home_team, away_team, ev_diff,
@@ -273,9 +277,29 @@ def ledger_trend(db_path: str | Path) -> list[dict]:
                     (run_id,),
                 )
             ]
+            # 与 reconcile_ledger(scores=None) 口径一致：直接读 match_movements
+            # 该期最新 run 的 final_score，不依赖事先写回 ev_ledger 的动作。
+            # 纯测试库里没有 issue_runs/match_movements 表时回退读 ev_ledger 自带列。
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = ?", ("table",))}
+            scores: dict[str, str] = {}
+            if "issue_runs" in tables and "match_movements" in tables:
+                mv_run = conn.execute(
+                    "SELECT MAX(run_id) FROM issue_runs WHERE issue = ?", (issue,)
+                ).fetchone()[0]
+                if mv_run is not None:
+                    for m_no, score in conn.execute(
+                        "SELECT match_no, final_score FROM match_movements WHERE run_id = ?",
+                        (mv_run,),
+                    ):
+                        if score:
+                            scores[str(m_no)] = str(score)
+            if not scores:
+                for r in rows:
+                    scores.setdefault(r["match_no"], r.get("final_score", ""))
+
             settled = hits = push = 0
             for r in rows:
-                goals = _score_goals(r["final_score"])
+                goals = _score_goals(scores.get(r["match_no"], ""))
                 if goals is None:
                     continue
                 result = _cover_result(goals[0], goals[1], r["asian_line"], r["picked_side"])
