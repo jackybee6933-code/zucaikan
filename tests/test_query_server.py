@@ -148,6 +148,33 @@ class QueryServerTests(unittest.TestCase):
         self.assertIn("running", payload)
         self.assertFalse(payload["running"])
 
+    def test_refresh_odds_status_includes_progress_when_file_present(self):
+        """/refresh-odds-status 和 /ai-analyze-status 一样，把抓取进度文件快照
+        附在响应里（期号不匹配或缺文件时不带 progress 字段），前端好画进度条。"""
+        from football_analysis.main import _default_cache_dir
+
+        cache_dir = _default_cache_dir()
+        progress_file = cache_dir / ".ai_scrape_progress"
+        try:
+            progress_file.write_text(
+                json.dumps({"issue": ISSUE, "phase": "scrape", "total": 42, "done": 14}),
+                encoding="utf-8",
+            )
+            status, body = _get(self.base + "/refresh-odds-status")
+            self.assertEqual(status, 200)
+            payload = json.loads(body)
+            self.assertEqual(payload.get("progress", {}).get("total"), 42)
+
+            # 期号不匹配：不带 progress
+            progress_file.write_text(
+                json.dumps({"issue": "99999", "phase": "scrape", "total": 42, "done": 14}),
+                encoding="utf-8",
+            )
+            _, body = _get(self.base + "/refresh-odds-status")
+            self.assertNotIn("progress", json.loads(body))
+        finally:
+            progress_file.unlink(missing_ok=True)
+
     def test_post_refresh_odds_requires_issue(self):
         status, _ = _post(self.base + "/refresh-odds", {})
         self.assertEqual(status, 400)

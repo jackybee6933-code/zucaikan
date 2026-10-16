@@ -488,7 +488,18 @@ def serve_query(
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(json.dumps(refresh_odds_state, ensure_ascii=False).encode("utf-8"))
+                payload = dict(refresh_odds_state)
+                # 抓取阶段把进度文件快照进去；文件不存在（跳过重抓/LLM 阶段/没抓过）就不带 progress 字段
+                from .main import _default_cache_dir as _cache_dir
+                progress_file = _cache_dir() / ".ai_scrape_progress"
+                if progress_file.is_file():
+                    try:
+                        progress = json.loads(progress_file.read_text(encoding="utf-8"))
+                        if progress.get("issue") == payload.get("issue"):
+                            payload["progress"] = progress
+                    except (OSError, json.JSONDecodeError):
+                        pass
+                self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
                 return
 
             if parsed.path == "/ai-analyze-status":
