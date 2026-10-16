@@ -323,5 +323,50 @@ class PagesSplitRetentionTests(unittest.TestCase):
         self.assertTrue(movement["asian"]["available"])
         self.assertEqual(movement["split"][0]["market"], "亚盘")
 
+class PagesFallbackWithoutTitanIdTests(unittest.TestCase):
+    """26143 期根因复现：jczq 失效（Titan 赛程无映射）时整期 14 场
+    titan_match_id 全空，旧逻辑直接 return，单场页盘口从未进入 movements，
+    查询页显示无数据。现在 titan_match_id 缺失不影响单场页兜底。"""
+
+    PAGES = {
+        "9|yazhi": {
+            "status": "ok",
+            "rows": [
+                ["5", "0.90", "半球", "0.96", "0.88", "半球", "0.98"],
+            ],
+        }
+    }
+
+    def test_pages_still_attached_when_row_has_no_titan_id(self):
+        rows = [
+            {"fixture_id": "9", "home_name": "home", "away_name": "away"},
+            # 无 titan_match_id（jczq 失效场景），不能整块跳过单场页
+        ]
+        with mock.patch.object(
+            pipeline, "fetch_nowscore_movement", return_value={"available": False}
+        ):
+            pipeline._attach_odds_movement(
+                rows,
+                fetcher=mock.MagicMock(),
+                max_workers=1,
+                pages_raw=self.PAGES,
+            )
+        movement = rows[0].get("odds_movement")
+        self.assertIsNotNone(movement, "无 titan_match_id 时单场页盘口也必须挂上")
+        self.assertTrue(movement["asian"]["available"])
+
+    def test_nothing_attached_without_pages_or_titan_id(self):
+        """既无 titan_match_id 也无单场页产物时，维持旧行为：什么都不挂。"""
+        rows = [{"fixture_id": "9", "home_name": "home", "away_name": "away"}]
+        with mock.patch.object(
+            pipeline, "fetch_nowscore_movement", return_value={"available": False}
+        ):
+            pipeline._attach_odds_movement(
+                rows,
+                fetcher=mock.MagicMock(),
+                max_workers=1,
+                pages_raw=None,
+            )
+        self.assertNotIn("odds_movement", rows[0])
 if __name__ == "__main__":
     unittest.main()

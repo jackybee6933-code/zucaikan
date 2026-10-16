@@ -302,27 +302,25 @@ def _attach_titan_h2h(
         elif not schedule_map and not row.get("home_id"):
             row["warnings"].append(f"Titan 赛程未映射本场：{schedule_error}" if schedule_error else "Titan 赛程未映射本场")
 
-    if not by_fixture:
-        return
+    if by_fixture:
+        h2h_by_fixture: dict[str, dict] = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(fetch_titan_h2h, fetcher, match_id): fixture_id
+                for fixture_id, match_id in by_fixture.items()
+            }
+            for future in as_completed(future_map):
+                fixture_id = future_map[future]
+                try:
+                    h2h_by_fixture[fixture_id] = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    h2h_by_fixture[fixture_id] = {"_error": str(exc)}
 
-    h2h_by_fixture: dict[str, dict] = {}
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_map = {
-            executor.submit(fetch_titan_h2h, fetcher, match_id): fixture_id
-            for fixture_id, match_id in by_fixture.items()
-        }
-        for future in as_completed(future_map):
-            fixture_id = future_map[future]
-            try:
-                h2h_by_fixture[fixture_id] = future.result()
-            except Exception as exc:  # noqa: BLE001
-                h2h_by_fixture[fixture_id] = {"_error": str(exc)}
-
-    for row in rows:
-        payload = h2h_by_fixture.get(row.get("fixture_id", ""))
-        if payload is None:
-            continue
-        row["h2h"] = payload
+        for row in rows:
+            payload = h2h_by_fixture.get(row.get("fixture_id", ""))
+            if payload is None:
+                continue
+            row["h2h"] = payload
 
 
 def _attach_odds_movement(
@@ -338,7 +336,11 @@ def _attach_odds_movement(
         if row.get("titan_match_id")
     }
     if not by_fixture:
-        return
+        # jczq 失效（Titan 赛程无映射）时整期 titan_match_id 全空，旧逻辑在这里
+        # 直接 return，单场页盘口也永远不会被挂上——但单场页是按 fixture_id
+        # 索引的，跟 titan_match_id 没有依赖关系。缺 titan 只跳过 Nowscore
+        # 抓取（没有可用 match_id），单场页兜底照常进行。
+        pass
 
     teams_by_fixture: dict[str, dict] = {}
     for row in rows:
