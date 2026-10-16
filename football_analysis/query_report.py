@@ -525,7 +525,7 @@ def render_query_html(
       <button type="submit">查询</button>
       <button type="button" id="report-btn" class="report-btn">分析报告</button>
       <button type="button" id="review-btn" class="report-btn">复盘</button>
-      <label class="muted" style="font-size:12px"><input type="checkbox" id="review-refresh"> 刷新比分</label>
+      <label class="muted" style="font-size:12px"><input type="checkbox" id="review-refresh" checked> 刷新比分</label>
       <span id="report-hint" class="muted" style="font-size:12px"></span>
       <span id="review-hint" class="muted" style="font-size:12px"></span>
     </form>
@@ -1048,7 +1048,7 @@ def render_query_html(
       <button type="submit">查询</button>
       <button type="button" id="report-btn" class="report-btn">分析报告</button>
       <button type="button" id="review-btn" class="report-btn">复盘</button>
-      <label class="muted" style="font-size:12px"><input type="checkbox" id="review-refresh"> 刷新比分</label>
+      <label class="muted" style="font-size:12px"><input type="checkbox" id="review-refresh" checked> 刷新比分</label>
       <span id="report-hint" class="muted" style="font-size:12px"></span>
       <span id="review-hint" class="muted" style="font-size:12px"></span>
     </form>
@@ -1569,7 +1569,7 @@ def render_query_html(
       <button type="submit">查询</button>
       <button type="button" id="report-btn" class="report-btn">分析报告</button>
       <button type="button" id="review-btn" class="report-btn">复盘</button>
-      <label class="muted" style="font-size:12px"><input type="checkbox" id="review-refresh"> 刷新比分</label>
+      <label class="muted" style="font-size:12px"><input type="checkbox" id="review-refresh" checked> 刷新比分</label>
       <span id="report-hint" class="muted" style="font-size:12px"></span>
       <span id="review-hint" class="muted" style="font-size:12px"></span>
     </form>
@@ -2090,7 +2090,7 @@ def render_query_html(
       <button type="submit">查询</button>
       <button type="button" id="report-btn" class="report-btn">分析报告</button>
       <button type="button" id="review-btn" class="report-btn">复盘</button>
-      <label class="muted" style="font-size:12px"><input type="checkbox" id="review-refresh"> 刷新比分</label>
+      <label class="muted" style="font-size:12px"><input type="checkbox" id="review-refresh" checked> 刷新比分</label>
       <span id="report-hint" class="muted" style="font-size:12px"></span>
       <span id="review-hint" class="muted" style="font-size:12px"></span>
     </form>
