@@ -116,9 +116,12 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
         cdp_error = _ensure_cdp(CDP_DEFAULT)
         if cdp_error:
             return cdp_error
-        scrape_error = _run_odds_scraper(actual_issue, cache_dir, CDP_DEFAULT, kinds=["shuju"])
+        try:
+            scrape_error = _run_odds_scraper(actual_issue, cache_dir, CDP_DEFAULT, kinds=["shuju"])
+        finally:
+            shutdown_cdp_chrome()
         if scrape_error:
-            return f"单场页抓取失败：{scrape_error}"
+            return f"分析页抓取失败：{scrape_error}"
 
     analyses = rebuild_analyses_from_db(target_db, actual_issue)
     raw = load_odds_pages_raw(cache_dir, actual_issue)
@@ -187,7 +190,7 @@ def _ensure_cdp(endpoint: str) -> str | None:
     import urllib.request
     from urllib.parse import urlparse
 
-    from .cdp_profile import ensure_cdp_chrome
+    from .cdp_profile import ensure_cdp_chrome, shutdown_cdp_chrome
 
     def probe() -> bool:
         try:
@@ -214,6 +217,7 @@ def run_refresh_odds(issue: str, *, cdp: str = CDP_DEFAULT, db_path: str | Path 
     Chrome CDP port; if unreachable return CDP_HINT. If reachable, run
     tools/scrape_odds_pages.py to re-scrape and overwrite the artifact.
     """
+    from .cdp_profile import shutdown_cdp_chrome
     from .main import _default_cache_dir
     from .odds_pages import PAGES_STALE_HOURS, pages_age_hours
 
@@ -229,7 +233,10 @@ def run_refresh_odds(issue: str, *, cdp: str = CDP_DEFAULT, db_path: str | Path 
     cdp_error = _ensure_cdp(endpoint)
     if cdp_error:
         return cdp_error
-    scrape_error = _run_odds_scraper(issue, cache_dir, endpoint)
+    try:
+        scrape_error = _run_odds_scraper(issue, cache_dir, endpoint)
+    finally:
+        shutdown_cdp_chrome()
     if scrape_error:
         return scrape_error
     new_age = pages_age_hours(cache_dir, issue)

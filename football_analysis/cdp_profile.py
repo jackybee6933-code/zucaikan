@@ -28,6 +28,8 @@ _COPY_FILES = ("Local State", "Default/Preferences", "Default/Network/Cookies")
 # 节流，抓取不受影响；碰到验证页 scraper 会调 reveal_window 把它挪回来。
 OFFSCREEN_ARGS = ("--window-position=-32000,-32000", "--window-size=1200,900")
 
+_CHROME_PROC: subprocess.Popen | None = None
+
 
 def copy_profile() -> tuple[list[str], list[str]]:
     """复制验证所需文件到独立 profile 目录，返回 (已复制, 被锁跳过)。
@@ -65,6 +67,7 @@ def launch_cdp_chrome(port: int = 9222, wait_seconds: float = 10.0) -> tuple[boo
     if skipped:
         logs.append("跳过（被默认 Chrome 锁住，沿用已有 cookie）:")
         logs += [f"  {s}" for s in skipped]
+    global _CHROME_PROC
     proc = subprocess.Popen(
         [
             CHROME,
@@ -78,6 +81,7 @@ def launch_cdp_chrome(port: int = 9222, wait_seconds: float = 10.0) -> tuple[boo
         ],
         shell=False,
     )
+    _CHROME_PROC = proc
     logs.append(f"Chrome 已启动 pid={proc.pid}，等待调试端口...")
     deadline = time.time() + wait_seconds
     while time.time() < deadline:
@@ -99,3 +103,19 @@ def ensure_cdp_chrome(port: int = 9222) -> str | None:
     if ok:
         return None
     return f"http://127.0.0.1:{port} 仍连不上，请检查 Chrome 是否被拦截。"
+
+
+def shutdown_cdp_chrome() -> None:
+    """关闭 launch_cdp_chrome 启动的 Chrome 进程；未启动过则空操作。"""
+    global _CHROME_PROC
+    if _CHROME_PROC is None:
+        return
+    proc, _CHROME_PROC = _CHROME_PROC, None
+    try:
+        proc.terminate()
+        proc.wait(timeout=5.0)
+    except (subprocess.TimeoutExpired, OSError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
