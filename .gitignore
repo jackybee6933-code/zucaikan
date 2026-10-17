@@ -7,3 +7,4 @@ cache/
 reports/
 *.sqlite
 .tmp_*
+.last_run.log
