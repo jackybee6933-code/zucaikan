@@ -160,6 +160,32 @@ def _load_prev_splits(conn: sqlite3.Connection, issue: str, run_id: int) -> dict
     return splits
 
 
+def _load_prev_team_reads(conn, issue, run_id):
+    """取上一 run 的 team_read 快照，供新 run 继承。
+
+    team_read 由「AI 分析」按钮单独生成并写入所有 run；普通抓取/回填不重新
+    生成，新 run 会缺 team_read。继承避免查询页只看最新 run 时倾向栏被清空。
+    """
+    prev = conn.execute(
+        """
+        SELECT match_no, team_read
+        FROM match_movements
+        WHERE issue = ? AND run_id < ? AND team_read != ''
+        ORDER BY run_id DESC
+        """,
+        (issue, run_id),
+    ).fetchall()
+    reads = {}
+    for match_no, payload in prev:
+        if match_no in reads:
+            continue
+        try:
+            reads[match_no] = json.loads(payload)
+        except (json.JSONDecodeError, TypeError):
+            continue
+    return reads
+
+
 def save_issue_movements(
     db_path: str | Path,
     analyses: list[dict],
@@ -185,6 +211,7 @@ def save_issue_movements(
         # 普通抓取走网络不读产物，新 run 会没有 split。继承上一 run 的 split，
         # 避免查询页只看最新 run 时盘口分歧「消失」。
         prev_splits = _load_prev_splits(conn, issue, run_id)
+        prev_team_reads = _load_prev_team_reads(conn, issue, run_id)
         rows = []
         for item in analyses:
             movement = item.get("odds_movement") or {}
@@ -192,6 +219,10 @@ def save_issue_movements(
                 inherited = prev_splits.get(str(item.get("match_no") or ""))
                 if inherited:
                     movement["split"] = inherited
+            if prev_team_reads and not item.get("team_read"):
+                inherited_read = prev_team_reads.get(str(item.get("match_no") or ""))
+                if inherited_read:
+                    item["team_read"] = inherited_read
             asian = movement.get("asian") or {}
             initial = asian.get("initial") or {}
             current = asian.get("current") or {}
