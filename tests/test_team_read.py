@@ -300,13 +300,7 @@ class StoreAndReportTests(unittest.TestCase):
 
 
 class UpdateTeamReadTests(unittest.TestCase):
-    """复盘按钮「刷新比分」默认勾选，点复盘时默认就走 --refresh 拿最新比分。"""
-
-    def test_review_refresh_checkbox_defaults_checked(self):
-        html = render_query_html([], issues=[], latest_only=True)
-        self.assertIn(
-            '<input type="checkbox" id="review-refresh" checked>', html
-        )
+    """复盘按钮点击即走 --refresh 重新抓取最终比分；更新覆盖该期全部 run。"""
 
 
     def test_overwrites_all_runs_by_match_no(self):
