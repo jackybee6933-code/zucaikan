@@ -107,6 +107,19 @@ def _pick_company(rows: list[list]) -> list | None:
     return rows[0] if rows else None
 
 
+def _shifted(rows: list[list]) -> list[list]:
+    """补齐公司名列：旧产物 rows 只有 7 列（缺公司名），统一成 8 列。"""
+    out = []
+    for row in rows:
+        if len(row) >= 8:
+            out.append(list(row))
+        elif len(row) == 7:
+            out.append([row[0], ""] + list(row[1:]))
+        else:
+            out.append(list(row))
+    return out
+
+
 def parse_odds_pages(raw: dict) -> dict[str, dict]:
     """把 odds.500.com 单场页抓取结果转成与 parse_odds_xml 同构的字典，按 fixture_id 索引。
 
@@ -118,13 +131,13 @@ def parse_odds_pages(raw: dict) -> dict[str, dict]:
         if not isinstance(page, dict) or _status(page) not in PAGE_STATUSES:
             continue
         fixture_id, _, kind = str(key).partition("|")
-        rows = page.get("rows") or []
+        rows = _shifted(page.get("rows") or [])
         row = _pick_company(rows)
         if not fixture_id or row is None:
             continue
         slot = result.setdefault(fixture_id, {})
-        label = CID_LABELS.get(str(row[0]), "")
-        text = _line_text(row[2])
+        name = str(row[1]) if len(row) > 1 and row[1] else CID_LABELS.get(str(row[0]), "")
+        text = _line_text(row[3])
         if kind == "yazhi":
             line = handicap_line_to_float(text)
             slot.update(
@@ -132,9 +145,9 @@ def parse_odds_pages(raw: dict) -> dict[str, dict]:
                     "asian_line_text": text,
                     "asian_home_line": line,
                     "asian_line_display": fmt_handicap(line) if text else "",
-                    "asian_home_water": _water(row[1]),
-                    "asian_away_water": _water(row[3]),
-                    "asian_company": label,
+                    "asian_home_water": _water(row[2]),
+                    "asian_away_water": _water(row[4]),
+                    "asian_company": name,
                 }
             )
         elif kind == "daxiao":
@@ -142,9 +155,9 @@ def parse_odds_pages(raw: dict) -> dict[str, dict]:
                 {
                     "total_line_text": text,
                     "total_line": total_line_to_float(text),
-                    "over_water": _water(row[1]),
-                    "under_water": _water(row[3]),
-                    "total_company": label,
+                    "over_water": _water(row[2]),
+                    "under_water": _water(row[4]),
+                    "total_company": name,
                 }
             )
     return result
@@ -160,8 +173,8 @@ COMPANY_NAMES = {"5": "澳门", "293": "威廉", "4": "皇冠", "6": "伟德"}
 def _spread(rows: list[list], converter) -> list[float]:
     """各公司即时盘口，按让球幅度升序；不足两家公司时返回空列表。"""
     values = []
-    for row in rows:
-        line = converter(_line_text(row[2]))
+    for row in _shifted(rows):
+        line = converter(_line_text(row[3]))
         if line:
             values.append(line)
     return sorted(values, key=abs) if len(values) >= 2 else []
@@ -169,17 +182,19 @@ def _spread(rows: list[list], converter) -> list[float]:
 
 def _company_rows(rows: list[list]) -> list[dict]:
     """各公司的初盘/即时盘口，供悬停弹层展示；保持页面原有公司顺序。"""
+    rows = _shifted(rows)
     out = []
     for row in rows:
-        init_text = _line_text(row[5])
-        cur_text = _line_text(row[2])
+        init_text = _line_text(row[6])
+        cur_text = _line_text(row[3])
         if not init_text and not cur_text:
             continue
         cid = str(row[0])
+        name = str(row[1]) if len(row) > 1 and row[1] else COMPANY_NAMES.get(cid, "")
         out.append(
             {
                 "cid": cid,
-                "name": COMPANY_NAMES.get(cid, ""),
+                "name": name,
                 "initial": init_text or "—",
                 "current": cur_text or "—",
             }
@@ -214,12 +229,12 @@ def build_pages_movements(raw: dict, teams_by_fixture: dict | None = None) -> di
     result: dict[str, dict] = {}
     for key, page in (raw or {}).items():
         fixture_id, _, kind = str(key).partition("|")
-        rows = page.get("rows") or []
+        rows = _shifted(page.get("rows") or [])
         row = _pick_company(rows)
         if not fixture_id or row is None:
             continue
-        init_text = _line_text(row[5])
-        cur_text = _line_text(row[2])
+        init_text = _line_text(row[6])
+        cur_text = _line_text(row[3])
         if kind == "yazhi":
             init_line = handicap_line_to_float(init_text)
             cur_line = handicap_line_to_float(cur_text)
@@ -230,15 +245,15 @@ def build_pages_movements(raw: dict, teams_by_fixture: dict | None = None) -> di
                     "line_text": init_text,
                     "line": init_line,
                     "line_display": _handicap_display(init_line),
-                    "home_water": _water(row[4]),
-                    "away_water": _water(row[6]),
+                    "home_water": _water(row[5]),
+                    "away_water": _water(row[7]),
                 },
                 "current": {
                     "line_text": cur_text,
                     "line": cur_line,
                     "line_display": _handicap_display(cur_line),
-                    "home_water": _water(row[1]),
-                    "away_water": _water(row[3]),
+                    "home_water": _water(row[2]),
+                    "away_water": _water(row[4]),
                 },
             }
         elif kind == "daxiao":
@@ -248,21 +263,21 @@ def build_pages_movements(raw: dict, teams_by_fixture: dict | None = None) -> di
                 "initial": {
                     "line_text": init_text,
                     "line": total_line_to_float(init_text),
-                    "over_water": _water(row[4]),
-                    "under_water": _water(row[6]),
+                    "over_water": _water(row[5]),
+                    "under_water": _water(row[7]),
                 },
                 "current": {
                     "line_text": cur_text,
                     "line": total_line_to_float(cur_text),
-                    "over_water": _water(row[1]),
-                    "under_water": _water(row[3]),
+                    "over_water": _water(row[2]),
+                    "under_water": _water(row[4]),
                 },
             }
 
     splits: dict[str, list[str]] = {}
     for key, page in (raw or {}).items():
         fixture_id, _, kind = str(key).partition("|")
-        rows = page.get("rows") or []
+        rows = _shifted(page.get("rows") or [])
         if not fixture_id or len(rows) < 2:
             continue
         if kind == "yazhi":

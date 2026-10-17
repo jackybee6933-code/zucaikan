@@ -46,6 +46,8 @@ SETTLE_POLLS = 3
 KINDS = ("yazhi", "daxiao", "shuju")
 
 
+# 每行结构：[cid, 公司名(打码), 即时主水, 即时盘, 即时客水, 初主水, 初盘, 初客水]
+# 公司名取页面上 <a> 的文本，未登录时 500 会打码成「威***」「*门」等，原样保留。
 EXTRACT_JS = """() => {
   const grab = (td) => Array.from(td.querySelectorAll('td')).map((x) => x.textContent.trim());
   const out = [];
@@ -55,8 +57,9 @@ EXTRACT_JS = """() => {
     const tds = Array.from(tr.children).filter((c) => c.tagName === 'TD');
     if (tds.length < 6) return;
     out.push([
-      (a.getAttribute('href').match(/cid=(\\d+)/) || [])[1] || '',
-      ...grab(tds[2]).slice(0, 3),
+        (a.getAttribute('href').match(/cid=(\\d+)/) || [])[1] || '',
+        a.textContent.trim(),
+        ...grab(tds[2]).slice(0, 3),
       ...grab(tds[4]).slice(0, 3),
     ]);
   });
