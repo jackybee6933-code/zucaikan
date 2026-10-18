@@ -219,6 +219,24 @@ class PagesSplitTests(unittest.TestCase):
         mv = build_pages_movements(_raw({"9|daxiao": [self.ROWS[0]]}))["9"]
         self.assertNotIn("split", mv)
 
+    def test_no_split_when_all_unchanged(self):
+        """初盘与即时完全一致时，即使各公司盘口有差异也不挂分歧。"""
+        rows = [
+            ["293", "0.90", "2.5", "1.00", "0.90", "2.5", "1.00"],
+            ["4", "0.85", "3", "1.05", "0.85", "3", "1.05"],
+        ]
+        mv = build_pages_movements(_raw({"9|daxiao": rows}))["9"]
+        self.assertNotIn("split", mv)
+
+    def test_split_kept_when_some_company_unchanged(self):
+        """只要有任何一家初盘→即时盘口有变化，分歧照常展示。"""
+        rows = [
+            ["293", "0.90", "2.5", "1.00", "0.90", "2.5", "1.00"],
+            ["4", "0.85", "3", "1.05", "0.85", "4", "1.05"],
+        ]
+        mv = build_pages_movements(_raw({"9|daxiao": rows}))["9"]
+        self.assertIn("split", mv)
+
     def test_split_below_threshold_is_ignored(self):
         rows = [
             ["293", "1.00", "2.5", "0.90", "1.00", "2.5", "0.90"],
@@ -230,7 +248,7 @@ class PagesSplitTests(unittest.TestCase):
     def test_handicap_spread_uses_signed_lines(self):
         # 主让两球(-2.0) 与 主让两球半(-2.5) 相差 0.5，应判定为分歧
         rows = [
-            ["293", "0.70", "让两球", "0.95", "0.70", "让两球", "0.95"],
+            ["293", "0.70", "让两球", "0.95", "0.70", "让两球半", "0.95"],
             ["4", "0.70", "让两球半", "0.95", "0.70", "让两球半", "0.95"],
         ]
         blocks = build_pages_movements(_raw({"9|yazhi": rows}))["9"]["split"]
@@ -240,7 +258,7 @@ class PagesSplitTests(unittest.TestCase):
     def test_one_block_per_market(self):
         raw = _raw({"9|daxiao": self.ROWS})
         raw["9|yazhi"] = {"rows": [
-            ["293", "0.70", "让两球", "0.95", "0.70", "让两球", "0.95"],
+            ["293", "0.70", "让两球", "0.95", "0.70", "让两球半", "0.95"],
             ["4", "0.70", "让两球半", "0.95", "0.70", "让两球半", "0.95"],
         ]}
         blocks = build_pages_movements(raw)["9"]["split"]

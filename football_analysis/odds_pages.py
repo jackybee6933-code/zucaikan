@@ -223,7 +223,13 @@ def _company_rows(rows: list[list]) -> list[dict]:
 
 
 def _split_block(rows: list[list], label: str, converter) -> dict | None:
-    """盘口分歧达到 SPLIT_WATCH 时返回弹层数据块，否则返回 None。"""
+    """盘口分歧达到 SPLIT_WATCH 时返回弹层数据块，否则返回 None。
+
+    至少一家公司初盘→即时有变化才挂弹窗：全部公司初盘与即时完全一致时，
+    各公司之间即便有差异也只是静态报价，标成「盘口分歧」会误导。
+    """
+    if not any(_line_text(r[6]) != _line_text(r[3]) for r in _shifted(rows)):
+        return None
     values = _spread(rows, converter)
     if not values:
         return None
