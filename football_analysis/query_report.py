@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 from urllib.parse import quote_from_bytes
 
+from .odds_pages import COMPANY_NAMES
 from .report_index import build_issue_report_index
 
 
@@ -57,8 +58,10 @@ def _split_html(row: dict, uid: str) -> str:
         for item in block["rows"]:
             if not isinstance(item, dict):
                 continue
-            cid = _esc(str(item.get("cid") or ""))
-            name = _esc(str(item.get("name") or ""))
+            raw_cid = str(item.get("cid") or "")
+            cid = _esc(raw_cid)
+            # 老库的 split 只存了 cid；渲染时用公司名表兜底，避免弹窗露出裸数字。
+            name = _esc(str(item.get("name") or "").strip() or COMPANY_NAMES.get(raw_cid, ""))
             label = f"{name}({cid})" if name else cid
             cur = _esc(str(item.get("current") or "—"))
             # 报告实际采用的那家加粗，一眼看出信号来自谁
@@ -72,7 +75,7 @@ def _split_html(row: dict, uid: str) -> str:
             f'<table class="split-table"><thead><tr><th>公司</th><th>初盘 \u2192 即时</th></tr></thead>'
             f'<tbody>{"".join(trs)}</tbody></table></div>'
         )
-    body = "".join(parts)
+    body = f'<div class="split-cards">{"".join(parts)}</div>'
     return (
         f'<div class="kind-split" data-split-for="{_esc(uid)}">盘口分歧</div>'
         f'<template id="{_esc(uid)}">{body}</template>'
@@ -513,9 +516,10 @@ def render_query_html(
     .kind-swing, .kind-watch {{ color: #475569; background: #eef2f7; }}
   .kind-muted {{ background: transparent; }}
   .kind-split {{ margin-top: 4px; color: var(--amber); font-size: 11px; font-weight: 600; line-height: 1.5; cursor: help; }}
-  #split-pop {{ position: fixed; z-index: 40; min-width: 240px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, .82); backdrop-filter: blur(3px); box-shadow: 0 8px 24px rgba(15, 23, 42, .18); pointer-events: none; }}
+  #split-pop {{ position: fixed; z-index: 40; min-width: 240px; max-width: calc(100vw - 16px); padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, .82); backdrop-filter: blur(3px); box-shadow: 0 8px 24px rgba(15, 23, 42, .18); pointer-events: none; }}
   #split-pop[hidden] {{ display: none; }}
-  .split-card + .split-card {{ margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }}
+  .split-cards {{ display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }}
+  .split-card {{ min-width: 0; }}
   .split-card-title {{ margin-bottom: 6px; color: var(--muted); font-size: 11px; font-weight: 600; }}
   .split-table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
   .split-table th {{ padding: 3px 10px 5px 0; background: transparent; color: var(--muted); font-weight: 600; text-align: left; white-space: nowrap; }}

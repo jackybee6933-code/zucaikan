@@ -278,6 +278,10 @@ class SplitRenderTests(unittest.TestCase):
         self.assertEqual(html.count("<b>"), 1)
         self.assertIn("<b>2.5</b>", html)
 
+    def test_html_falls_back_to_company_name_table(self):
+        html = _split_html({"split": [self.BLOCK]}, "sp-6")
+        self.assertIn("o***(1484)", html)
+
     def test_html_renders_each_market_block(self):
         blocks = [
             self.BLOCK,
@@ -289,6 +293,7 @@ class SplitRenderTests(unittest.TestCase):
         self.assertIn("大小球", html)
         self.assertIn("亚盘", html)
         self.assertEqual(html.count("split-card-title"), 2)
+        self.assertIn('class="split-cards"', html)
 
     def test_html_escapes_cell_text(self):
         evil = {"market": "x", "picked": "1", "rows": [
