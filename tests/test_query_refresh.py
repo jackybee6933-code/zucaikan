@@ -71,9 +71,8 @@ class DedupMessageTests(unittest.TestCase):
 
 
 class RunRefreshOddsTests(unittest.TestCase):
-    def test_fresh_only_shuju_missing_scrapes_just_shuju_without_reingest(self):
-        """yazhi/daxiao 都有可信公司行、只缺 shuju：只补抓 shuju，不重跑入库
-        （重跑 analyze_issue 会冲掉 split 数据，shuju 留给「AI 分析」按钮消费）。"""
+    def test_fresh_only_shuju_missing_skips_without_scraping(self):
+        """yazhi/daxiao 都有公司行、只缺 shuju：直接跳过，shuju 留给「AI 分析」。"""
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             cache = root / "cache"
@@ -98,10 +97,8 @@ class RunRefreshOddsTests(unittest.TestCase):
                  mock.patch.object(query_app, "_run_odds_scraper", return_value=None) as scraper, \
                  mock.patch("football_analysis.cdp_profile.shutdown_cdp_chrome"):
                 text = query_app.run_refresh_odds("26135", db_path=root / "x.sqlite")
-            self.assertIn("补全", text)
-            self.assertIn("未重跑入库", text)
-            scraper.assert_called_once()
-            self.assertEqual(scraper.call_args.kwargs.get("kinds"), ["shuju"])
+            self.assertIn("跳过重抓", text)
+            scraper.assert_not_called()
 
     def test_fresh_full_artifact_skips_without_cdp(self):
         """3 种页种齐全的新鲜产物：盘口和 shuju 都在，直接跳过。"""
@@ -197,15 +194,14 @@ class RefreshOddsOnlyMissingKindsTests(unittest.TestCase):
         ensure.assert_not_called()
         scraper.assert_not_called()
 
-    def test_only_shuju_missing_scrapes_just_shuju(self):
+    def test_only_shuju_missing_skips_scrape(self):
         payload = {
             "9|yazhi": {"status": "ok", "rows": [[293, "0.90", "平手", "0.95", "0.90", "平手", "0.90"]]},
             "9|daxiao": {"status": "ok", "rows": [[293, "0.90", "2.5", "0.90", "0.90", "2.5", "0.90"]]},
         }
         ensure, scraper = self._run(payload, PAGES_STALE_HOURS / 2)
-        ensure.assert_called()
-        scraper.assert_called_once()
-        self.assertEqual(scraper.call_args.kwargs.get("kinds"), ["shuju"])
+        ensure.assert_not_called()
+        scraper.assert_not_called()
 
     def test_failed_yazhi_scrapes_just_yazhi(self):
         payload = {
