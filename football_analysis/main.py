@@ -86,7 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     refresh.add_argument(
         "--cache-dir", default="", help="产物所在目录，缺省用 exe 所在目录下的 cache"
     )
-    refresh.add_argument("--delay", type=float, default=8.0, help="抓取时页面间隔秒数")
+    refresh.add_argument("--delay", type=float, default=5.0, help="抓取时页面间隔秒数")
     refresh.add_argument("--cdp", default="http://127.0.0.1:9222", help="Chrome 调试端口")
     refresh.add_argument("--force", action="store_true", help="即使未过期也重抓")
     refresh.add_argument("--db-path", default=None, help="仅用于确定期号")

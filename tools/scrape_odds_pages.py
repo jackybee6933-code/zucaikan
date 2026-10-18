@@ -249,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cache-dir", default="cache")
     parser.add_argument("--wait", type=float, default=120.0, help="撞到验证页时等待人工勾选的秒数")
     parser.add_argument(
-        "--delay", type=float, default=8.0, help="每个页面之间的间隔秒数（带随机抖动）"
+        "--delay", type=float, default=5.0, help="每个页面之间的间隔秒数（带随机抖动）"
     )
     parser.add_argument(
         "--cdp",
