@@ -153,6 +153,7 @@ class RunRefreshOddsTests(unittest.TestCase):
             cache.mkdir()
             _artifact(cache, "26135", PAGES_STALE_HOURS + 3)
             with mock.patch("football_analysis.main._app_root", return_value=root), \
+                 mock.patch.object(query_app, "_ensure_cdp", return_value=None), \
                  mock.patch.object(
                      query_app, "_run_odds_scraper", side_effect=RuntimeError("reached-scraper")
                  ), \
