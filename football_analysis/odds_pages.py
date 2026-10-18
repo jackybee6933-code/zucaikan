@@ -325,6 +325,8 @@ def build_pages_movements(raw: dict, teams_by_fixture: dict | None = None) -> di
         payload = dict(slot)
         payload["teams"] = (teams_by_fixture or {}).get(fixture_id)
         analysis = analyze_prematch_movement(payload)
+        # 这份盘口来自 500 单场页（澳门/威廉），不是赛前指数
+        analysis["source"] = "odds_pages"
         if fixture_id in splits:
             analysis["split"] = splits[fixture_id]
         analysed[fixture_id] = analysis

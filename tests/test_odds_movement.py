@@ -272,11 +272,15 @@ class PagesSplitRetentionTests(unittest.TestCase):
             )
         return rows[0]["odds_movement"]
 
-    def test_split_kept_when_nowscore_covers_asian(self):
+    def test_pages_win_when_nowscore_covers_asian(self):
         nowscore = {
             "available": True,
             "source": "nowscore_prematch",
-            "asian": {"available": True, "initial": {}, "current": {}},
+            "asian": {
+                "available": True,
+                "initial": {"line_text": "受一球", "line": 1.0, "home_water": 0.9, "away_water": 0.9},
+                "current": {"line_text": "受一球", "line": 1.0, "home_water": 0.9, "away_water": 0.9},
+            },
             "total": {"available": False},
             "attention": True,
             "level": "关注",
@@ -284,14 +288,29 @@ class PagesSplitRetentionTests(unittest.TestCase):
             "reasons": ["让球盘升盘"],
         }
         movement = self._run(self.SPLIT_PAGES, nowscore)
-        # Nowscore 盘口保留，不被单场页覆盖
-        self.assertEqual(movement["source"], "nowscore_prematch")
+        # 单场页是主口径：盘口取澳门/威廉，与分歧弹窗同源
+        self.assertEqual(movement["source"], "odds_pages")
         self.assertTrue(movement["asian"]["available"])
+        self.assertEqual(movement["asian"]["current"]["line_text"], "半球")
         self.assertEqual(movement["titan_match_id"], "3001")
         # 单场页各公司分歧仍保留
         self.assertEqual(len(movement["split"]), 1)
         self.assertEqual(movement["split"][0]["market"], "亚盘")
         self.assertEqual(len(movement["split"][0]["rows"]), 2)
+
+    def test_nowscore_not_fetched_when_pages_cover_both_markets(self):
+        pages = dict(self.SPLIT_PAGES)
+        pages["9|daxiao"] = {
+            "status": "ok",
+            "rows": [["5", "0.90", "2.5", "0.90", "0.90", "2.5", "0.90"]],
+        }
+        rows = self._rows()
+        with mock.patch.object(pipeline, "fetch_nowscore_movement") as fetch:
+            pipeline._attach_odds_movement(
+                rows, fetcher=mock.MagicMock(), max_workers=1, pages_raw=pages
+            )
+        fetch.assert_not_called()
+        self.assertEqual(rows[0]["odds_movement"]["source"], "odds_pages")
 
     def test_no_split_added_when_companies_agree(self):
         nowscore = {

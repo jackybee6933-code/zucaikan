@@ -12,7 +12,7 @@ from .jczq import JCZQ_URL, parse_jczq_html
 from .model import build_model_input, predict_match
 from .odds import market_implied_from_odds
 from .odds_analysis import analyze_odds
-from .odds_movement import fetch_nowscore_movement
+from .odds_movement import analyze_prematch_movement, fetch_nowscore_movement
 from .odds_xml import ODDS_XML_URL, company_label, parse_odds_xml
 from .odds_pages import (
     build_pages_movements,
@@ -335,12 +335,8 @@ def _attach_odds_movement(
         for row in rows
         if row.get("titan_match_id")
     }
-    if not by_fixture:
-        # jczq 失效（Titan 赛程无映射）时整期 titan_match_id 全空，旧逻辑在这里
-        # 直接 return，单场页盘口也永远不会被挂上——但单场页是按 fixture_id
-        # 索引的，跟 titan_match_id 没有依赖关系。缺 titan 只跳过 Nowscore
-        # 抓取（没有可用 match_id），单场页兜底照常进行。
-        pass
+    # jczq 失效（Titan 赛程无映射）时 titan_match_id 全空，只影响赛前指数兜底，
+    # 单场页按 fixture_id 索引，照常挂载。
 
     teams_by_fixture: dict[str, dict] = {}
     for row in rows:
@@ -350,7 +346,20 @@ def _attach_odds_movement(
                 "home": row.get("home_name") or row.get("home_team") or "",
                 "away": row.get("away_name") or row.get("away_team") or "",
             }
-    movements: dict[str, dict] = {}
+
+    from_pages: dict[str, dict] = {}
+    if pages_raw:
+        from_pages = build_pages_movements(pages_raw, teams_by_fixture)
+
+    def covered(fixture_id: str) -> bool:
+        page = from_pages.get(fixture_id) or {}
+        return bool((page.get("asian") or {}).get("available")) and bool(
+            (page.get("total") or {}).get("available")
+        )
+
+    # 单场页（澳门/威廉）是主口径，查询页主列和分歧弹窗取自同一份产物；
+    # 缺亚盘或大小球的场次才去请求赛前指数补缺。
+    movements: dict[str, dict] = dict(from_pages)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_map = {
             executor.submit(
@@ -360,13 +369,14 @@ def _attach_odds_movement(
                 teams_by_fixture.get(fixture_id),
             ): fixture_id
             for fixture_id, match_id in by_fixture.items()
+            if not covered(fixture_id)
         }
         for future in as_completed(future_map):
             fixture_id = future_map[future]
             try:
-                movements[fixture_id] = future.result()
+                fallback = future.result()
             except Exception as exc:  # noqa: BLE001
-                movements[fixture_id] = {
+                fallback = {
                     "available": False,
                     "source": "nowscore_prematch",
                     "attention": False,
@@ -374,20 +384,20 @@ def _attach_odds_movement(
                     "reasons": [],
                     "_error": str(exc),
                 }
-
-    if pages_raw:
-        from_pages = build_pages_movements(
-            pages_raw,
-            {fid: teams_by_fixture[fid] for fid in teams_by_fixture},
-        )
-        for fixture_id, payload in from_pages.items():
-            current = movements.get(fixture_id) or {}
-            if (current.get("asian") or {}).get("available"):
-                # 分歧来自单场页各公司口径，与盘口采用 Nowscore 还是单场页无关，始终保留
-                if payload.get("split"):
-                    current["split"] = payload["split"]
+            page = from_pages.get(fixture_id)
+            if not page:
+                movements[fixture_id] = fallback
                 continue
-            movements[fixture_id] = payload
+            merged = {}
+            for key in ("asian", "total"):
+                market = page.get(key) or {}
+                merged[key] = market if market.get("available") else (fallback.get(key) or {})
+            merged["teams"] = teams_by_fixture.get(fixture_id)
+            result = analyze_prematch_movement(merged)
+            result["source"] = "odds_pages"
+            if page.get("split"):
+                result["split"] = page["split"]
+            movements[fixture_id] = result
 
     for row in rows:
         payload = movements.get(str(row.get("fixture_id", "")))
