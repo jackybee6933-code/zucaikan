@@ -136,7 +136,8 @@ def parse_odds_pages(raw: dict) -> dict[str, dict]:
         if not fixture_id or row is None:
             continue
         slot = result.setdefault(fixture_id, {})
-        name = str(row[1]) if len(row) > 1 and row[1] else CID_LABELS.get(str(row[0]), "")
+        # 报告来源仍用已确认的中文名（澳门/威廉），行内打码名只用于分歧弹窗。
+        name = CID_LABELS.get(str(row[0])) or (str(row[1]) if len(row) > 1 and row[1] else "")
         text = _line_text(row[3])
         if kind == "yazhi":
             line = handicap_line_to_float(text)
@@ -166,8 +167,27 @@ def parse_odds_pages(raw: dict) -> dict[str, dict]:
 # 公司间盘口分歧阈值：同一页各公司即时盘口最大差距达到该值即提示分歧。
 SPLIT_WATCH = 0.5
 
-# 单场页对未登录用户打码公司名，这里只登记已确认的；未登记的直接显示 cid。
-COMPANY_NAMES = {"5": "澳门", "293": "威廉", "4": "皇冠", "6": "伟德"}
+# 单场页对未登录用户打码公司名；已确认的中文名优先，其余抄页面打码名（威***/*门 等）。
+# 老产物（7 列、无公司名）靠这张表回退，新产物直接用行内名字。
+COMPANY_NAMES = {
+    "5": "澳门",
+    "293": "威廉",
+    "4": "皇冠",
+    "6": "伟德",
+    "2": "立*",
+    "3": "B*****",
+    "9": "易**",
+    "16": "1****",
+    "122": "香***",
+    "140": "M*************",
+    "280": "*冠",
+    "502": "1**********",
+    "537": "W**********",
+    "651": "利*",
+    "863": "1****",
+    "1055": "P*********",
+    "1484": "o***",
+}
 
 
 def _spread(rows: list[list], converter) -> list[float]:

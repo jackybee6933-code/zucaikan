@@ -42,6 +42,11 @@ class OddsPagesTests(unittest.TestCase):
         self.assertEqual(parsed["9"]["asian_line_text"], "两球")
         self.assertEqual(parsed["9"]["asian_company"], "威廉")
 
+    def test_source_label_keeps_real_name_for_new_rows(self):
+        rows = [["5", "*门", "1.000", "一球", "0.840", "1.000", "一球", "0.840"]]
+        parsed = parse_odds_pages(_raw({"9|yazhi": rows}))
+        self.assertEqual(parsed["9"]["asian_company"], "澳门")
+
     def test_strips_direction_markers_from_line(self):
         rows = [["293", "0.53↓", "2.5↓", "1.40↑", "1.38", "3.5", "0.55"]]
         parsed = parse_odds_pages(_raw({"9|daxiao": rows}))
@@ -179,11 +184,29 @@ class PagesSplitTests(unittest.TestCase):
         self.assertEqual([r["cid"] for r in blocks[0]["rows"]], ["293", "4", "6"])
 
     def test_unknown_company_falls_back_to_cid(self):
+        rows = self.ROWS + [["9999", "0.83", "3", "0.89", "1.33", "3.5", "0.51"]]
+        blocks = build_pages_movements(_raw({"9|daxiao": rows}))["9"]["split"]
+        last = blocks[0]["rows"][-1]
+        self.assertEqual(last["cid"], "9999")
+        self.assertEqual(last["name"], "")
+
+    def test_old_rows_use_company_name_table(self):
         rows = self.ROWS + [["1484", "0.83", "3", "0.89", "1.33", "3.5", "0.51"]]
         blocks = build_pages_movements(_raw({"9|daxiao": rows}))["9"]["split"]
         last = blocks[0]["rows"][-1]
         self.assertEqual(last["cid"], "1484")
-        self.assertEqual(last["name"], "")
+        self.assertEqual(last["name"], "o***")
+
+    def test_new_rows_keep_page_company_name(self):
+        rows = [
+            ["293", "威***", "0.53", "2.5", "1.40", "1.38", "3.5", "0.55"],
+            ["1484", "o***", "1.35", "3.5", "0.55", "1.30", "3.5", "0.57"],
+        ]
+        blocks = build_pages_movements(_raw({"9|daxiao": rows}))["9"]["split"]
+        self.assertEqual(
+            [(r["cid"], r["name"]) for r in blocks[0]["rows"]],
+            [("293", "威***"), ("1484", "o***")],
+        )
 
     def test_no_split_when_companies_agree(self):
         rows = [
