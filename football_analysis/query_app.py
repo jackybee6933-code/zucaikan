@@ -347,7 +347,7 @@ def _run_odds_scraper(
         argv.extend(["--kinds", *kinds])
     code = mod.main(argv)
     if code != 0:
-        return f"{issue} 抓取未完成（退出码 {code}），原产物未被覆盖"
+        return f"{issue} 抓取未完成（退出码 {code}），已抓页面已保存，重试会从断点继续"
     return None
 
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import sys
 import time
@@ -171,6 +172,48 @@ def _error(detail: str, *, text_mode: bool = False) -> dict:
     return payload
 
 
+# 断点文件：每抓完一页就落盘，限流/断网中断后下次只补没抓的页。
+PARTIAL_TTL_HOURS = 6.0
+
+
+def partial_path(cache_dir: Path, issue: str) -> Path:
+    return cache_dir / f".odds_partial_{issue}.json"
+
+
+def load_partial(path: Path, wanted: set[str]) -> dict[str, dict]:
+    """读断点；过期或损坏当没有。只认 ok/empty，timeout/error 下次重抓。"""
+    if not path.exists():
+        return {}
+    try:
+        if time.time() - path.stat().st_mtime > PARTIAL_TTL_HOURS * 3600:
+            path.unlink(missing_ok=True)
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        key: page
+        for key, page in data.items()
+        if key in wanted
+        and isinstance(page, dict)
+        and page.get("status") in (STATUS_OK, STATUS_EMPTY)
+    }
+
+
+def save_partial(path: Path, result: dict[str, dict]) -> None:
+    """只落已确定的页（ok/empty）；先写临时文件再替换，避免半截 JSON。"""
+    pages = {
+        key: page
+        for key, page in result.items()
+        if isinstance(page, dict) and page.get("status") in (STATUS_OK, STATUS_EMPTY)
+    }
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(pages, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def fetch_page(
     page,
     url: str,
@@ -279,12 +322,18 @@ def main(argv: list[str] | None = None) -> int:
     active_kinds = args.kinds or list(KINDS)
     total = len(fids) * len(active_kinds)
     log(f"期号 {issue}：{len(fids)} 场，{total} 个页面，Chrome 调试端口：{args.cdp}")
-    log(f"页面间隔约 {args.delay:.1f}s，预计耗时 {args.delay * total:.0f}s")
 
-    result: dict[str, dict] = {}
-    done = 0
+    out = cache_dir / f"odds_pages_{issue}.json"
+    partial = partial_path(cache_dir, issue)
+    wanted = {f"{fid}|{kind}" for fid in fids for kind in active_kinds}
+    # 断点续传：沿用上次已抓好的页，只补剩下的。
+    result: dict[str, dict] = load_partial(partial, wanted)
+    done = len(result)
     failed = 0
-    _write_progress(cache_dir, issue, phase="scrape", total=total, done=0, failed=0)
+    if done:
+        log(f"断点续传：沿用已抓 {done}/{total} 页，只补剩余页面")
+    _write_progress(cache_dir, issue, phase="scrape", total=total, done=done, failed=0)
+    log(f"页面间隔约 {args.delay:.1f}s，剩余 {total - done} 页预计 {args.delay * (total - done):.0f}s")
 
     try:
         page = acquire(args.cdp)
@@ -300,10 +349,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for fid in fids:
             for kind in active_kinds:
+                key = f"{fid}|{kind}"
+                if key in result:
+                    continue
                 page_no = done + 1
                 if time.time() > deadline:
                     log("")
-                    log(f"[!] 超过总时长 {args.max_seconds}s，中止（未写入文件）。")
+                    log(f"[!] 超过总时长 {args.max_seconds}s，中止；已抓页面已保存，重试会从断点继续。")
                     _write_progress(cache_dir, issue, phase="aborted", total=total, done=page_no - 1, failed=failed, reason="timeout")
                     return 5
                 url = f"https://odds.500.com/fenxi/{kind}-{fid}.shtml"
@@ -318,25 +370,27 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 except BrowserGone:
                     log("")
-                    log("[!] 浏览器已断开（多半是被关掉了），中止（未写入文件）。")
+                    log("[!] 浏览器已断开（多半是被关掉了），中止；已抓页面已保存，重试会从断点继续。")
                     log("    重跑前请先重新启动带调试端口的 Chrome，且中途不要关闭窗口。")
                     _write_progress(cache_dir, issue, phase="aborted", total=total, done=page_no - 1, failed=failed, reason="browser_gone")
                     return 4
                 except RateLimited:
                     log("")
-                    log("[!] 触发 EdgeOne「请求过于频繁」限流，已停止（未写入文件）。")
+                    log("[!] 触发 EdgeOne「请求过于频繁」限流，已停止；已抓页面已保存，等会儿重试会从断点继续。")
                     log("    等几十分钟再跑，或调大 --delay。")
                     _write_progress(cache_dir, issue, phase="aborted", total=total, done=page_no - 1, failed=failed, reason="rate_limited")
                     return 3
                 except CdpError as exc:
                     log("")
                     log(f"[!] 浏览器中断：{str(exc).splitlines()[0][:90]}")
-                    log("    未写入文件，重新运行即可。")
+                    log("    已抓页面已保存，重新运行会从断点继续。")
                     _write_progress(cache_dir, issue, phase="aborted", total=total, done=page_no - 1, failed=failed, reason="cdp_error")
                     return 4
                 done += 1
                 failed += 1 if payload.get("status") not in (STATUS_OK, STATUS_EMPTY) else 0
-                result[f"{fid}|{kind}"] = payload
+                result[key] = payload
+                if payload.get("status") in (STATUS_OK, STATUS_EMPTY):
+                    save_partial(partial, result)
                 st = payload.get("status")
                 note = "" if st == STATUS_OK else f"  <{st}>"
                 if text_mode:
@@ -352,7 +406,6 @@ def main(argv: list[str] | None = None) -> int:
         except CdpError:
             pass
 
-    out = cache_dir / f"odds_pages_{issue}.json"
     # 只抓了部分页种（--kinds）时，与已有产物合并，避免覆盖 yazhi/daxiao 数据。
     if args.kinds and out.exists():
         try:
@@ -363,6 +416,7 @@ def main(argv: list[str] | None = None) -> int:
         except (json.JSONDecodeError, OSError):
             pass  # 旧产物损坏则只用新数据
     out.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+    partial.unlink(missing_ok=True)
     ok = sum(1 for page in result.values() if page.get("status") == STATUS_OK)
     empty = sum(1 for page in result.values() if page.get("status") == STATUS_EMPTY)
     bad = [k for k, page in result.items()
