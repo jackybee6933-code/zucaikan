@@ -191,12 +191,16 @@ COMPANY_NAMES = {
 
 
 def _spread(rows: list[list], converter) -> list[float]:
-    """各公司即时盘口，按让球幅度升序；不足两家公司时返回空列表。"""
+    """各公司即时盘口，按让球幅度升序；不足两家公司时返回空列表。
+
+    空单元格跳过；「平手」解析成 0.0 是合法盘口，必须参与跨度计算，
+    否则「平手 vs 半球」这种 0.5 的真实分歧会被漏判。
+    """
     values = []
     for row in _shifted(rows):
-        line = converter(_line_text(row[3]))
-        if line:
-            values.append(line)
+        text = _line_text(row[3])
+        if text:
+            values.append(converter(text))
     return sorted(values, key=abs) if len(values) >= 2 else []
 
 

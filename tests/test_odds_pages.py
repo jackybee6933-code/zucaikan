@@ -245,6 +245,25 @@ class PagesSplitTests(unittest.TestCase):
         mv = build_pages_movements(_raw({"9|daxiao": rows}))["9"]
         self.assertNotIn("split", mv)
 
+    def test_even_handicap_counts_as_zero(self):
+        """平手解析成 0.0，与半球相差 0.5，属于真实分歧。"""
+        rows = [
+            ["293", "0.90", "平手", "1.00", "0.90", "受半球", "1.00"],
+            ["4", "0.85", "半球", "1.05", "0.85", "半球", "1.05"],
+        ]
+        blocks = build_pages_movements(_raw({"9|yazhi": rows}))["9"]["split"]
+        self.assertEqual([r["current"] for r in blocks[0]["rows"]], ["平手", "半球"])
+
+    def test_empty_line_is_skipped_not_zero(self):
+        """空缺的即时盘口不能当成平手参与跨度。"""
+        rows = [
+            ["293", "0.90", "平手", "1.00", "0.90", "平手/半球", "1.00"],
+            ["4", "0.85", "半球", "1.05", "0.85", "半球", "1.05"],
+            ["6", "0.85", "", "1.05", "0.85", "", "1.05"],
+        ]
+        blocks = build_pages_movements(_raw({"9|yazhi": rows}))["9"]["split"]
+        self.assertEqual([r["cid"] for r in blocks[0]["rows"]], ["293", "4"])
+
     def test_handicap_spread_uses_signed_lines(self):
         # 主让两球(-2.0) 与 主让两球半(-2.5) 相差 0.5，应判定为分歧
         rows = [
