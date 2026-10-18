@@ -122,7 +122,7 @@ class PagesMovementTests(unittest.TestCase):
         rows = [["293", "0.53↓", "2.5↓", "1.40↑", "1.38", "3.5", "0.55"]]
         mv = build_pages_movements(_raw({"9|daxiao": rows}))["9"]
         self.assertTrue(mv["total"]["available"])
-        self.assertEqual(mv["kind"], "大盘降")
+        self.assertEqual(mv["kind"], "大小盘降")
         self.assertEqual(mv["level"], "重点关注")
 
     def test_identical_lines_are_stable(self):

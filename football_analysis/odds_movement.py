@@ -272,12 +272,12 @@ def _total_movement(total: dict) -> dict:
     note = ""
     if abs(line_change) >= TOTAL_LINE_BIG:
         level = "重点关注"
-        kind = "大盘升" if line_change > 0 else "大盘降"
-        note = f"大小盘{kind}：{old_text} -> {new_text}"
+        kind = "大小盘升" if line_change > 0 else "大小盘降"
+        note = f"{kind}：{old_text} -> {new_text}"
     elif abs(line_change) >= TOTAL_LINE_WATCH:
         level = "关注"
-        kind = "大盘升" if line_change > 0 else "大盘降"
-        note = f"大小盘{kind}：{old_text} -> {new_text}"
+        kind = "大小盘升" if line_change > 0 else "大小盘降"
+        note = f"{kind}：{old_text} -> {new_text}"
     else:
         over_delta = abs(float(current.get("over_water") or 0) - float(initial.get("over_water") or 0))
         under_delta = abs(float(current.get("under_water") or 0) - float(initial.get("under_water") or 0))

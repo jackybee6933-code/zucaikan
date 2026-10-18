@@ -80,13 +80,17 @@ def _movement_reason(item: dict) -> str:
     return "；".join(str(reason) for reason in movement.get("reasons") or [])
 
 
+# 类型标签的旧文案映射：老 run 存的是「大盘升 / 大盘降 / 大盘变动」
+KINDS_LEGACY = {"大盘升": "大小盘升", "大盘降": "大小盘降", "大盘变动": "大小盘变动"}
+
+
 def _movement_kind(item: dict) -> str:
     movement = item.get("odds_movement") or {}
     kind = str(movement.get("kind") or "").strip()
     if kind == "退盘":
         return "降盘"
     if kind:
-        return kind
+        return KINDS_LEGACY.get(kind, kind)
     reason = _movement_reason(item)
     for fallback, marker in (
         ("降盘", "让球盘降盘"),
@@ -94,8 +98,8 @@ def _movement_kind(item: dict) -> str:
         ("升盘", "让球盘升盘"),
         ("水位反转", "亚盘水位反转"),
         ("水位摆动", "亚盘水位摆动"),
-        ("大盘变动", "大小盘升"),
-        ("大盘变动", "大小盘降"),
+        ("大小盘升", "大小盘升"),
+        ("大小盘降", "大小盘降"),
         ("大水位摆动", "大小盘水位摆动"),
     ):
         if marker in reason:
@@ -109,24 +113,25 @@ def _kind_badge(kind: str, *, muted: bool = False) -> str:
         "升盘": "kind-rise",
         "水位反转": "kind-reverse",
         "水位摆动": "kind-swing",
-        "大盘变动": "kind-swing",
+        "大小盘升": "kind-swing",
+        "大小盘降": "kind-swing",
         "大水位摆动": "kind-swing",
     }.get(kind, "kind-watch")
-    if muted and kind in ("降盘", "升盘", "大盘变动", "大水位摇动"):
+    if muted and kind in ("降盘", "升盘", "大小盘升", "大小盘降", "大水位摇动"):
         css += " kind-muted"
     return f'<span class="kind {css}">{_esc(kind)}</span>'
 
 def _kind_muted(item: dict) -> bool:
     """Return True when the kind badge should lose its colored background (|line-change| < 0.5)."""
     movement = item.get("odds_movement") or {}
-    kind = str(movement.get("kind") or "").strip()
-    if kind not in ("升盘", "降盘", "大盘变动", "大水位摇动"):
+    kind = KINDS_LEGACY.get(str(movement.get("kind") or "").strip(), str(movement.get("kind") or "").strip())
+    if kind not in ("升盘", "降盘", "大小盘升", "大小盘降", "大水位摇动"):
         return False
     asian = movement.get("asian") or {}
     total = movement.get("total") or {}
     lc_asian = abs(_float(asian.get("line_change")))
     lc_total = abs(_float(total.get("line_change")))
-    lc = lc_total if kind in ("大盘变动", "大水位摇动") else lc_asian
+    lc = lc_total if kind in ("大小盘升", "大小盘降", "大水位摇动") else lc_asian
     return lc < 0.5
 
 
@@ -438,7 +443,7 @@ def _render_body(analyses: list[dict], issue: str, source_url: str, generated_at
           <button type="button" data-alert-filter="降盘">降盘</button>
           <button type="button" data-alert-filter="水位反转">水位反转</button>
           <button type="button" data-alert-filter="水位摆动">水位摆动</button>
-          <button type="button" data-alert-filter="大盘变动">大盘变动</button>
+          <button type="button" data-alert-filter="大小盘变动">大小盘变动</button>
         </div>
       </div>
       <div class="table-scroll alert-scroll">
@@ -782,7 +787,10 @@ _SCRIPT = """
     let shown = 0;
     alertRows.forEach((row) => {
       const kind = row.dataset.alertKind || "";
-      const visible = alertFilter === "all" || kind === alertFilter;
+      const visible =
+        alertFilter === "all" ||
+        kind === alertFilter ||
+        (alertFilter === "大小盘变动" && kind.indexOf("大小盘") === 0);
       row.hidden = !visible;
       if (visible) shown += 1;
     });

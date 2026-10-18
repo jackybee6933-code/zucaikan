@@ -33,6 +33,8 @@ def _league_badge(league: str, color: str) -> str:
 def _kind_badge(kind: str, *, muted: bool = False) -> str:
     if kind == "退盘":
         kind = "降盘"
+    # 旧 run 里存的是「大盘降 / 大盘升」，按新文案回显
+    kind = {"大盘降": "大小盘降", "大盘升": "大小盘升"}.get(kind, kind)
     css = {
         "降盘": "kind-drop",
         "升盘": "kind-rise",

@@ -72,7 +72,7 @@ class PrematchMovementTests(unittest.TestCase):
         self.assertAlmostEqual(movement["total"]["initial"]["line"], 2.75)
         self.assertAlmostEqual(movement["total"]["current"]["line"], 3.25)
         self.assertAlmostEqual(movement["total"]["line_change"], 0.5)
-        self.assertEqual(movement["total"]["kind"], "大盘升")
+        self.assertEqual(movement["total"]["kind"], "大小盘升")
         self.assertEqual(movement["total"]["level"], "重点关注")
         self.assertTrue(movement["attention"])
         self.assertIn(movement["total"]["note"], movement["reasons"])
@@ -85,7 +85,7 @@ class PrematchMovementTests(unittest.TestCase):
         self.assertEqual(movement["asian"]["level"], "关注")
         self.assertIn("水位反转", movement["asian"]["note"])
         self.assertEqual(movement["asian"]["kind"], "水位反转")
-        self.assertEqual(movement["total"]["kind"], "大盘升")
+        self.assertEqual(movement["total"]["kind"], "大小盘升")
         self.assertEqual(movement["kind"], "水位反转")
 
     def test_home_favorite_drop_is_downgrade(self):
@@ -208,7 +208,7 @@ class PrematchMovementTests(unittest.TestCase):
         movement = analyze_prematch_movement(parse_prematch_movement_html(html))
         self.assertTrue(movement["total_available"])
         self.assertTrue(movement["attention"])
-        self.assertEqual(movement["total"]["kind"], "大盘升")
+        self.assertEqual(movement["total"]["kind"], "大小盘升")
 
     def test_europe_change_is_not_an_alert(self):
         html = """
