@@ -244,7 +244,8 @@ def _split_block(rows: list[list], label: str, converter) -> dict | None:
     return {
         "market": label,
         "picked": str(picked[0]) if picked else "",
-        "rows": _company_rows(rows),
+        # 只列真正动了盘的公司，没动的留在页面上反而让人以为弹窗在重复初盘
+        "rows": [r for r in _company_rows(rows) if r["initial"] != r["current"]],
     }
 
 

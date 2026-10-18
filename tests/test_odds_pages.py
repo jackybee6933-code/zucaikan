@@ -180,8 +180,17 @@ class PagesSplitTests(unittest.TestCase):
         })
 
     def test_keeps_every_company_in_page_order(self):
+        rows = [
+            ["293", "0.53↑", "2.5↑", "1.40↑", "1.38", "3.5", "0.55"],
+            ["4", "1.35↑", "3.5", "0.55↑", "1.30", "4", "0.57"],
+        ]
+        blocks = build_pages_movements(_raw({"9|daxiao": rows}))["9"]["split"]
+        self.assertEqual([r["cid"] for r in blocks[0]["rows"]], ["293", "4"])
+
+    def test_unchanged_companies_are_hidden(self):
+        """弹窗只列初盘→即时确有变化的公司，没动的行不显示。"""
         blocks = build_pages_movements(_raw({"9|daxiao": self.ROWS}))["9"]["split"]
-        self.assertEqual([r["cid"] for r in blocks[0]["rows"]], ["293", "4", "6"])
+        self.assertEqual([r["cid"] for r in blocks[0]["rows"]], ["293"])
 
     def test_unknown_company_falls_back_to_cid(self):
         rows = self.ROWS + [["9999", "0.83", "3", "0.89", "1.33", "3.5", "0.51"]]
@@ -200,7 +209,7 @@ class PagesSplitTests(unittest.TestCase):
     def test_new_rows_keep_page_company_name(self):
         rows = [
             ["293", "威***", "0.53", "2.5", "1.40", "1.38", "3.5", "0.55"],
-            ["1484", "o***", "1.35", "3.5", "0.55", "1.30", "3.5", "0.57"],
+            ["1484", "o***", "1.35", "3.5", "0.55", "1.30", "4", "0.57"],
         ]
         blocks = build_pages_movements(_raw({"9|daxiao": rows}))["9"]["split"]
         self.assertEqual(
@@ -249,7 +258,7 @@ class PagesSplitTests(unittest.TestCase):
         """平手解析成 0.0，与半球相差 0.5，属于真实分歧。"""
         rows = [
             ["293", "0.90", "平手", "1.00", "0.90", "受半球", "1.00"],
-            ["4", "0.85", "半球", "1.05", "0.85", "半球", "1.05"],
+            ["4", "0.85", "半球", "1.05", "0.85", "受平手/半球", "1.05"],
         ]
         blocks = build_pages_movements(_raw({"9|yazhi": rows}))["9"]["split"]
         self.assertEqual([r["current"] for r in blocks[0]["rows"]], ["平手", "半球"])
@@ -258,7 +267,7 @@ class PagesSplitTests(unittest.TestCase):
         """空缺的即时盘口不能当成平手参与跨度。"""
         rows = [
             ["293", "0.90", "平手", "1.00", "0.90", "平手/半球", "1.00"],
-            ["4", "0.85", "半球", "1.05", "0.85", "半球", "1.05"],
+            ["4", "0.85", "半球", "1.05", "0.85", "平手", "1.05"],
             ["6", "0.85", "", "1.05", "0.85", "", "1.05"],
         ]
         blocks = build_pages_movements(_raw({"9|yazhi": rows}))["9"]["split"]
@@ -268,7 +277,7 @@ class PagesSplitTests(unittest.TestCase):
         # 主让两球(-2.0) 与 主让两球半(-2.5) 相差 0.5，应判定为分歧
         rows = [
             ["293", "0.70", "让两球", "0.95", "0.70", "让两球半", "0.95"],
-            ["4", "0.70", "让两球半", "0.95", "0.70", "让两球半", "0.95"],
+            ["4", "0.70", "让两球半", "0.95", "0.70", "让两球", "0.95"],
         ]
         blocks = build_pages_movements(_raw({"9|yazhi": rows}))["9"]["split"]
         self.assertEqual(blocks[0]["market"], "亚盘")
@@ -319,6 +328,22 @@ class SplitRenderTests(unittest.TestCase):
         html = _split_html({"split": [self.BLOCK]}, "sp-6")
         self.assertIn("o***(1484)", html)
 
+    def test_html_skips_rows_without_movement(self):
+        """老库的 split 可能带着没动过的公司行，弹窗里不该显示。"""
+        block = {"market": "亚盘", "picked": "293", "rows": [
+            {"cid": "293", "name": "威廉", "initial": "平手", "current": "平手"},
+            {"cid": "4", "name": "皇冠", "initial": "半球", "current": "一球"},
+        ]}
+        html = _split_html({"split": [block]}, "sp-7")
+        self.assertNotIn("威廉", html)
+        self.assertIn("皇冠(4)", html)
+
+    def test_html_hides_label_when_every_row_is_unchanged(self):
+        block = {"market": "亚盘", "picked": "293", "rows": [
+            {"cid": "293", "name": "威廉", "initial": "平手", "current": "平手"},
+        ]}
+        self.assertEqual(_split_html({"split": [block]}, "sp-8"), "")
+
     def test_html_renders_each_market_block(self):
         blocks = [
             self.BLOCK,
@@ -335,7 +360,7 @@ class SplitRenderTests(unittest.TestCase):
     def test_html_escapes_cell_text(self):
         evil = {"market": "x", "picked": "1", "rows": [
             {"cid": "1", "name": '<img src=x onerror="alert(1)">',
-             "initial": "2.5", "current": "2.5"},
+             "initial": "2.5", "current": "3"},
         ]}
         html = _split_html({"split": [evil]}, "sp-4")
         self.assertNotIn("<img", html)

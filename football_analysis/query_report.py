@@ -48,15 +48,17 @@ def _split_html(row: dict, uid: str) -> str:
     blocks = row.get("split") or []
     if not isinstance(blocks, list):
         blocks = []
-    blocks = [b for b in blocks if isinstance(b, dict) and b.get("rows")]
-    if not blocks:
-        return ""
     parts = []
     for block in blocks:
+        if not isinstance(block, dict):
+            continue
         picked = str(block.get("picked") or "")
         trs = []
-        for item in block["rows"]:
+        for item in block.get("rows") or []:
             if not isinstance(item, dict):
+                continue
+            # 老库里的 split 带着没动过的公司行，初盘=即时的不显示
+            if str(item.get("initial") or "") == str(item.get("current") or ""):
                 continue
             raw_cid = str(item.get("cid") or "")
             cid = _esc(raw_cid)
@@ -69,12 +71,16 @@ def _split_html(row: dict, uid: str) -> str:
             trs.append(
                 f"<tr><td>{label}</td><td>{_esc(str(item.get('initial') or '—'))} \u2192 {cur_cell}</td></tr>"
             )
+        if not trs:
+            continue
         parts.append(
             f'<div class="split-card"><div class="split-card-title">'
             f'{_esc(str(block.get("market") or ""))}</div>'
             f'<table class="split-table"><thead><tr><th>公司</th><th>初盘 \u2192 即时</th></tr></thead>'
             f'<tbody>{"".join(trs)}</tbody></table></div>'
         )
+    if not parts:
+        return ""
     body = f'<div class="split-cards">{"".join(parts)}</div>'
     return (
         f'<div class="kind-split" data-split-for="{_esc(uid)}">盘口分歧</div>'
