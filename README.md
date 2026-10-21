@@ -103,8 +103,11 @@ python -m PyInstaller --noconfirm "足球更新器.spec"
 
 发布源是 [jackybee6933-code/zucaikan](https://github.com/jackybee6933-code/zucaikan) 的 Releases：打 `v*` tag 推送后，
 [.github/workflows/release.yml](.github/workflows/release.yml) 在 Windows runner 上构建主程序与
-`足球更新器.exe`，把「主程序 + 更新器」合成 `dist/足球分析系统完整包.zip`，连同
+`足球更新器.exe`，把「主程序 + 更新器」合成 `dist/football_analysis_full.zip`，连同
 `dist/latest.json`（版本 / 下载地址 / SHA-256）一起发布为 Release 资产。
+Release 资产统一用 ASCII 文件名（`football_analysis.exe` / `updater.exe` /
+`football_analysis_full.zip` / `latest.json`），压缩包内仍保留中文 exe 名；
+Windows runner 上中文资产名会被 GitHub Actions 处理成 `default.exe` 之类，必须避免。
 
 查询页「设置」窗口里有「软件升级」区块：
 
