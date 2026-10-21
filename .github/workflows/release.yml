@@ -29,8 +29,8 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/足球胜负彩分析工具.exe
-            dist/足球更新器.exe
-            dist/足球分析系统完整包.zip
+            dist/football_analysis.exe
+            dist/updater.exe
+            dist/football_analysis_full.zip
             dist/latest.json
           generate_release_notes: true

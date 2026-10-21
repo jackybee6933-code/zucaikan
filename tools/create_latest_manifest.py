@@ -1,11 +1,10 @@
 import hashlib
 import json
 import os
-import urllib.parse
 from pathlib import Path
 
 DIST = Path(__file__).resolve().parents[1] / "dist"
-PACKAGE_NAME = "足球分析系统完整包.zip"
+PACKAGE_NAME = "football_analysis_full.zip"
 
 
 def main() -> None:
@@ -14,11 +13,9 @@ def main() -> None:
         raise SystemExit("VERSION is required")
     package = DIST / PACKAGE_NAME
     digest = hashlib.sha256(package.read_bytes()).hexdigest()
-    # 资产名含中文，url 必须百分号编码，否则 releases/download 返回 404
-    asset_url = urllib.parse.quote(PACKAGE_NAME)
     manifest = {
         "version": version,
-        "url": f"https://github.com/jackybee6933-code/zucaikan/releases/download/v{version}/{asset_url}",
+        "url": f"https://github.com/jackybee6933-code/zucaikan/releases/download/v{version}/{PACKAGE_NAME}",
         "sha256": digest,
         "notes": "",
     }
