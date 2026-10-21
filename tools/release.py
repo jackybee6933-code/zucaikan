@@ -2,7 +2,7 @@
 
 用法：
     python tools/release.py 1.4                 # 同步版本 + 测试
-    python tools/release.py 1.4 --tag            # 同步 + 测试 + 打 v1.4 tag
+    python tools/release.py 1.3.1 --tag          # 同步 + 测试 + 打 v1.3.1 tag
 
 只做「改版本号 + 校验 + 打 tag」，不做 git 提交；提交与推送由你手动完成。
 """
@@ -67,7 +67,7 @@ def residual_check(new: str) -> int:
         if not p.exists():
             continue
         src = p.read_text(encoding="utf-8")
-        for m in re.finditer(r"足彩分析系统(\d+\.\d+)", src):
+        for m in re.finditer(r"足彩分析系统(\d+\.\d+(?:\.\d+)?)", src):
             if m.group(1) != new:
                 bad += 1
                 print(f"  残留 {rel}: 足彩分析系统{m.group(1)}")
@@ -102,8 +102,8 @@ def main() -> int:
         print(__doc__)
         return 2
     new = vers[0].lstrip("v")
-    if not re.fullmatch(r"\d+\.\d+", new):
-        print(f"版本号需形如 1.4（收到 {new!r}）")
+    if not re.fullmatch(r"\d+\.\d+(?:\.\d+)?", new):
+        print(f"版本号需形如 1.4 或 1.3.1（收到 {new!r}）")
         return 2
 
     old = current_version()

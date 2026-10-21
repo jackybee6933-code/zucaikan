@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -60,6 +61,23 @@ class UpdaterTests(unittest.TestCase):
             with mock.patch("urllib.request.urlopen", return_value=Response()):
                 result = updater.download_package(info)
             self.assertEqual(result.read_bytes(), b"package")
+
+    def test_install_downloaded_passes_current_pid_to_installer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / updater.APP_EXE_NAME).write_bytes(b"app")
+            (root / updater.UPDATER_EXE_NAME).write_bytes(b"updater")
+            archive = root / "package.zip"
+            archive.write_bytes(b"zip")
+            with mock.patch.object(updater, "app_root", return_value=root), \
+                    mock.patch("subprocess.Popen") as popen:
+                popen.return_value.pid = 4321
+                result = updater.install_downloaded(archive)
+        args = popen.call_args[0][0]
+        self.assertIn("--kill-pid", args)
+        self.assertEqual(args[args.index("--kill-pid") + 1], str(os.getpid()))
+        self.assertIn("--restart", args)
+        self.assertEqual(result["updater_pid"], 4321)
 
     def test_installer_archive_contains_target_exe(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -38,16 +39,31 @@ def _target_unlocked(target: Path) -> bool:
         return False
 
 
+def _stop_running_app(pid: int) -> None:
+    """结束仍在运行的主程序，否则它的 exe 一直处于锁定状态无法替换。"""
+    if pid <= 0:
+        return
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+        else:
+            os.kill(pid, 15)
+    except Exception:
+        pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive", required=True)
     parser.add_argument("--target", required=True)
     parser.add_argument("--restart", action="store_true")
+    parser.add_argument("--kill-pid", type=int, default=0)
     parser.add_argument("--wait-seconds", type=int, default=600)
     args = parser.parse_args()
     archive = Path(args.archive).resolve()
     target = Path(args.target).resolve()
     try:
+        _stop_running_app(args.kill_pid)
         deadline = time.time() + max(args.wait_seconds, 0)
         while not _target_unlocked(target) and time.time() < deadline:
             time.sleep(1)

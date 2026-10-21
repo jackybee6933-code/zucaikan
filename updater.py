@@ -13,7 +13,7 @@ from pathlib import Path
 if __package__:
     from . import __version__
 else:
-    __version__ = "1.3"
+    __version__ = "1.3.1"
 
 DEFAULT_MANIFEST_URL = (
     "https://github.com/jackybee6933-code/zucaikan/releases/latest/download/latest.json"
@@ -114,7 +114,13 @@ def install_downloaded(archive: Path, *, wait_seconds: int = 10) -> dict:
     if not updater.is_file():
         raise UpdateError("完整包缺少足球更新器.exe，请手动解压新完整包")
     process = subprocess.Popen(
-        [str(updater), "--archive", str(archive), "--target", str(target), "--restart"],
+        [
+            str(updater),
+            "--archive", str(archive),
+            "--target", str(target),
+            "--kill-pid", str(os.getpid()),
+            "--restart",
+        ],
         cwd=str(root),
         creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
     )
