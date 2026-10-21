@@ -213,7 +213,8 @@ class SummaryMarketDisplayTests(unittest.TestCase):
             },
         ])
         self.assertIn("主队赢盘（主推）", rows)
-        self.assertIn("3/3.5 0.90/0.97（澳门）", rows)
+        self.assertIn("3/3.5 0.90/0.97", rows)
+        self.assertNotIn("3/3.5 0.90/0.97（澳门）", rows)
         self.assertNotIn("无市场", rows)
 
 if __name__ == "__main__":

@@ -3,14 +3,143 @@ from __future__ import annotations
 import html
 import json
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import quote_from_bytes
 
-from .odds_pages import COMPANY_NAMES
+from .bets import parse_kickoff, summarize_bets
+from .odds_pages import (
+    COMPANY_NAMES,
+    PAGES_META_FILENAME,
+    PAGES_STALE_HOURS,
+    load_odds_pages_raw,
+    page_failures,
+    pages_age_hours,
+    pages_kind_age_hours,
+)
 from .report_index import build_issue_report_index
+from . import __version__
 
 
 def _esc(value: object) -> str:
     return html.escape("" if value is None else str(value), quote=False)
+
+
+def _data_freshness(
+    rows: list[dict],
+    analyses: list[dict],
+    *,
+    issue: str,
+    cache_dir: str | Path | None,
+) -> dict[str, str]:
+    """Summarize DB capture time plus independent odds/data artifact health."""
+    snapshots = list(analyses)
+    if not snapshots:
+        snapshots = rows
+    captured_values = sorted(
+        {
+            str(item.get("captured_at") or "").strip()
+            for item in snapshots
+            if str(item.get("captured_at") or "").strip()
+        }
+    )
+    if captured_values:
+        captured = captured_values[-1].replace("T", " ", 1)
+        captured_text = f"抓取时间：{captured}"
+    else:
+        captured_text = "抓取时间：未记录"
+
+    if not issue:
+        return {
+            "class": "freshness-muted",
+            "captured": captured_text,
+            "pages": "盘口产物：选择期号后查看",
+            "data": "数据产物：选择期号后查看",
+        }
+
+    raw = load_odds_pages_raw(cache_dir, issue)
+    file_age = pages_age_hours(cache_dir, issue)
+    meta_exists = bool(
+        cache_dir
+        and (Path(cache_dir) / PAGES_META_FILENAME.format(issue=issue)).exists()
+    )
+    has_data_pages = any(
+        str(key).rsplit("|", 1)[-1] == "shuju" for key in (raw or {})
+    )
+    failures = page_failures(raw)
+
+    def artifact(kind_label: str, kinds: tuple[str, ...]) -> tuple[str, str]:
+        keys = [
+            str(key)
+            for key in (raw or {})
+            if str(key).rsplit("|", 1)[-1] in kinds
+        ]
+        if not keys:
+            return f"{kind_label}：未找到", "freshness-warn"
+        ages = [
+            pages_kind_age_hours(cache_dir, issue, kind)
+            for kind in kinds
+            if any(key.endswith(f"|{kind}") for key in keys)
+        ]
+        ages = [age for age in ages if age is not None]
+        if ages:
+            age = max(ages)
+        elif meta_exists:
+            # A metadata file that lacks this kind means its timestamp is
+            # unknown; do not fall back to the shared JSON mtime, which may
+            # have been touched by an unrelated page-kind scrape.
+            age = None
+        elif kind_label == "盘口产物" and has_data_pages:
+            # Legacy artifacts can be merged by AI before per-kind metadata
+            # exists. The shared file mtime then describes shuju, not odds.
+            age = None
+        else:
+            age = file_age
+        if age is None:
+            return (
+                f"{kind_label}：未记录" if keys else f"{kind_label}：未找到",
+                "freshness-warn",
+            )
+        age_text = "刚刚" if age < 0.1 else f"{age:.1f} 小时前"
+        text = f"{kind_label}：{age_text}"
+        css = "freshness-stale" if age > PAGES_STALE_HOURS else "freshness-ok"
+        failed = sum(1 for key in failures if key.rsplit("|", 1)[-1] in kinds)
+        empty = sum(
+            1
+            for key, page in (raw or {}).items()
+            if str(key).rsplit("|", 1)[-1] in kinds
+            and isinstance(page, dict)
+            and str(page.get("status") or "").strip() == "empty"
+        )
+        details = []
+        if failed:
+            details.append(f"抓取失败 {failed} 页")
+        if empty:
+            details.append(f"上游未开盘 {empty} 页")
+        if age > PAGES_STALE_HOURS:
+            details.append(f"超过 {PAGES_STALE_HOURS:.0f}h")
+        if details:
+            text += "（" + "；".join(details) + "）"
+            if failed or empty:
+                css = "freshness-warn"
+        return text, css
+
+    pages_text, pages_class = artifact("盘口产物", ("yazhi", "daxiao"))
+    data_text, data_class = artifact("数据产物", ("shuju",))
+    freshness_class = (
+        "freshness-warn"
+        if "freshness-warn" in (pages_class, data_class)
+        else "freshness-stale"
+        if "freshness-stale" in (pages_class, data_class)
+        else "freshness-ok"
+    )
+    return {
+        "class": freshness_class,
+        "captured": captured_text,
+        "pages": pages_text,
+        "data": data_text,
+        "pages_class": pages_class,
+        "data_class": data_class,
+    }
 
 
 def _badge(level: str) -> str:
@@ -46,7 +175,7 @@ def _kind_badge(kind: str, *, muted: bool = False) -> str:
     return f'<span class="kind {css}">{_esc(kind or "无")}</span>'
 
 def _split_html(row: dict, uid: str) -> str:
-    """盘口分歧标记 + 悬停弹层模板；弹层列出各公司初盘→即时盘口。"""
+    """Render all companies in a market-split popup."""
     blocks = row.get("split") or []
     if not isinstance(blocks, list):
         blocks = []
@@ -55,43 +184,40 @@ def _split_html(row: dict, uid: str) -> str:
         if not isinstance(block, dict):
             continue
         picked = str(block.get("picked") or "")
+        rows = [item for item in block.get("rows") or [] if isinstance(item, dict)]
+        if not any(
+            str(item.get("initial") or "") != str(item.get("current") or "")
+            for item in rows
+        ):
+            continue
         trs = []
-        for item in block.get("rows") or []:
-            if not isinstance(item, dict):
-                continue
-            # 老库里的 split 带着没动过的公司行，初盘=即时的不显示
-            if str(item.get("initial") or "") == str(item.get("current") or ""):
-                continue
+        for item in rows:
             raw_cid = str(item.get("cid") or "")
             cid = _esc(raw_cid)
-            # 老库的 split 只存了 cid；渲染时用公司名表兜底，避免弹窗露出裸数字。
             name = _esc(str(item.get("name") or "").strip() or COMPANY_NAMES.get(raw_cid, ""))
             label = f"{name}({cid})" if name else cid
-            cur = _esc(str(item.get("current") or "—"))
-            # 报告实际采用的那家加粗，一眼看出信号来自谁
+            cur = _esc(str(item.get("current") or "\u2014"))
             cur_cell = f"<b>{cur}</b>" if str(item.get("cid")) == picked else cur
             trs.append(
-                f"<tr><td>{label}</td><td>{_esc(str(item.get('initial') or '—'))} \u2192 {cur_cell}</td></tr>"
+                f"<tr><td>{label}</td><td>{_esc(str(item.get('initial') or '\u2014'))} \u2192 {cur_cell}</td></tr>"
             )
-        if not trs:
-            continue
         parts.append(
             f'<div class="split-card"><div class="split-card-title">'
             f'{_esc(str(block.get("market") or ""))}</div>'
-            f'<table class="split-table"><thead><tr><th>公司</th><th>初盘 \u2192 即时</th></tr></thead>'
+            f'<table class="split-table"><thead><tr><th>\u516c\u53f8</th><th>\u521d\u76d8 \u2192 \u5373\u65f6</th></tr></thead>'
             f'<tbody>{"".join(trs)}</tbody></table></div>'
         )
     if not parts:
         return ""
     body = f'<div class="split-cards">{"".join(parts)}</div>'
     return (
-        f'<div class="kind-split" data-split-for="{_esc(uid)}">盘口分歧</div>'
+        f'<div class="kind-split" data-split-for="{_esc(uid)}">\u76d8\u53e3\u5206\u6b67</div>'
         f'<template id="{_esc(uid)}">{body}</template>'
     )
 
 
 def _lean_cell(row: dict) -> str:
-    """倾向列：模型读球队资料的亚盘赢盘倾向（主行）+ 盘口异动的 lean（次行）。"""
+    """倾向列：模型读球队资料的亚盘赢盘倾向 + 大小球倾向（主行/次行）+ 盘口异动的 lean（末行）。"""
     parts: list[str] = []
     try:
         read = json.loads(str(row.get("team_read") or "") or "{}")
@@ -109,6 +235,19 @@ def _lean_cell(row: dict) -> str:
         if reason:
             parts.append(
                 f'<div class="model-reason" title="{_esc(reason)}">{_esc(reason)}</div>'
+            )
+    over_tendency = str(read.get("over_tendency") or "").strip()
+    try:
+        over_confidence = float(read.get("over_confidence") or 0.0)
+    except (TypeError, ValueError):
+        over_confidence = 0.0
+    if over_tendency and over_confidence > 0:
+        over_conf = f" {over_confidence * 100:.0f}%" if over_confidence > 0 else ""
+        parts.append(f'<div class="model-lean">模型 {over_tendency}{over_conf}</div>')
+        over_reason = str(read.get("over_reason") or "").strip()
+        if over_reason:
+            parts.append(
+                f'<div class="model-reason" title="{_esc(over_reason)}">{_esc(over_reason)}</div>'
             )
     lean = str(row.get("lean") or "").split("（")[0].strip()
     if lean:
@@ -213,13 +352,40 @@ def _total_goals_html(payload_json: str) -> str:
 
 
 _FETCH_BLOCK = \
-"""    <form class="fetch-bar" id="fetch-form">
+"""    <svg class="action-icon-sprite" aria-hidden="true">
+      <symbol id="icon-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3v12m0 0-4-4m4 4 4-4M5 21h14"/>
+      </symbol>
+      <symbol id="icon-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12a9 9 0 0 0-15.3-6.3L3 8m0 0V3m0 5h5M3 12a9 9 0 0 0 15.3 6.3L21 16m0 0v5m0-5h-5"/>
+      </symbol>
+      <symbol id="icon-sparkles" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m12 3 1.9 5.6L19 10.5l-5.1 1.9L12 18l-1.9-5.6L5 10.5l5.1-1.9L12 3Z"/>
+        <path d="m19 17 .7 2.3L22 20l-2.3.7L19 23l-.7-2.3L16 20l2.3-.7L19 17Z"/>
+      </symbol>
+      <symbol id="icon-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="7"/>
+        <path d="m20 20-4-4"/>
+      </symbol>
+      <symbol id="icon-file-text" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/>
+        <path d="M14 2v6h6M16 13H8M16 17H8M10 9H8"/>
+      </symbol>
+      <symbol id="icon-list-checks" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m3 7 2 2 4-4m-6 12 2 2 4-4M13 6h8M13 12h8M13 18h8"/>
+      </symbol>
+      <symbol id="icon-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/>
+        <path d="m19.4 15 .1.1a2 2 0 1 1-2.8 2.8l-.1-.1a2 2 0 0 0-3.4 1.4V19a2 2 0 1 1-4 0v-.2a2 2 0 0 0-3.4-1.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A2 2 0 0 0 3.6 11H3a2 2 0 1 1 0-4h.6a2 2 0 0 0 1.4-3.4l-.1-.1A2 2 0 1 1 7.7.7l.1.1A2 2 0 0 0 11.2 0H12a2 2 0 1 1 4 0v.6a2 2 0 0 0 3.4 1.4l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A2 2 0 0 0 20.8 8h.2a2 2 0 1 1 0 4h-.2a2 2 0 0 0-1.4 3.4Z"/>
+      </symbol>
+    </svg>
+    <form class="fetch-bar query-toolbar" id="fetch-form">
       <label>抓取期号
         <input name="issue" placeholder="如 26120" style="width:120px">
       </label>
-      <button type="submit">抓取并入库</button>
-      <button type="button" id="refresh-odds-btn">刷新盘口分歧</button>
-      <button type="button" id="ai-analyze-btn" style="background:#2563eb;color:#fff;border-color:#2563eb" title="读 500 数据分析页球队资料，大模型给出亚盘赢盘倾向（只展示，不改推荐）">AI 分析</button>
+      <button type="submit" class="action-primary"><svg class="action-icon" aria-hidden="true"><use href="#icon-download"></use></svg>获取比赛</button>
+      <button type="button" id="refresh-odds-btn" class="action-secondary"><svg class="action-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>刷新盘口</button>
+      <button type="button" id="ai-analyze-btn" class="action-ai" title="读 500 数据分析页球队资料，大模型给出亚盘赢盘倾向（只展示，不改推荐）"><svg class="action-icon" aria-hidden="true"><use href="#icon-sparkles"></use></svg>AI 分析</button>
       <span id="fetch-status" class="muted"></span>
       <span id="refresh-odds-status" class="muted"></span>
       <span id="ai-analyze-status" class="muted"></span>
@@ -376,6 +542,581 @@ _FETCH_BLOCK = \
       });
     }
     </script>
+    <dialog id="settings-dialog">
+      <form id="settings-form">
+        <div class="settings-head">
+          <strong>AI 模型设置</strong>
+          <button type="button" id="settings-close" class="icon-btn" title="关闭">×</button>
+        </div>
+        <div class="settings-grid">
+          <fieldset>
+            <legend>主接入点</legend>
+            <label>API Key
+              <input id="settings-primary-key" type="password" autocomplete="off" placeholder="留空保持现有 Key">
+            </label>
+            <label>URL
+              <input id="settings-primary-url" type="url" placeholder="https://api.openai.com/v1">
+            </label>
+            <label>模型名
+              <input id="settings-primary-model" type="text" placeholder="模型名称">
+            </label>
+            <label class="settings-clear"><input id="settings-primary-clear" type="checkbox"> 清空已保存 Key</label>
+            <div id="settings-primary-status" class="muted"></div>
+            <div class="settings-test-row">
+              <button type="button" class="settings-test" data-name="primary">测试连接</button>
+              <span id="settings-primary-test-status" class="muted"></span>
+            </div>
+          </fieldset>
+          <fieldset>
+            <legend>备用接入点</legend>
+            <label>API Key
+              <input id="settings-fallback-key" type="password" autocomplete="off" placeholder="留空保持现有 Key">
+            </label>
+            <label>URL
+              <input id="settings-fallback-url" type="url" placeholder="https://api.openai.com/v1">
+            </label>
+            <label>模型名
+              <input id="settings-fallback-model" type="text" placeholder="模型名称">
+            </label>
+            <label class="settings-clear"><input id="settings-fallback-clear" type="checkbox"> 清空已保存 Key</label>
+            <div id="settings-fallback-status" class="muted"></div>
+            <div class="settings-test-row">
+              <button type="button" class="settings-test" data-name="fallback">测试连接</button>
+              <span id="settings-fallback-test-status" class="muted"></span>
+            </div>
+          </fieldset>
+        </div>
+        <div id="settings-error" class="settings-error"></div>
+        <div class="settings-backup">
+          <strong>本地数据</strong>
+          <span class="muted">备份包含 SQLite 和 AI 设置，不包含可再生成的缓存与报告。</span>
+          <div class="settings-backup-actions">
+            <button type="button" id="backup-download">下载备份</button>
+            <label class="backup-restore-label">恢复备份
+              <input type="file" id="backup-file" accept=".zip,application/zip" hidden>
+            </label>
+          </div>
+          <div id="backup-status" class="muted"></div>
+        </div>
+        <div class="settings-backup">
+          <strong>软件升级</strong>
+          <span class="muted">当前版本：{_esc(__version__)}。升级包来自 GitHub Releases，下载后会校验 SHA-256。</span>
+          <div class="settings-backup-actions">
+            <button type="button" id="update-check">检查更新</button>
+            <button type="button" id="update-install" disabled>一键升级</button>
+          </div>
+          <div id="update-status" class="muted"></div>
+        </div>
+        <div class="settings-actions">
+          <button type="button" id="settings-cancel">取消</button>
+          <button type="submit" id="settings-save">保存设置</button>
+        </div>
+      </form>
+    </dialog>
+    <script>
+    (function () {
+      const dialog = document.getElementById("settings-dialog");
+      const openBtn = document.getElementById("settings-btn");
+      if (!dialog || !openBtn) return;
+      const error = document.getElementById("settings-error");
+      const saveBtn = document.getElementById("settings-save");
+      const testButtons = document.querySelectorAll(".settings-test");
+      function field(name) { return document.getElementById(name); }
+      function fill(name, data) {
+        field("settings-" + name + "-url").value = data.base_url || "";
+        field("settings-" + name + "-model").value = data.model || "";
+        field("settings-" + name + "-key").value = "";
+        field("settings-" + name + "-clear").checked = false;
+        field("settings-" + name + "-status").textContent =
+          data.api_key_configured ? ("已配置 " + (data.api_key_hint || "")) : "未配置";
+        const testStatus = field("settings-" + name + "-test-status");
+        testStatus.textContent = "";
+        testStatus.className = "muted";
+      }
+      async function load() {
+        error.textContent = "";
+        try {
+          const response = await fetch("/settings");
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "读取设置失败");
+          fill("primary", data.primary || {});
+          fill("fallback", data.fallback || {});
+        } catch (e) {
+          error.textContent = e.message || String(e);
+        }
+      }
+      function endpoint(name) {
+        return {
+          api_key: field("settings-" + name + "-key").value,
+          base_url: field("settings-" + name + "-url").value,
+          model: field("settings-" + name + "-model").value,
+          clear_api_key: field("settings-" + name + "-clear").checked
+        };
+      }
+      testButtons.forEach(function (button) {
+        button.addEventListener("click", async function () {
+          const name = button.getAttribute("data-name");
+          const status = field("settings-" + name + "-test-status");
+          button.disabled = true;
+          status.textContent = "测试中...";
+          try {
+            const response = await fetch("/settings/test", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({name: name, [name]: endpoint(name)})
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || "测试失败");
+            status.textContent = data.ok ? "✓ " + data.message : "× " + data.message;
+            status.className = data.ok ? "settings-test-status ok" : "settings-test-status fail";
+          } catch (e) {
+            status.textContent = "× " + (e.message || String(e));
+            status.className = "settings-test-status fail";
+          } finally {
+            button.disabled = false;
+          }
+        });
+      });
+      openBtn.addEventListener("click", async function () {
+        dialog.showModal();
+        await load();
+      });
+      document.getElementById("settings-close").addEventListener("click", () => dialog.close());
+      document.getElementById("settings-cancel").addEventListener("click", () => dialog.close());
+      document.getElementById("settings-form").addEventListener("submit", async function (event) {
+        event.preventDefault();
+        error.textContent = "";
+        saveBtn.disabled = true;
+        try {
+          const response = await fetch("/settings", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({primary: endpoint("primary"), fallback: endpoint("fallback")})
+          });
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "保存设置失败");
+          fill("primary", data.primary || {});
+          fill("fallback", data.fallback || {});
+          error.textContent = "设置已保存";
+        } catch (e) {
+          error.textContent = e.message || String(e);
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+      const backupStatus = document.getElementById("backup-status");
+      const updateStatus = document.getElementById("update-status");
+      const updateInstall = document.getElementById("update-install");
+      let updateInfo = null;
+      document.getElementById("update-check").addEventListener("click", async function () {
+        this.disabled = true;
+        updateStatus.textContent = "正在检查更新...";
+        try {
+          const response = await fetch("/update/check");
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.error || "检查更新失败");
+          updateInfo = data;
+          updateStatus.textContent = data.update_available
+            ? `发现新版本 ${data.latest_version}`
+            : `当前已是最新版本 ${data.current_version}`;
+          updateInstall.disabled = !data.update_available;
+        } catch (e) {
+          updateStatus.textContent = e.message || String(e);
+        } finally {
+          this.disabled = false;
+        }
+      });
+      updateInstall.addEventListener("click", async function () {
+        if (!updateInfo?.update_available) return;
+        this.disabled = true;
+        updateStatus.textContent = "正在下载并校验升级包...";
+        try {
+          const response = await fetch("/update/install", {method: "POST"});
+          const data = await response.json();
+          if (!response.ok || !data.ok) throw new Error(data.error || "升级失败");
+          updateStatus.textContent = data.message;
+          setTimeout(() => location.reload(), 8000);
+        } catch (e) {
+          updateStatus.textContent = e.message || String(e);
+          this.disabled = false;
+        }
+      });
+      document.getElementById("backup-download").addEventListener("click", async function () {
+        this.disabled = true;
+        backupStatus.textContent = "正在生成备份...";
+        try {
+          const response = await fetch("/backup");
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || "备份失败");
+          const bytes = Uint8Array.from(atob(payload.data), c => c.charCodeAt(0));
+          const blob = new Blob([bytes], {type: "application/zip"});
+          const link = document.createElement("a");
+          link.href = URL.createObjectURL(blob);
+          link.download = payload.filename || "football_analysis_backup.zip";
+          link.click();
+          URL.revokeObjectURL(link.href);
+          backupStatus.textContent = "备份已下载";
+        } catch (e) {
+          backupStatus.textContent = e.message || String(e);
+        } finally {
+          this.disabled = false;
+        }
+      });
+      document.getElementById("backup-file").addEventListener("change", async function () {
+        const file = this.files && this.files[0];
+        if (!file) return;
+        if (!confirm("恢复会替换当前数据库和 AI 设置，恢复前系统会自动生成安全备份。继续吗？")) {
+          this.value = "";
+          return;
+        }
+        backupStatus.textContent = "正在校验并恢复...";
+        try {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          let binary = "";
+          for (let i = 0; i < bytes.length; i += 0x8000) {
+            binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+          }
+          const response = await fetch("/backup/restore", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({data: btoa(binary)})
+          });
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || "恢复失败");
+          backupStatus.textContent = "恢复完成，正在刷新页面...";
+          setTimeout(() => location.reload(), 500);
+        } catch (e) {
+          backupStatus.textContent = e.message || String(e);
+        } finally {
+          this.value = "";
+        }
+      });
+    })();
+    </script>
+"""
+
+
+_BET_BLOCK = """
+<div id="bet-tip" hidden></div>
+<div id="bet-flash" class="bet-flash" hidden></div>
+<dialog id="bet-dialog">
+  <form id="bet-form">
+    <div class="bet-dialog-head">
+      <div>
+        <strong id="bet-title"></strong>
+        <div id="bet-meta" class="muted"></div>
+      </div>
+      <button type="button" id="bet-close" class="icon-btn" title="关闭">×</button>
+    </div>
+    <div id="bet-existing"></div>
+    <div id="bet-markets"></div>
+    <label class="bet-stake">投注积分
+      <input id="bet-stake-input" type="number" min="0.01" step="0.01" value="10">
+    </label>
+    <div id="bet-preview" class="bet-preview"></div>
+    <div id="bet-error" class="bet-error"></div>
+    <div class="bet-dialog-actions">
+      <button type="button" id="bet-cancel">取消</button>
+      <button type="button" id="bet-delete" hidden>删除注单</button>
+      <button type="submit" id="bet-submit">确认下注</button>
+    </div>
+  </form>
+</dialog>
+<script>
+(function () {
+  var dialog = document.getElementById("bet-dialog");
+  if (!dialog) return;
+  var state = {options: null, bet: null};
+  var titleEl = document.getElementById("bet-title");
+  var metaEl = document.getElementById("bet-meta");
+  var existingEl = document.getElementById("bet-existing");
+  var marketsEl = document.getElementById("bet-markets");
+  var stakeEl = document.getElementById("bet-stake-input");
+  var previewEl = document.getElementById("bet-preview");
+  var errorEl = document.getElementById("bet-error");
+  var submitEl = document.getElementById("bet-submit");
+  var deleteEl = document.getElementById("bet-delete");
+  var tipEl = document.getElementById("bet-tip");
+  var flashEl = document.getElementById("bet-flash");
+
+  function esc(value) {
+    return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) {
+      return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[ch];
+    });
+  }
+  function money(value) {
+    var n = Number(value || 0);
+    return n.toFixed(2);
+  }
+  function selectedMarket() {
+    var el = marketsEl.querySelector('input[name="bet-market"]:checked');
+    return el ? el.value : "";
+  }
+  function selectedSelection(market) {
+    if (!market) return "";
+    var el = marketsEl.querySelector('input[name="bet-selection-' + market + '"]:checked');
+    return el ? el.value : "";
+  }
+  function setError(text) {
+    errorEl.textContent = text || "";
+  }
+  function flashAndReload(text, betId) {
+    try {
+      sessionStorage.setItem("bet-flash", JSON.stringify({text: text, id: betId || 0}));
+    } catch (e) {}
+    location.reload();
+  }
+  function showSavedFlash() {
+    try {
+      var raw = sessionStorage.getItem("bet-flash");
+      if (!raw) return;
+      var msg = JSON.parse(raw);
+      if (flashEl) {
+        flashEl.textContent = msg.text || "";
+        flashEl.hidden = false;
+        setTimeout(function () { flashEl.hidden = true; }, 4000);
+      }
+      if (msg.id) {
+        var row = document.getElementById("bet-row-" + Number(msg.id));
+        if (row) {
+          row.classList.add("bet-highlight");
+          row.scrollIntoView({block: "center"});
+          setTimeout(function () { row.classList.remove("bet-highlight"); }, 2400);
+        }
+      } else {
+        var section = document.getElementById("bets-section");
+        if (section) section.scrollIntoView({block: "start"});
+      }
+      sessionStorage.removeItem("bet-flash");
+    } catch (e) {}
+  }
+  function hideTip() {
+    if (tipEl) tipEl.hidden = true;
+  }
+  function showTip(el) {
+    if (!tipEl) return;
+    var text = el.getAttribute("data-bet-tip") || "";
+    if (!text) { hideTip(); return; }
+    tipEl.textContent = text;
+    tipEl.hidden = false;
+    var box = el.getBoundingClientRect();
+    var left = Math.max(8, Math.min(box.left, window.innerWidth - tipEl.offsetWidth - 8));
+    var top = box.bottom + 6;
+    if (top + tipEl.offsetHeight > window.innerHeight - 8) {
+      top = Math.max(8, box.top - tipEl.offsetHeight - 6);
+    }
+    tipEl.style.left = left + "px";
+    tipEl.style.top = top + "px";
+  }
+  document.querySelectorAll(".bet-action-group[data-bet-tip]").forEach(function (el) {
+    el.addEventListener("mouseenter", function () { showTip(el); });
+    el.addEventListener("focusin", function () { showTip(el); });
+    el.addEventListener("mouseleave", hideTip);
+    el.addEventListener("focusout", hideTip);
+  });
+  window.addEventListener("scroll", hideTip, {passive: true});
+  function renderExisting() {
+    var existing = state.options.existing || [];
+    if (!existing.length) { existingEl.innerHTML = ""; return; }
+    var html = '<div class="bet-existing-title">已有注单</div>';
+    existing.forEach(function (bet) {
+      html += '<div class="bet-existing-row">' +
+        '<span>' + esc(bet.market_label) + ' · ' + esc(bet.selection_label) +
+        ' · ' + money(bet.stake) + ' 积分 · ' + esc(bet.status_label) + '</span>' +
+        '<span class="bet-existing-actions">' +
+        (bet.can_edit ? '<button type="button" class="bet-inline-edit" data-bet-id="' + Number(bet.id) + '">修改</button>' : '') +
+        (bet.can_delete ? '<button type="button" class="bet-inline-delete" data-bet-id="' + Number(bet.id) + '">删除</button>' : '') +
+        '</span></div>';
+    });
+    existingEl.innerHTML = html;
+    existingEl.querySelectorAll(".bet-inline-edit").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var id = Number(btn.getAttribute("data-bet-id"));
+        state.bet = (state.options.existing || []).find(function (b) { return Number(b.id) === id; }) || null;
+        render();
+      });
+    });
+    existingEl.querySelectorAll(".bet-inline-delete").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        deleteBet(Number(btn.getAttribute("data-bet-id")));
+      });
+    });
+  }
+  function renderMarkets() {
+    var markets = state.options.markets || {};
+    var existingMarkets = {};
+    (state.options.existing || []).forEach(function (bet) { existingMarkets[bet.market] = true; });
+    var keys = Object.keys(markets);
+    var edit = state.bet;
+    var available = keys.filter(function (key) {
+      return edit ? key === edit.market : !existingMarkets[key];
+    });
+    var defaultMarket = edit ? edit.market : (available[0] || "");
+    var html = "";
+    keys.forEach(function (key) {
+      var info = markets[key];
+      var rec = info.recommendation || {};
+      var disabled = edit ? key !== edit.market : !!existingMarkets[key];
+      var checked = key === defaultMarket;
+      var defaultSelection = edit && edit.market === key
+        ? edit.selection
+        : (rec.default || "");
+      var marketLabel = esc(info.label) + " · " + esc(info.line_text);
+      var recText = "模型 " + esc(rec.action || "无推荐") +
+        (rec.side_text ? " · " + esc(rec.side_text) : "");
+      html += '<div class="bet-market' + (checked ? " active" : "") + (disabled ? " disabled" : "") + '">' +
+        '<label class="bet-market-head"><input type="radio" name="bet-market" value="' + esc(key) + '"' +
+        (checked ? " checked" : "") + (disabled ? " disabled" : "") + '> ' + marketLabel + '</label>' +
+        '<div class="bet-rec">' + recText + '</div>' +
+        '<div class="bet-selections">';
+      (info.selections || []).forEach(function (item) {
+        var selChecked = defaultSelection === item.value;
+        html += '<label class="bet-selection"><input type="radio" name="bet-selection-' + esc(key) +
+          '" value="' + esc(item.value) + '"' + (selChecked ? " checked" : "") +
+          (disabled ? " disabled" : "") + '> ' + esc(item.label) +
+          ' <span class="muted">水位 ' + money(item.water) + '</span></label>';
+      });
+      html += '</div></div>';
+    });
+    marketsEl.innerHTML = html || '<div class="muted">当前没有可用盘口。</div>';
+    marketsEl.querySelectorAll('input[name="bet-market"]').forEach(function (el) {
+      el.addEventListener("change", function () {
+        marketsEl.querySelectorAll(".bet-market").forEach(function (box) {
+          box.classList.remove("active");
+        });
+        var box = el.closest(".bet-market");
+        if (box) box.classList.add("active");
+        updatePreview();
+      });
+    });
+    marketsEl.querySelectorAll('input[type="radio"]').forEach(function (el) {
+      el.addEventListener("change", updatePreview);
+    });
+    submitEl.disabled = !!state.options.locked || !defaultMarket;
+    updatePreview();
+  }
+  function updatePreview() {
+    var market = selectedMarket();
+    var selection = selectedSelection(market);
+    var info = (state.options.markets || {})[market];
+    var item = info ? (info.selections || []).find(function (x) { return x.value === selection; }) : null;
+    var stake = Number(stakeEl.value || 0);
+    if (!item || !(stake > 0)) {
+      previewEl.textContent = "";
+      return;
+    }
+    var water = Number(item.water || 0);
+    previewEl.textContent = "当前水位 " + money(water) +
+      "：全赢 +" + money(stake * water) +
+      "，赢半 +" + money(stake * water / 2) +
+      "，输半 -" + money(stake / 2) +
+      "，全输 -" + money(stake);
+  }
+  function render() {
+    var match = state.options.match || {};
+    titleEl.textContent = state.options.issue + " 第" + state.options.match_no + "场 " +
+      (match.home_team || "") + " vs " + (match.away_team || "");
+    metaEl.textContent = [match.league, match.match_time, "开赛 " + (state.options.kickoff_at || "未知")]
+      .filter(Boolean).join(" · ");
+    setError(state.options.locked ? state.options.locked_reason : "");
+    renderExisting();
+    renderMarkets();
+    if (state.bet) stakeEl.value = money(state.bet.stake);
+    deleteEl.hidden = !state.bet || !state.bet.can_delete;
+    if (state.bet) submitEl.textContent = "保存修改";
+    else submitEl.textContent = "确认下注";
+  }
+  async function openBet(issue, matchNo, betId) {
+    setError("");
+    try {
+      var resp = await fetch("/bet-options?issue=" + encodeURIComponent(issue) +
+        "&match_no=" + encodeURIComponent(matchNo));
+      var data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "读取盘口失败");
+      state.options = data;
+      state.bet = betId
+        ? (data.existing || []).find(function (b) { return Number(b.id) === Number(betId); }) || null
+        : null;
+      stakeEl.value = state.bet ? money(state.bet.stake) : "10";
+      dialog.showModal();
+      render();
+    } catch (err) {
+      setError(err.message || String(err));
+      if (!dialog.open) dialog.showModal();
+    }
+  }
+  async function deleteBet(id) {
+    if (!confirm("确定删除这张注单？")) return;
+    setError("");
+    try {
+      var resp = await fetch("/bets/delete", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({id: id})
+      });
+      var data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "删除失败");
+      flashAndReload("注单已删除", 0);
+    } catch (err) {
+      setError(err.message || String(err));
+    }
+  }
+  document.querySelectorAll(".bet-open").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openBet(btn.getAttribute("data-issue"), btn.getAttribute("data-match-no"), null);
+    });
+  });
+  document.querySelectorAll(".bet-edit").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      openBet(btn.getAttribute("data-issue"), btn.getAttribute("data-match-no"),
+        Number(btn.getAttribute("data-bet-id")));
+    });
+  });
+  document.querySelectorAll(".bet-delete").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      deleteBet(Number(btn.getAttribute("data-bet-id")));
+    });
+  });
+  document.getElementById("bet-close").addEventListener("click", function () { dialog.close(); });
+  document.getElementById("bet-cancel").addEventListener("click", function () { dialog.close(); });
+  deleteEl.addEventListener("click", function () {
+    if (state.bet) deleteBet(state.bet.id);
+  });
+  stakeEl.addEventListener("input", updatePreview);
+  dialog.addEventListener("click", function (event) {
+    if (event.target === dialog) dialog.close();
+  });
+  document.getElementById("bet-form").addEventListener("submit", async function (event) {
+    event.preventDefault();
+    setError("");
+    var market = selectedMarket();
+    var selection = selectedSelection(market);
+    var stake = Number(stakeEl.value || 0);
+    if (!market || !selection) { setError("请选择市场和方向"); return; }
+    if (!(stake > 0)) { setError("请输入大于 0 的投注积分"); return; }
+    var payload = state.bet
+      ? {id: state.bet.id, selection: selection, stake: stake}
+      : {issue: state.options.issue, match_no: state.options.match_no,
+         market: market, selection: selection, stake: stake};
+    var url = state.bet ? "/bets/update" : "/bets";
+    try {
+      var resp = await fetch(url, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      var data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "保存失败");
+      var label = (data.market_label || "") + " " + (data.selection_label || "") +
+        " " + money(data.stake) + " 积分";
+      flashAndReload((state.bet ? "注单已更新：" : "已记录：") + label, data.id);
+    } catch (err) {
+      setError(err.message || String(err));
+    }
+  });
+  showSavedFlash();
+})();
+</script>
 """
 
 
@@ -395,12 +1136,25 @@ def render_query_html(
     source_url: str = "",
     report_links: dict[str, str] | None = None,
     leagues: list[str] | None = None,
+    bets: list[dict] | None = None,
+    bet_stats: dict | None = None,
+    bet_trend: list[dict] | None = None,
+    cache_dir: str | Path | None = None,
 ) -> str:
     from .browser_report import render_browser_html
     report_links = report_links or {}
     leagues = leagues or []
+    bets = bets or []
+    bet_stats = bet_stats or summarize_bets(bets)
+    bet_trend = bet_trend or []
     fetch_block = _FETCH_BLOCK
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    freshness = _data_freshness(
+        rows,
+        analyses,
+        issue=issue,
+        cache_dir=cache_dir,
+    )
     # Build the unified analysis page when a full issue is requested
     unified_html = ""
     if analyses and issue:
@@ -427,12 +1181,63 @@ def render_query_html(
     for value in leagues:
         selected = " selected" if value == team else ""
         team_options.append(f'<option value="{_esc(value)}"{selected}>{_esc(value)}</option>')
+    bets_by_match: dict[tuple[str, str], list[dict]] = {}
+    for bet in bets:
+        key = (str(bet.get("issue") or ""), str(bet.get("match_no") or ""))
+        bets_by_match.setdefault(key, []).append(bet)
+    can_bet_ui = bool(port)
+    now = datetime.now()
     table_rows = []
     for row_idx, row in enumerate(rows):
+        issue_value = str(row.get("issue") or "")
+        match_no = str(row.get("match_no") or "")
+        match_bets = bets_by_match.get((issue_value, match_no), [])
+        kickoff = parse_kickoff(
+            issue_value,
+            str(row.get("match_time") or ""),
+            str(row.get("captured_at") or ""),
+        )
+        locked = bool(row.get("final_score")) or kickoff is None or now >= kickoff
+        tip_lines = []
+        for bet in match_bets:
+            line = (
+                f"{bet.get('market_label') or ''} "
+                f"{bet.get('selection_label') or ''} "
+                f"{int(round(float(bet.get('stake') or 0)))} 积分"
+            ).strip()
+            if bet.get("status") == "settled":
+                line += f"（{bet.get('result_label')} {float(bet.get('profit') or 0):+.2f}）"
+            tip_lines.append(line)
+        bet_tip = "\n".join(tip_lines)
+        group_attrs = ""
+        if bet_tip:
+            attr = "data-bet-tip" if can_bet_ui else "title"
+            group_attrs = f' {attr}="{_esc(bet_tip)}"'
+        more = (
+            '<a class="bet-more" href="#bets-section" title="查看本期注单">&gt;</a>'
+            if match_bets else ""
+        )
+        if not can_bet_ui:
+            bet_cell = '<td class="bet-cell muted">-</td>'
+        elif locked:
+            reason = "已关闭"
+            button_title = "开赛时间未知" if kickoff is None and not row.get("final_score") else "比赛已开始，投注已关闭"
+            bet_cell = (
+                f'<td class="bet-cell"><span class="bet-action-group"{group_attrs}>'
+                f'<button type="button" class="bet-btn" disabled title="{_esc(button_title)}">'
+                f'{_esc(reason)}</button>{more}</span></td>'
+            )
+        else:
+            bet_cell = (
+                f'<td class="bet-cell"><span class="bet-action-group"{group_attrs}>'
+                f'<button type="button" class="bet-btn bet-open" '
+                f'data-issue="{_esc(issue_value)}" data-match-no="{_esc(match_no)}" '
+            f'>投注</button>{more}</span></td>'
+            )
         table_rows.append(
             f"""
             <tr>
-              <td>{_esc(row.get("issue"))}</td>
+              <td class="issue-cell">{_esc(row.get("issue"))}</td>
               <td class="match-cell">
                 <div class="match-head">
                   <span class="cell-no">{_esc(row.get("match_no"))}</span>
@@ -443,7 +1248,7 @@ def render_query_html(
 
               </td>
               <td class="score-cell">{_esc(row.get("final_score") or "未开赛")}</td>
-              <td>{_kind_badge(str(row.get("kind") or ""), muted=_kind_muted(row))}{_split_html(row, f'splitpop-{row_idx}')}</td>
+              <td class="type-cell">{_kind_badge(str(row.get("kind") or ""), muted=_kind_muted(row))}{_split_html(row, f'splitpop-{row_idx}')}</td>
               <td class="line-change">
                 <div class="line-pair"><span class="k">初</span>{_esc(row.get("initial_line") or "无数据")}</div>
                 <div class="line-pair"><span class="k">即</span>{_esc(row.get("current_line") or "无数据")}</div>
@@ -454,38 +1259,205 @@ def render_query_html(
               <td class="total-cell">
                 {_total_goals_html(row.get('payload_json') or '')}
               </td>
+              {bet_cell}
             </tr>
             """
         )
     empty = ""
     if not rows:
         empty = '<div class="no-alert">没有符合条件的异动记录。先运行分析入库后再查询。</div>'
+    total_stake = float(bet_stats.get("stake") or 0)
+    pending_bets = int(bet_stats.get("pending") or 0)
+    settled_profit = float(bet_stats.get("profit") or 0)
+    settled_bets = int(bet_stats.get("settled") or 0)
+    hit_rate = float(bet_stats.get("hit_rate") or 0)
+    roi = float(bet_stats.get("roi") or 0)
+    asian_stats = (bet_stats.get("markets") or {}).get("asian", {})
+    total_stats = (bet_stats.get("markets") or {}).get("total", {})
+    follow_stats = (bet_stats.get("follows") or {})
+    export_issue = quote_from_bytes(issue.encode("utf-8")) if issue else ""
+    export_link = (
+        f'<a class="report-btn" href="/bets.csv?issue={export_issue}">导出 CSV</a>'
+        if can_bet_ui else ""
+    )
+    market_lines = (
+        f"亚盘 {asian_stats.get('bets', 0)} 注 · 已结算 {asian_stats.get('settled', 0)} · "
+        f"净收益 {asian_stats.get('profit', 0):+.2f} · 命中率 {asian_stats.get('hit_rate', 0):.1f}%",
+        f"大小球 {total_stats.get('bets', 0)} 注 · 已结算 {total_stats.get('settled', 0)} · "
+        f"净收益 {total_stats.get('profit', 0):+.2f} · 命中率 {total_stats.get('hit_rate', 0):.1f}%",
+        f"跟随模型 {follow_stats.get('follow', {}).get('bets', 0)} 注 · "
+        f"偏离模型 {follow_stats.get('deviate', {}).get('bets', 0)} 注 · "
+        f"无推荐 {follow_stats.get('none', {}).get('bets', 0)} 注",
+    )
+    bet_table_rows = []
+    for bet in bets:
+        status = str(bet.get("status") or "")
+        profit = (
+            f"{float(bet.get('profit') or 0):+.2f}"
+            if status == "settled"
+            else "-"
+        )
+        rec_action = str(bet.get("rec_action") or "")
+        rec_side = str(bet.get("rec_side_label") or "")
+        rec_text = " ".join(part for part in (rec_action, rec_side) if part) or "无推荐"
+        if int(bet.get("follows_recommendation") or 0):
+            rec_text += " · 跟随"
+        elif rec_action in ("主推", "轻仓"):
+            rec_text += " · 偏离"
+        actions = []
+        if can_bet_ui and bet.get("can_edit"):
+            actions.append(
+                f'<button type="button" class="bet-edit" data-bet-id="{int(bet.get("id") or 0)}" '
+                f'data-issue="{_esc(bet.get("issue"))}" data-match-no="{_esc(bet.get("match_no"))}">修改</button>'
+            )
+        if can_bet_ui and bet.get("can_delete"):
+            actions.append(
+                f'<button type="button" class="bet-delete" data-bet-id="{int(bet.get("id") or 0)}">删除</button>'
+            )
+        action_text = " ".join(actions) or ("已锁定" if not can_bet_ui else "-")
+        bet_table_rows.append(
+            f"""
+            <tr id="bet-row-{int(bet.get('id') or 0)}">
+              <td>{_esc(bet.get("issue"))}</td>
+              <td class="match-cell">
+                <strong>{_esc(bet.get("home_team"))} vs {_esc(bet.get("away_team"))}</strong>
+                <div class="muted">{_esc(bet.get("match_time"))}</div>
+              </td>
+              <td>{_esc(bet.get("market_label"))}</td>
+              <td>
+                {_esc(bet.get("selection_label"))}
+                <div class="muted">{_esc(bet.get("line_text"))}</div>
+                <div class="muted">水位 {_esc(f'{float(bet.get("water") or 0):.2f}')}</div>
+              </td>
+              <td>{int(round(float(bet.get("stake") or 0)))} 积分</td>
+              <td>{_esc(bet.get("status_label"))}<div class="muted">{_esc(bet.get("result_label"))}</div></td>
+              <td class="profit-cell">{profit}</td>
+              <td class="rec-cell">{_esc(rec_text)}</td>
+              <td class="bet-actions">{action_text}</td>
+            </tr>
+            """
+        )
+    trend_rows = [
+        f"""
+        <tr>
+          <td>{_esc(row.get("issue"))}</td>
+          <td>{int(row.get("bets") or 0)}</td>
+          <td>{int(row.get("settled") or 0)}</td>
+          <td>{int(round(float(row.get("stake") or 0)))} 积分</td>
+          <td class="profit-cell">{float(row.get("profit") or 0):+.2f}</td>
+          <td>{float(row.get("roi") or 0):+.1f}%</td>
+          <td>{float(row.get("hit_rate") or 0):.1f}%</td>
+        </tr>
+        """
+        for row in bet_trend
+    ]
+    trend_panel = (
+        f"""
+        <details class="bets-trend">
+          <summary>跨期投注趋势</summary>
+          <div class="table-scroll">
+            <table class="bets-table">
+              <thead><tr><th>期号</th><th>注数</th><th>已结算</th><th>投注积分</th><th>净收益</th><th>ROI</th><th>命中率</th></tr></thead>
+              <tbody>{''.join(trend_rows)}</tbody>
+            </table>
+          </div>
+        </details>
+        """
+        if trend_rows else ""
+    )
+    bet_panel = f"""
+    <section class="bets-section" id="bets-section">
+      <div class="bets-head">
+        <h2>本期投注</h2>
+        <div class="bets-head-right">
+        <span class="muted">注单 {len(bets)} · 投注积分 {int(round(total_stake))} · 已结算 {settled_bets} · 待结算 {pending_bets} · 净收益 {settled_profit:+.2f} · ROI {roi:+.1f}% · 命中率 {hit_rate:.1f}%</span>
+          {export_link}
+        </div>
+      </div>
+      <div class="bets-stats">
+        <span>{market_lines[0]}</span>
+        <span>{market_lines[1]}</span>
+        <span>{market_lines[2]}</span>
+      </div>
+      <div class="table-scroll">
+        <table class="bets-table">
+          <thead>
+            <tr><th>期号</th><th>比赛</th><th>市场</th><th>方向</th><th>积分</th><th>状态</th><th>收益</th><th>模型</th><th>操作</th></tr>
+          </thead>
+          <tbody>{''.join(bet_table_rows) or '<tr><td colspan="9" class="bets-empty">本期还没有投注。</td></tr>'}</tbody>
+        </table>
+      </div>
+      {trend_panel}
+      <p class="bets-disclaimer">此分析工具纯属游戏娱乐，不构成投资建议，风险自担！</p>
+    </section>
+    """
+    bet_block = _BET_BLOCK if can_bet_ui else ""
+    bet_chip = (
+        f'<a class="bet-chip" href="#bets-section">本期投注 {len(bets)} 注 · '
+        f'{int(round(total_stake))} 积分 · 净收益 {settled_profit:+.2f}</a>'
+        if bets else ""
+    )
+    freshness_class = freshness["class"]
+    freshness_html = (
+        f'<div class="data-freshness {freshness_class}">'
+        f'<strong>数据状态</strong> {_esc(freshness["captured"])} · '
+        f'<span class="freshness-item {freshness.get("pages_class", freshness_class)}">'
+        f'{_esc(freshness["pages"])}</span> · '
+        f'<span class="freshness-item {freshness.get("data_class", freshness_class)}">'
+        f'{_esc(freshness.get("data", "数据产物：未记录"))}</span>'
+        f'</div>'
+    )
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>足彩分析系统1.0</title>
+  <title>足彩分析系统1.3</title>
   <style>
     :root {{
       --canvas: #f3f5f7; --panel: #ffffff; --ink: #1d2733; --muted: #64748b;
       --line: #d9dfe6; --red: #b42318; --red-soft: #fff1ef; --green: #16705a;
       --green-soft: #eaf8f2; --amber: #b45309;
+      --blue: #2563eb; --blue-dark: #1d4ed8; --indigo: #4f46e5; --indigo-dark: #4338ca;
     }}
     * {{ box-sizing: border-box; }}
     body {{ margin: 0; background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 14px; }}
     .page {{ max-width: 1360px; margin: 0 auto; padding: 26px 20px 54px; }}
     h1 {{ margin: 4px 0 6px; font-size: 28px; }}
     .meta, .muted {{ color: var(--muted); }}
+    .data-freshness {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); font-size: 12px; }}
+    .data-freshness strong {{ color: var(--ink); }}
+    .data-freshness.freshness-ok {{ border-color: #bbdecf; background: var(--green-soft); }}
+    .data-freshness.freshness-stale, .data-freshness.freshness-warn {{ border-color: #f1d39a; background: #fff8e8; color: #8a5a08; }}
+    .data-freshness.freshness-muted {{ background: #f8fafc; }}
+    .freshness-item.freshness-ok {{ color: #16705a; }}
+    .freshness-item.freshness-stale, .freshness-item.freshness-warn {{ color: #8a5a08; }}
     form {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin: 18px 0; padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }}
     label {{ display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }}
     input, select, button {{ padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; }}
     button {{ background: #1d2733; color: #fff; cursor: pointer; }}
+    .query-toolbar {{ gap: 9px; }}
+    .query-toolbar input, .query-toolbar select {{ border-radius: 6px; }}
+    .query-toolbar > button {{ min-height: 36px; padding: 0 13px; border-radius: 6px; font-weight: 500; transition: background .15s, border-color .15s, color .15s, box-shadow .15s; }}
+    .action-icon-sprite {{ position: absolute; width: 0; height: 0; overflow: hidden; }}
+    .query-toolbar .action-icon {{ display: inline-block; flex: 0 0 15px; width: 15px; height: 15px; margin-right: 6px; line-height: 1; }}
+    .query-toolbar > button:focus-visible {{ outline: 3px solid rgba(37, 99, 235, .22); outline-offset: 1px; }}
+    .query-toolbar .action-primary {{ background: var(--blue); color: #fff; border-color: var(--blue); }}
+    .query-toolbar .action-primary:hover {{ background: var(--blue-dark); border-color: var(--blue-dark); }}
+    .query-toolbar .action-secondary {{ background: var(--panel); color: var(--blue); border-color: var(--blue); }}
+    .query-toolbar .action-secondary:hover {{ background: #eff6ff; border-color: var(--blue-dark); color: var(--blue-dark); }}
+    .query-toolbar .action-ai {{ background: var(--indigo); color: #fff; border-color: var(--indigo); }}
+    .query-toolbar .action-ai:hover {{ background: var(--indigo-dark); border-color: var(--indigo-dark); }}
+    .query-toolbar .action-neutral {{ background: #f8fafc; color: var(--ink); border-color: var(--line); }}
+    .query-toolbar .action-neutral:hover {{ background: #fff; color: var(--blue); border-color: var(--blue); }}
+    .query-toolbar .action-ghost {{ background: transparent; color: var(--muted); border-color: transparent; }}
+    .query-toolbar .action-ghost:hover {{ background: #f8fafc; color: var(--ink); border-color: var(--line); }}
+    .query-toolbar > button:disabled {{ background: #e2e8f0; color: #64748b; border-color: #cbd5e1; cursor: not-allowed; }}
     .checks {{ display: flex; gap: 12px; align-items: center; }}
     table {{ width: 100%; border-collapse: collapse; background: var(--panel); }}
     th, td {{ padding: 10px 12px; border-top: 1px solid var(--line); text-align: left; vertical-align: middle; }}
     th {{ background: #f8fafc; color: #475569; white-space: nowrap; }}
-    .match-cell {{ min-width: 220px; white-space: normal; }}
+    .match-cell {{ min-width: 220px; white-space: normal; overflow: hidden; }}
     .match-cell strong {{ display: block; white-space: normal; }}
     .match-head {{ display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }}
 .time-cell {{ white-space: nowrap; color: #475569; }}
@@ -504,13 +1476,92 @@ def render_query_html(
     .lean-note {{ margin-top: 2px; font-weight: 600; font-size: 12px; color: #1d4ed8; }}
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}
     .alert-table {{ table-layout: fixed; }}
-    .alert-table .match-cell {{ width: 26%; }}
-    .alert-table .line-change {{ width: 28%; }}
-    .alert-table .score-cell {{ width: 9%; }}
-.alert-table .lean-cell {{ width: 18%; }}
-.alert-table .total-cell {{ width: 12%; }}
+    .alert-table .issue-cell {{ width: 6%; white-space: nowrap; }}
+    .alert-table .match-cell {{ width: 20%; }}
+    .alert-table .score-cell {{ width: 8%; }}
+    .alert-table .type-cell {{ width: 8%; }}
+    .alert-table .line-change {{ width: 18%; }}
+    .alert-table .lean-cell {{ width: 22%; }}
+    .alert-table .total-cell {{ width: 10%; }}
 .report-btn {{ background: var(--green); color: #fff; margin-left: 8px; }}
 .report-btn:disabled {{ background: #cbd5e1; cursor: not-allowed; }}
+.settings-btn {{ margin-left: auto; }}
+#settings-dialog {{ width: min(760px, calc(100vw - 24px)); max-height: calc(100vh - 24px); padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); box-shadow: 0 20px 60px rgba(15, 23, 42, .3); }}
+#settings-dialog::backdrop {{ background: rgba(15, 23, 42, .45); }}
+.settings-backup {{ margin: 14px 20px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 6px; }}
+.settings-backup-actions {{ display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }}
+.backup-restore-label {{ display: inline-flex; align-items: center; cursor: pointer; }}
+#settings-form {{ display: block; margin: 0; padding: 18px; background: transparent; border: 0; }}
+.settings-head {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }}
+.settings-head strong {{ font-size: 17px; }}
+.settings-grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
+.settings-grid fieldset {{ min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--line); border-radius: 6px; }}
+.settings-grid legend {{ padding: 0 5px; color: var(--muted); font-size: 12px; }}
+.settings-grid label {{ margin-top: 8px; }}
+.settings-grid input[type="text"], .settings-grid input[type="url"], .settings-grid input[type="password"] {{ width: 100%; }}
+.settings-clear {{ flex-direction: row; align-items: center; gap: 6px; }}
+.settings-clear input {{ margin: 0; }}
+.settings-grid .muted {{ margin-top: 7px; font-size: 12px; }}
+.settings-test-row {{ display: flex; align-items: center; gap: 8px; margin-top: 10px; min-height: 28px; }}
+.settings-test {{ padding: 5px 9px; font-size: 12px; }}
+.settings-test-status {{ margin-top: 0 !important; }}
+.settings-test-status.ok {{ color: var(--green); }}
+.settings-test-status.fail {{ color: var(--red); }}
+.settings-error {{ min-height: 20px; margin-top: 10px; color: var(--green); font-size: 12px; }}
+.settings-actions {{ display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }}
+@media (max-width: 640px) {{ .settings-grid {{ grid-template-columns: 1fr; }} }}
+.bet-cell {{ width: 8%; white-space: nowrap; }}
+.bet-action-group {{ display: inline-flex; align-items: center; gap: 4px; }}
+.bet-btn {{ padding: 5px 9px; background: var(--green); color: #fff; border-color: var(--green); font-size: 12px; }}
+.bet-btn:disabled {{ background: #e2e8f0; color: #64748b; border-color: #cbd5e1; cursor: not-allowed; }}
+.bet-more {{ display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 26px; padding: 0 4px; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); text-decoration: none; font-weight: 700; line-height: 1; }}
+.bet-more:hover {{ border-color: #94a3b8; background: #f8fafc; }}
+#bet-tip {{ position: fixed; z-index: 60; max-width: min(320px, calc(100vw - 16px)); padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: rgba(255, 255, 255, .96); color: var(--ink); box-shadow: 0 8px 24px rgba(15, 23, 42, .18); font-size: 12px; line-height: 1.6; white-space: pre-line; pointer-events: none; }}
+#bet-tip[hidden] {{ display: none; }}
+.bets-section {{ margin-top: 24px; }}
+.bets-head {{ display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }}
+.bets-head-right {{ display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: flex-end; }}
+.bets-head h2 {{ margin: 0; font-size: 18px; }}
+.bets-stats {{ display: flex; flex-wrap: wrap; gap: 6px 18px; margin-bottom: 8px; color: var(--muted); font-size: 12px; }}
+.bets-trend {{ margin-top: 10px; }}
+.bets-trend summary {{ cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 6px; }}
+.bet-chip {{ display: inline-block; padding: 3px 9px; border: 1px solid #bfdbfe; border-radius: 4px; background: #eff6ff; color: #1d4ed8; text-decoration: none; font-weight: 600; }}
+.bet-flash {{ position: fixed; z-index: 70; top: 18px; left: 50%; transform: translateX(-50%); padding: 9px 16px; border-radius: 6px; background: #166534; color: #fff; box-shadow: 0 8px 24px rgba(15, 23, 42, .24); font-size: 13px; }}
+.bet-flash[hidden] {{ display: none; }}
+.bet-highlight td {{ background: #fff3cd !important; }}
+.bets-table {{ table-layout: fixed; }}
+.bets-table th, .bets-table td {{ padding: 8px 10px; font-size: 13px; }}
+.bets-table tbody tr:nth-child(even) td {{ background: #f8fafc; }}
+.bets-table .match-cell {{ white-space: normal; }}
+.bets-table .profit-cell {{ font-variant-numeric: tabular-nums; font-weight: 600; }}
+.bets-table .rec-cell {{ font-size: 12px; color: #475569; }}
+.bets-table .bet-actions {{ white-space: nowrap; }}
+.bets-table .bet-actions button, .bet-existing-actions button {{ margin-right: 4px; padding: 4px 7px; background: #fff; color: var(--ink); border-color: var(--line); font-size: 12px; }}
+.bets-empty {{ padding: 16px; color: var(--muted); }}
+.bets-disclaimer {{ margin: 10px 0 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--red-soft); color: var(--red); font-size: 12px; font-weight: 600; }}
+#bet-dialog {{ width: min(640px, calc(100vw - 24px)); max-height: calc(100vh - 24px); padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); box-shadow: 0 20px 60px rgba(15, 23, 42, .3); }}
+#bet-dialog::backdrop {{ background: rgba(15, 23, 42, .45); }}
+#bet-form {{ display: block; margin: 0; padding: 16px; background: transparent; border: 0; }}
+.bet-dialog-head {{ display: flex; gap: 12px; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }}
+.bet-dialog-head strong {{ display: block; font-size: 16px; margin-bottom: 4px; }}
+.icon-btn {{ padding: 2px 8px; background: transparent; color: var(--ink); border-color: transparent; font-size: 20px; line-height: 1; }}
+.bet-existing {{ margin-bottom: 10px; padding: 8px 10px; background: #f8fafc; border: 1px solid var(--line); border-radius: 6px; }}
+.bet-existing-title {{ margin-bottom: 5px; font-size: 12px; font-weight: 600; color: var(--muted); }}
+.bet-existing-row {{ display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; padding: 3px 0; font-size: 12px; }}
+.bet-market {{ margin-top: 8px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 6px; }}
+.bet-market.active {{ border-color: #2563eb; background: #f8fbff; }}
+.bet-market.disabled {{ opacity: .55; }}
+.bet-market-head {{ display: block; font-size: 13px; color: var(--ink); }}
+.bet-market-head input {{ margin-right: 5px; }}
+.bet-rec {{ margin: 3px 0 6px 20px; color: #1d4ed8; font-size: 12px; font-weight: 600; }}
+.bet-selections {{ display: flex; flex-wrap: wrap; gap: 12px; margin-left: 20px; }}
+.bet-selection {{ display: inline-flex; flex-direction: row; gap: 4px; align-items: center; color: var(--ink); font-size: 13px; }}
+.bet-stake {{ margin-top: 12px; max-width: 220px; }}
+.bet-preview {{ min-height: 18px; margin-top: 6px; color: var(--muted); font-size: 12px; }}
+.bet-error {{ min-height: 18px; margin-top: 4px; color: var(--red); font-size: 12px; }}
+.bet-dialog-actions {{ display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 10px; }}
+#bet-delete {{ background: #fff; color: var(--red); border-color: #fecaca; }}
+#bet-submit {{ background: #2563eb; border-color: #2563eb; }}
 
     .badge, .kind {{ display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }}
     .badge-hot {{ background: var(--red-soft); color: var(--red); }}
@@ -537,14 +1588,22 @@ def render_query_html(
     .no-alert {{ padding: 18px 16px; color: var(--green); background: var(--green-soft); }}
     .table-scroll {{ overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }}
     .alert-table tbody tr:nth-child(even) td {{ background: #f8fafc; }}
+    @media (max-width: 900px) {{
+      .page {{ padding: 18px 10px 42px; }}
+      .alert-table {{ min-width: 1080px; }}
+      .bets-table {{ min-width: 900px; }}
+      .bets-head {{ align-items: flex-start; }}
+    }}
   </style>
 </head>
 <body>
   <div class="page">
-    <h1>足彩分析系统1.0</h1>
+    <h1>足彩分析系统1.3</h1>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}　上盘=让球方，下盘=受让方；上盘让球增加为升盘，减少为降盘。</div>
     {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
-    <form method="get">
+    {f'<div class="meta">{bet_chip}</div>' if bet_chip else ''}
+    {freshness_html}
+    <form method="get" id="query-form" class="query-toolbar">
       <label>期号
         <select name="issue">{''.join(issue_options)}</select>
       </label>
@@ -557,18 +1616,31 @@ def render_query_html(
       <label>类型
         <select name="kind">{''.join(kind_options)}</select>
       </label>
-      <div class="checks">
-        <label><input type="checkbox" name="attention" value="1" {"checked" if attention_only else ""}> 只看异动</label>
-        <label><input type="checkbox" name="latest" value="1" {"checked" if latest_only else ""}> 每期最新一次</label>
-      </div>
-      <button type="submit">查询</button>
-      <button type="button" id="report-btn" class="report-btn">分析报告</button>
-      <button type="button" id="review-btn" class="report-btn">更新比分</button>
+      <button type="submit" class="action-primary"><svg class="action-icon" aria-hidden="true"><use href="#icon-search"></use></svg>查询</button>
+      <button type="button" id="report-btn" class="action-neutral"><svg class="action-icon" aria-hidden="true"><use href="#icon-file-text"></use></svg>分析报告</button>
+      <button type="button" id="review-btn" class="action-neutral"><svg class="action-icon" aria-hidden="true"><use href="#icon-list-checks"></use></svg>更新比分</button>
       <span id="report-hint" class="muted" style="font-size:12px"></span>
       <span id="review-hint" class="muted" style="font-size:12px"></span>
+      <button type="button" id="settings-btn" class="action-ghost settings-btn"><svg class="action-icon" aria-hidden="true"><use href="#icon-settings"></use></svg>设置</button>
     </form>
     <script>
     (function() {{
+      const queryForm = document.getElementById("query-form");
+      function restoreQueryTop() {{
+        try {{
+          if (sessionStorage.getItem("query-scroll-top") !== "1") return;
+          sessionStorage.removeItem("query-scroll-top");
+        }} catch (e) {{}}
+        if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+        window.scrollTo({{left: 0, top: 0, behavior: "auto"}});
+        requestAnimationFrame(() => window.scrollTo(0, 0));
+      }}
+      if (queryForm) queryForm.addEventListener("submit", function() {{
+        try {{ sessionStorage.setItem("query-scroll-top", "1"); }} catch (e) {{}}
+        if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+        window.scrollTo({{left: 0, top: 0, behavior: "auto"}});
+      }});
+      restoreQueryTop();
       const sel = document.querySelector('select[name="issue"]');
       const btn = document.getElementById('report-btn');
       const hint = document.getElementById('report-hint');
@@ -633,7 +1705,7 @@ def render_query_html(
       <table class="alert-table">
         <thead>
           <tr>
-            <th>期号</th><th>比赛</th><th>比分</th><th>类型</th><th>盘口变化</th><th>倾向</th><th>大小球</th>
+            <th class="issue-cell">期号</th><th class="match-cell">比赛</th><th class="score-cell">比分</th><th class="type-cell">类型</th><th class="line-change">盘口变化</th><th class="lean-cell">倾向</th><th class="total-cell">大小球</th><th class="bet-cell">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -641,7 +1713,9 @@ def render_query_html(
         </tbody>
       </table>
     </div>
+    {bet_panel}
   </div>
+  {bet_block}
   <div id="split-pop" hidden></div>
   <script>
   (function () {{

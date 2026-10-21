@@ -10,7 +10,7 @@ from football_analysis.odds_pages import (
     parse_odds_pages,
 )
 from football_analysis.pipeline import _build_single_analysis
-from football_analysis.query_report import _split_html
+from football_analysis.query_report import _split_html, _total_goals_html
 from football_analysis.report import asian_display, total_display
 from football_analysis.store import _extract_split
 
@@ -28,19 +28,19 @@ TOTAL_ROWS = [["5", "1.25", "3/3.5", "0.75", "0.75", "2.5", "1.00"]]
 
 
 class OddsPagesTests(unittest.TestCase):
-    def test_prefers_macau_cid_5(self):
+    def test_prefers_william_cid_293(self):
         parsed = parse_odds_pages(_raw({"9|yazhi": ASIAN_ROWS}))
         asian = parsed["9"]
-        self.assertEqual(asian["asian_line_text"], "一球")
-        self.assertEqual(asian["asian_home_line"], -1.0)
-        self.assertEqual(asian["asian_home_water"], 1.0)
-        self.assertEqual(asian["asian_away_water"], 0.84)
-        self.assertEqual(asian["asian_company"], "澳门")
+        self.assertEqual(asian["asian_line_text"], "两球")
+        self.assertEqual(asian["asian_home_line"], -2.0)
+        self.assertEqual(asian["asian_home_water"], 0.73)
+        self.assertEqual(asian["asian_away_water"], 1.0)
+        self.assertEqual(asian["asian_company"], "威廉")
 
-    def test_falls_back_to_william_when_macau_missing(self):
-        parsed = parse_odds_pages(_raw({"9|yazhi": [ASIAN_ROWS[1]]}))
-        self.assertEqual(parsed["9"]["asian_line_text"], "两球")
-        self.assertEqual(parsed["9"]["asian_company"], "威廉")
+    def test_falls_back_to_macau_when_william_missing(self):
+        parsed = parse_odds_pages(_raw({"9|yazhi": [ASIAN_ROWS[0]]}))
+        self.assertEqual(parsed["9"]["asian_line_text"], "一球")
+        self.assertEqual(parsed["9"]["asian_company"], "澳门")
 
     def test_source_label_keeps_real_name_for_new_rows(self):
         rows = [["5", "*门", "1.000", "一球", "0.840", "1.000", "一球", "0.840"]]
@@ -86,7 +86,7 @@ class OddsPagesTests(unittest.TestCase):
         analysis = _build_single_analysis(row, parsed["9"], home_record={}, away_record={})
         self.assertTrue(analysis["market"]["has_asian"])
         self.assertTrue(analysis["market"]["has_total"])
-        self.assertEqual(asian_display(analysis), "一球 1.00/0.84（澳门）")
+        self.assertEqual(asian_display(analysis), "两球 0.73/1.00（威廉）")
         self.assertEqual(total_display(analysis), "3/3.5 1.25/0.75（澳门）")
 
     def test_load_reads_expected_filename(self):
@@ -187,10 +187,10 @@ class PagesSplitTests(unittest.TestCase):
         blocks = build_pages_movements(_raw({"9|daxiao": rows}))["9"]["split"]
         self.assertEqual([r["cid"] for r in blocks[0]["rows"]], ["293", "4"])
 
-    def test_unchanged_companies_are_hidden(self):
-        """弹窗只列初盘→即时确有变化的公司，没动的行不显示。"""
+    def test_unchanged_companies_are_kept(self):
+        """弹窗保留全部公司，未变盘的公司也要显示。"""
         blocks = build_pages_movements(_raw({"9|daxiao": self.ROWS}))["9"]["split"]
-        self.assertEqual([r["cid"] for r in blocks[0]["rows"]], ["293"])
+        self.assertEqual([r["cid"] for r in blocks[0]["rows"]], ["293", "4", "6"])
 
     def test_unknown_company_falls_back_to_cid(self):
         rows = self.ROWS + [["9999", "0.83", "3", "0.89", "1.33", "3.5", "0.51"]]
@@ -222,11 +222,11 @@ class PagesSplitTests(unittest.TestCase):
             ["293", "1.00", "2.5", "0.90", "1.00", "2.5", "0.90"],
             ["4", "0.95", "2.5", "0.95", "0.95", "2.5", "0.95"],
         ]
-        self.assertNotIn("split", build_pages_movements(_raw({"9|daxiao": rows}))["9"])
+        self.assertEqual(build_pages_movements(_raw({"9|daxiao": rows}))["9"]["split"], [])
 
     def test_no_split_with_single_company(self):
         mv = build_pages_movements(_raw({"9|daxiao": [self.ROWS[0]]}))["9"]
-        self.assertNotIn("split", mv)
+        self.assertEqual(mv["split"], [])
 
     def test_no_split_when_all_unchanged(self):
         """初盘与即时完全一致时，即使各公司盘口有差异也不挂分歧。"""
@@ -235,7 +235,7 @@ class PagesSplitTests(unittest.TestCase):
             ["4", "0.85", "3", "1.05", "0.85", "3", "1.05"],
         ]
         mv = build_pages_movements(_raw({"9|daxiao": rows}))["9"]
-        self.assertNotIn("split", mv)
+        self.assertEqual(mv["split"], [])
 
     def test_split_kept_when_some_company_unchanged(self):
         """只要有任何一家初盘→即时盘口有变化，分歧照常展示。"""
@@ -252,7 +252,7 @@ class PagesSplitTests(unittest.TestCase):
             ["4", "1.00", "2.75", "0.90", "1.00", "2.75", "0.90"],
         ]
         mv = build_pages_movements(_raw({"9|daxiao": rows}))["9"]
-        self.assertNotIn("split", mv)
+        self.assertEqual(mv["split"], [])
 
     def test_even_handicap_counts_as_zero(self):
         """平手解析成 0.0，与半球相差 0.5，属于真实分歧。"""
@@ -328,14 +328,14 @@ class SplitRenderTests(unittest.TestCase):
         html = _split_html({"split": [self.BLOCK]}, "sp-6")
         self.assertIn("o***(1484)", html)
 
-    def test_html_skips_rows_without_movement(self):
-        """老库的 split 可能带着没动过的公司行，弹窗里不该显示。"""
+    def test_html_keeps_unchanged_rows_when_block_has_movement(self):
+        """盘口分歧块里只要有公司变盘，其他未变公司也要完整展示。"""
         block = {"market": "亚盘", "picked": "293", "rows": [
             {"cid": "293", "name": "威廉", "initial": "平手", "current": "平手"},
             {"cid": "4", "name": "皇冠", "initial": "半球", "current": "一球"},
         ]}
         html = _split_html({"split": [block]}, "sp-7")
-        self.assertNotIn("威廉", html)
+        self.assertIn("威廉(293)", html)
         self.assertIn("皇冠(4)", html)
 
     def test_html_hides_label_when_every_row_is_unchanged(self):
@@ -372,6 +372,38 @@ class SplitRenderTests(unittest.TestCase):
         self.assertEqual(_split_html({"split": [{"market": "亚盘", "picked": "", "rows": []}]}, "sp-5"), "")
         self.assertEqual(_split_html({"split": ["x"]}, "sp-5"), "")
 
+
+
+class TotalRenderingTests(unittest.TestCase):
+    def test_total_line_shows_move_without_source_label(self):
+        payload = json.dumps(
+            {
+                "market": {"total": {"source": "威廉"}},
+                "odds_movement": {
+                    "total": {
+                        "available": True,
+                        "initial": {
+                            "line_text": "3.5",
+                            "line": 3.5,
+                            "over_water": 0.80,
+                            "under_water": 1.00,
+                        },
+                        "current": {
+                            "line_text": "4.5",
+                            "line": 4.5,
+                            "over_water": 1.30,
+                            "under_water": 0.62,
+                        },
+                    }
+                },
+            },
+            ensure_ascii=False,
+        )
+        html = _total_goals_html(payload)
+        self.assertIn("3.5 0.80/1.00", html)
+        self.assertIn("4.5 1.30/0.62", html)
+        self.assertNotIn("（威廉）", html)
+        self.assertIn("升盘 +1.0", html)
 
 
 class PageStatusTests(unittest.TestCase):

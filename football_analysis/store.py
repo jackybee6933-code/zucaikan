@@ -217,7 +217,7 @@ def save_issue_movements(
         rows = []
         for item in analyses:
             movement = item.get("odds_movement") or {}
-            if prev_splits and not movement.get("split"):
+            if prev_splits and "split" not in movement:
                 inherited = prev_splits.get(str(item.get("match_no") or ""))
                 if inherited:
                     movement["split"] = inherited

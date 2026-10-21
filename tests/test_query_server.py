@@ -119,14 +119,51 @@ class QueryServerTests(unittest.TestCase):
     def test_root_serves_query_page(self):
         status, body = _get(self.base + "/")
         self.assertEqual(status, 200)
-        self.assertIn("足彩分析系统1.0", body)
+        self.assertIn("足彩分析系统1.3", body)
         self.assertIn(">更新比分</button>", body)
+        self.assertIn("data-freshness", body)
+        self.assertIn("选择期号后查看", body)
 
     def test_unknown_get_path_falls_back_to_query_page(self):
         """do_GET 没有 404 兜底，未知路径按单页应用方式回落到查询页。"""
         status, body = _get(self.base + "/nope")
         self.assertEqual(status, 200)
-        self.assertIn("足彩分析系统1.0", body)
+        self.assertIn("足彩分析系统1.3", body)
+
+    def test_root_defaults_to_latest_issue_when_default_issue_given(self):
+        """根页（无 query 参数）+ default_issue：只列当前期比赛、下拉框预选；?issue=（空）走全部期号分支。"""
+        port = _free_port()
+        base = f"http://127.0.0.1:{port}"
+        thread = threading.Thread(
+            target=serve_query,
+            args=(self.db,),
+            kwargs={
+                "port": port,
+                "open_browser": False,
+                "reports_dir": self.reports,
+                "default_issue": ISSUE,
+            },
+            daemon=True,
+        )
+        thread.start()
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(base + "/review-status", timeout=1):
+                    break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            raise AssertionError(f"server did not start on port {port}")
+
+        # 无 query 参数：根页按 default_issue 过滤，走「指定期号」渲染分支，该期被预选
+        status, body = _get(base + "/")
+        self.assertEqual(status, 200)
+        self.assertIn(f'<option value="{ISSUE}" selected>', body)
+        # 显式指定 ?issue=<非默认值>：走该期号分支，下拉框预选该期，不受 default_issue 影响
+        status, body = _get(base + f"/?issue={ISSUE}")
+        self.assertEqual(status, 200)
+        self.assertIn(f'<option value="{ISSUE}" selected>', body)
 
     # --- 状态端点 ---
 
@@ -232,6 +269,9 @@ class QueryServerTests(unittest.TestCase):
         status, body = _get(self.base + "/")
         self.assertEqual(status, 200)
         self.assertIn("refresh-odds-btn", body)
+        self.assertIn("action-icon", body)
+        self.assertIn('id="icon-refresh"', body)
+        self.assertIn('use href="#icon-refresh"', body)
         self.assertIn("/refresh-odds-status", body)
         self.assertIn('id="refresh-odds-progress-bar"', body)
         self.assertIn("_renderRefreshProgress", body)
@@ -248,6 +288,91 @@ class QueryServerTests(unittest.TestCase):
         self.assertGreater(ai_at, refresh_at)
         ai_tag = body[ai_at:body.find(">", ai_at)]
         self.assertNotIn("margin-left", ai_tag)
+
+    def test_query_page_has_settings_button_without_filter_checkboxes(self):
+        status, body = _get(self.base + "/")
+        self.assertEqual(status, 200)
+        self.assertIn('id="query-form"', body)
+        self.assertIn('sessionStorage.setItem("query-scroll-top", "1")', body)
+        self.assertIn('history.scrollRestoration = "manual"', body)
+        self.assertIn('id="settings-btn"', body)
+        self.assertIn("settings-dialog", body)
+        self.assertIn('data-name="primary"', body)
+        self.assertIn('data-name="fallback"', body)
+        self.assertIn("/settings/test", body)
+        self.assertNotIn('name="attention"', body)
+        self.assertNotIn('name="latest"', body)
+
+    def test_settings_endpoint_masks_api_keys_and_saves_endpoints(self):
+        status, body = _get(self.base + "/settings")
+        self.assertEqual(status, 200)
+        initial = json.loads(body)
+        self.assertNotIn("api_key", initial["primary"])
+        payload = {
+            "primary": {
+                "api_key": "primary-secret",
+                "base_url": "https://primary.example/v1",
+                "model": "primary-model",
+            },
+            "fallback": {
+                "api_key": "fallback-secret",
+                "base_url": "https://fallback.example/v1",
+                "model": "fallback-model",
+            },
+        }
+        status, body = _post(self.base + "/settings", payload)
+        self.assertEqual(status, 200)
+        saved = json.loads(body)
+        self.assertTrue(saved["primary"]["api_key_configured"])
+        self.assertEqual(saved["primary"]["api_key_hint"], "••••cret")
+        self.assertNotIn("primary-secret", body)
+        self.assertNotIn("fallback-secret", body)
+        status, body = _get(self.base + "/settings")
+        self.assertEqual(status, 200)
+        loaded = json.loads(body)
+        self.assertEqual(loaded["fallback"]["model"], "fallback-model")
+
+    def test_settings_test_endpoint_uses_form_values_without_saving(self):
+        with mock.patch(
+            "football_analysis.query_app.test_endpoint",
+            return_value={"ok": True, "message": "连接成功（test-model）"},
+        ) as test:
+            status, body = _post(
+                self.base + "/settings/test",
+                {
+                    "name": "fallback",
+                    "fallback": {
+                        "api_key": "temporary-secret",
+                        "base_url": "https://backup.example/v1",
+                        "model": "test-model",
+                    },
+                },
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["ok"], True)
+        self.assertNotIn("temporary-secret", body)
+        self.assertEqual(test.call_args.kwargs["base_url"], "https://backup.example/v1")
+        self.assertEqual(test.call_args.kwargs["api_key"], "temporary-secret")
+        self.assertEqual(test.call_args.kwargs["model"], "test-model")
+        self.assertEqual(test.call_args.kwargs["use_saved_key"], True)
+
+    def test_settings_test_endpoint_rejects_invalid_name(self):
+        status, body = _post(
+            self.base + "/settings/test",
+            {"name": "other", "other": {"api_key": "key"}},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("接入点参数无效", body)
+
+    def test_backup_endpoint_returns_archive_and_restore_rejects_bad_data(self):
+        status, body = _get(self.base + "/backup")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertTrue(payload["data"])
+        self.assertTrue(payload["filename"].endswith(".zip"))
+        status, body = _post(self.base + "/backup/restore", {"data": "bad"})
+        self.assertEqual(status, 400)
+        self.assertIn("恢复失败", body)
 
     # --- /ai-analyze ---
 
@@ -352,6 +477,160 @@ class QueryServerTests(unittest.TestCase):
         self.assertEqual(payload["error"], "")
         self.assertFalse(payload["running"])
         self.assertIn("不重复入库", payload["result"])
+
+
+class BetServerTests(unittest.TestCase):
+    BET_ISSUE = "99145"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        root = Path(cls.tmp.name)
+        cls.db = root / "bets.sqlite"
+        item = {
+            "match_no": "1",
+            "league": "英超",
+            "match_time": "12-31 23:30",
+            "home_team": "主队",
+            "away_team": "客队",
+            "final_score": "",
+            "market": {
+                "has_asian": True,
+                "has_total": True,
+                "asian": {
+                    "home_line": 0.75,
+                    "line_text": "受半球/一球",
+                    "home_water": 1.04,
+                    "away_water": 0.80,
+                    "source": "澳门",
+                },
+                "total": {
+                    "line": 2.5,
+                    "line_text": "2.5",
+                    "over_water": 0.90,
+                    "under_water": 0.90,
+                    "source": "澳门",
+                },
+            },
+            "odds_analysis": {
+                "asian_handicap": {
+                    "available": True,
+                    "recommended_side": "客队赢盘",
+                    "action": "轻仓",
+                    "confidence": 0.60,
+                    "margin": 0.12,
+                },
+                "total_goals": {
+                    "available": True,
+                    "recommended_side": "小球",
+                    "action": "观望",
+                    "confidence": 0.52,
+                    "margin": 0.03,
+                },
+            },
+            "odds_movement": {"available": False, "attention": False, "level": "稳定"},
+        }
+        save_issue_movements(cls.db, [item], cls.BET_ISSUE, "https://example.test")
+        cls.reports = root / "reports"
+        cls.reports.mkdir()
+        cls.port = _free_port()
+        cls.base = f"http://127.0.0.1:{cls.port}"
+        cls.thread = threading.Thread(
+            target=serve_query,
+            args=(cls.db,),
+            kwargs={"port": cls.port, "open_browser": False, "reports_dir": cls.reports},
+            daemon=True,
+        )
+        cls.thread.start()
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(cls.base + "/bet-options?issue=1", timeout=1):
+                    return
+            except urllib.error.HTTPError:
+                return
+            except OSError:
+                time.sleep(0.1)
+        raise AssertionError("投注服务未在 15s 内启动")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        from football_analysis.bets import _connect
+
+        conn = _connect(self.db)
+        try:
+            conn.execute("DELETE FROM manual_bets")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _create(self, market="asian", selection="away", stake=10):
+        return _post(
+            self.base + "/bets",
+            {
+                "issue": self.BET_ISSUE,
+                "match_no": "1",
+                "market": market,
+                "selection": selection,
+                "stake": stake,
+            },
+        )
+
+    def test_page_has_bet_dialog_and_panel(self):
+        status, body = _get(self.base + "/?issue=" + self.BET_ISSUE)
+        self.assertEqual(status, 200)
+        self.assertIn('id="bet-dialog"', body)
+        self.assertIn("本期投注", body)
+        self.assertIn("bet-open", body)
+        self.assertIn("此分析工具纯属游戏娱乐，不构成投资建议，风险自担！", body)
+
+    def test_options_and_full_lifecycle(self):
+        status, body = _get(
+            self.base + "/bet-options?issue=" + self.BET_ISSUE + "&match_no=1"
+        )
+        self.assertEqual(status, 200)
+        options = json.loads(body)
+        self.assertEqual(set(options["markets"]), {"asian", "total"})
+        self.assertFalse(options["locked"])
+
+        status, body = self._create()
+        self.assertEqual(status, 201)
+        created = json.loads(body)
+        self.assertEqual(created["selection"], "away")
+        self.assertEqual(created["stake"], 10.0)
+
+        status, body = _post(
+            self.base + "/bets/update",
+            {"id": created["id"], "selection": "home", "stake": 20},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["stake"], 20.0)
+
+        status, body = _post(self.base + "/bets/delete", {"id": created["id"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["deleted"], created["id"])
+
+    def test_duplicate_market_returns_409(self):
+        status, _ = self._create()
+        self.assertEqual(status, 201)
+        status, body = self._create()
+        self.assertEqual(status, 409)
+        self.assertIn("已有注单", json.loads(body)["error"])
+
+    def test_csv_export(self):
+        status, _ = self._create()
+        self.assertEqual(status, 201)
+        with urllib.request.urlopen(
+            self.base + "/bets.csv?issue=" + self.BET_ISSUE, timeout=5
+        ) as resp:
+            text = resp.read().decode("utf-8-sig")
+            content_type = resp.headers.get("Content-Type", "")
+        self.assertIn("text/csv", content_type)
+        self.assertIn("期号,场次", text)
+        self.assertIn("亚盘", text)
 
 
 if __name__ == "__main__":

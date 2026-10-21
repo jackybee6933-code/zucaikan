@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest import mock
 
 from football_analysis import llm, odds_pages
-from football_analysis.query_report import render_query_html
+from football_analysis.query_report import _lean_cell, render_query_html
 from football_analysis.store import (
     SCHEMA,
     connect,
@@ -109,6 +109,8 @@ class PromptTests(unittest.TestCase):
         self.assertIn("500 数据分析页资料", prompt)
         self.assertIn("莱切1:2博洛尼亚", prompt)
         self.assertIn("主队赢盘", prompt)            # 输出口径写在结尾
+        self.assertIn("大球", prompt)               # 大小球方向也写进输出口径
+        self.assertIn("over_tendency", llm.TEAM_READ_SYSTEM_PROMPT)
 
     def test_prompt_survives_missing_data(self):
         prompt = llm.build_team_read_prompt({})
@@ -125,6 +127,40 @@ class ParseTests(unittest.TestCase):
             self.assertIsNotNone(parsed, raw)
             self.assertEqual(parsed["tendency"], "主队赢盘")
             self.assertAlmostEqual(parsed["confidence"], 0.62)
+            # 旧响应无 over_* 字段时，大小球倾向回退为「观望」、不报错
+            self.assertEqual(parsed["over_tendency"], "观望")
+            self.assertEqual(parsed["over_confidence"], 0.0)
+
+    def test_parses_over_tendency_fields(self):
+        body = json.dumps(
+            {
+                "tendency": "主队赢盘",
+                "confidence": 0.6,
+                "reason": "主场赢盘率高",
+                "over_tendency": "大球",
+                "over_confidence": 0.55,
+                "over_reason": "双方近期大球率高",
+            },
+            ensure_ascii=False,
+        )
+        parsed = llm.parse_team_read(body)
+        self.assertEqual(parsed["over_tendency"], "大球")
+        self.assertAlmostEqual(parsed["over_confidence"], 0.55)
+        self.assertEqual(parsed["over_reason"], "双方近期大球率高")
+
+    def test_invalid_over_tendency_falls_back_to_观望(self):
+        body = json.dumps(
+            {
+                "tendency": "观望",
+                "over_tendency": "大",
+                "over_confidence": 5,
+                "over_reason": "x",
+            },
+            ensure_ascii=False,
+        )
+        parsed = llm.parse_team_read(body)
+        self.assertEqual(parsed["over_tendency"], "观望")
+        self.assertEqual(parsed["over_confidence"], 1.0)
 
     def test_rejects_bad_payloads(self):
         for raw in ("", "没有 JSON", '{"tendency": "主胜"}', "[1, 2]", '{"confidence": 0.5}'):
@@ -283,6 +319,23 @@ class StoreAndReportTests(unittest.TestCase):
             self.assertIn("模型 主队赢盘 55%", html)
             self.assertIn("主场赢盘率高于客队", html)
             self.assertIn("盘口 客队（博洛尼亚）", html)
+
+    def test_over_tendency_without_confidence_is_hidden(self):
+        row = _analysis(
+            team_read=json.dumps(
+                {
+                    "tendency": "主队赢盘",
+                    "confidence": 0.55,
+                    "over_tendency": "大球",
+                    "over_confidence": 0.0,
+                    "over_reason": "大小球资料不足",
+                },
+                ensure_ascii=False,
+            )
+        )
+        rendered = _lean_cell(row)
+        self.assertNotIn("模型 大球", rendered)
+        self.assertNotIn("大小球资料不足", rendered)
 
     def test_migration_adds_team_read_column(self):
         # Windows 上 sqlite 的句柄释放比 close() 慢一拍，清理失败不算这条用例的失败点

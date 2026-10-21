@@ -1,17 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import sys
+import time
 import traceback
 from pathlib import Path
 
 from .http import Fetcher
+from .bets import bet_trend, export_bets_csv, list_bets, summarize_bets
+from .backup import backup_summary, restore_backup, write_backup
 from .ev_ledger import save_ev_ledger
 from .pipeline import analyze_issue
 from .query_app import serve_query
 from .report_index import build_issue_report_index
 from .open_browser import open_in_chrome
 from .query_report import render_query_html
+from .settlement import profit_units, settle_asian, settle_total, summarize
 from .store import list_leagues
 from .report import print_console, write_report_files
 from .store import default_db_path, list_issues, query_movements, save_issue_movements
@@ -19,6 +25,9 @@ from .store import update_match_scores
 
 # 查询页默认端口；analyze→serve 的组合流程没有 query 子命令的 Namespace 可取，直接用这个常量。
 DEFAULT_QUERY_PORT = 8765
+PARTIAL_CACHE_TTL_HOURS = 6.0
+_ODDS_CACHE_RE = re.compile(r"^odds_pages_(\d+)\.json$")
+_ODDS_META_RE = re.compile(r"^odds_pages_(\d+)\.meta\.json$")
 
 
 
@@ -101,6 +110,42 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common_args(ledger)
     ledger.add_argument("--trend", action="store_true", help="跨期对账趋势")
     ledger.add_argument("--limit", type=int, default=10, help="列出排序最高的前 N 场")
+
+    bets = subparsers.add_parser("bets", help="投注统计与导出")
+    _add_common_args(bets)
+    bets.add_argument("--trend", action="store_true", help="跨期投注统计")
+    bets.add_argument("--export", default="", help="导出 CSV 文件路径")
+
+    cache = subparsers.add_parser("cache", help="查看或清理本地缓存")
+    cache.add_argument(
+        "--cache-dir",
+        default="",
+        help="缓存目录，缺省使用 exe/当前目录下的 cache",
+    )
+    cache.add_argument(
+        "--clean",
+        action="store_true",
+        help="清理旧缓存，默认保留最新 3 期盘口产物",
+    )
+    cache.add_argument(
+        "--keep",
+        type=int,
+        default=3,
+        help="保留最新多少期 odds_pages 产物（默认 3）",
+    )
+    cache.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="只显示待清理内容，不实际删除",
+    )
+    backup = subparsers.add_parser("backup", help="备份或恢复本地数据")
+    backup.add_argument("--db-path", default=None, help="SQLite 路径")
+    backup.add_argument(
+        "--file",
+        default="",
+        help="备份 ZIP 路径；备份时缺省写入 data/backups",
+    )
+    backup.add_argument("--restore", action="store_true", help="从 ZIP 恢复")
     return parser
 
 
@@ -279,9 +324,11 @@ def review_issue(
 
 
 def _issue_hit_rates(analyses: list[dict]) -> dict:
-    """Count asian / over-under recommendation hits for one issue snapshot."""
-    asian_hits = asian_total = 0
-    total_hits = total_total = 0
+    """按赢/赢半/走/输半/输统计一场期内的推荐结算。"""
+    asian_results: list[float] = []
+    asian_waters: list[float] = []
+    total_results: list[float] = []
+    total_waters: list[float] = []
     for item in analyses:
         score = str(item.get("final_score") or "")
         if "-" not in score:
@@ -290,36 +337,63 @@ def _issue_hit_rates(analyses: list[dict]) -> dict:
             hg, ag = (int(part.strip() or "0") for part in score.split("-", 1))
         except ValueError:
             continue
-        goal_diff = hg - ag
         total_goals = hg + ag
+        market = item.get("market") or {}
         odds = item.get("odds_analysis") or {}
         asian_rec = odds.get("asian_handicap") or {}
         if asian_rec.get("available") and asian_rec.get("action") in ("主推", "轻仓"):
-            line = float((item.get("market", {}).get("asian") or {}).get("home_line") or 0)
-            # home_line 符号约定：负=主让、正=主受让，两种情况统一为 goal_diff + line。
-            # 受让半球时主队赢或平局都算打出，旧写法在 line>0 时反号，把平局归为未打出。
-            home_handicap = goal_diff + line
-            is_home_upper = asian_rec.get("recommended_side") == "主队赢盘"
-            win_side = home_handicap if is_home_upper else -home_handicap
-            asian_total += 1
-            asian_hits += 1 if win_side > 0 else 0
+            side = asian_rec.get("recommended_side")
+            picked = "home" if side == "主队赢盘" else "away" if side == "客队赢盘" else ""
+            if picked:
+                asian_market = market.get("asian") or {}
+                result = settle_asian(
+                    hg,
+                    ag,
+                    float(asian_market.get("home_line") or 0),
+                    picked,
+                )
+                if result is not None:
+                    asian_results.append(result)
+                    water_key = "home_water" if picked == "home" else "away_water"
+                    asian_waters.append(float(asian_market.get(water_key) or 0))
         total_rec = odds.get("total_goals") or {}
         if total_rec.get("available") and total_rec.get("action") in ("主推", "轻仓"):
-            line = float((item.get("market", {}).get("total") or {}).get("line") or 0)
-            is_over = "大" in str(total_rec.get("recommended_side", ""))
-            hit = total_goals > line if is_over else total_goals < line
-            total_total += 1
-            total_hits += 1 if hit else 0
-    return {
-        "asian_hits": asian_hits,
-        "asian_total": asian_total,
-        "total_hits": total_hits,
-        "total_total": total_total,
-    }
+            side = str(total_rec.get("recommended_side") or "")
+            if "大" in side:
+                over = True
+            elif "小" in side:
+                over = False
+            else:
+                continue
+            total_market = market.get("total") or {}
+            line = float(total_market.get("line") or 0)
+            if line <= 0:
+                continue
+            total_results.append(settle_total(total_goals, line, over))
+            water_key = "over_water" if over else "under_water"
+            total_waters.append(float(total_market.get(water_key) or 0))
+
+    asian = summarize(asian_results)
+    total = summarize(total_results)
+    out = {f"asian_{key}": value for key, value in asian.items()}
+    out.update({f"total_{key}": value for key, value in total.items()})
+    out["asian_profit"] = sum(
+        profit_units(result, water)
+        for result, water in zip(asian_results, asian_waters)
+        if water > 0
+    )
+    out["asian_priced"] = sum(1 for water in asian_waters if water > 0)
+    out["total_profit"] = sum(
+        profit_units(result, water)
+        for result, water in zip(total_results, total_waters)
+        if water > 0
+    )
+    out["total_priced"] = sum(1 for water in total_waters if water > 0)
+    return out
 
 
 def _print_trend(db_path: Path) -> None:
-    """Print cross-issue hit-rate trend from the DB, ordered by issue ascending."""
+    """Print cross-issue settlement trend from the DB, ordered by issue ascending."""
     from .store import load_issue_snapshot
 
     issues = sorted(list_issues(db_path), key=lambda row: row["issue"])
@@ -327,12 +401,33 @@ def _print_trend(db_path: Path) -> None:
     def _pct(hits: int, total: int) -> str:
         return f"{hits / total * 100:.0f}%" if total else "-"
 
-    agg = {"asian_hits": 0, "asian_total": 0, "total_hits": 0, "total_total": 0}
+    def _money(rates: dict, key: str) -> float:
+        if int(rates.get(f"{key}_priced") or 0):
+            return float(rates.get(f"{key}_profit") or 0)
+        return float(rates.get(f"{key}_units") or 0)
+
+    agg = {
+        "asian_hits": 0,
+        "asian_total": 0,
+        "asian_units": 0.0,
+        "asian_profit": 0.0,
+        "asian_bets": 0,
+        "asian_priced": 0,
+        "total_hits": 0,
+        "total_total": 0,
+        "total_units": 0.0,
+        "total_profit": 0.0,
+        "total_bets": 0,
+        "total_priced": 0,
+    }
     prev: dict | None = None
     print("=" * 70)
-    print("命中率趋势（仅主推/轻仓，走水不计入命中率）")
+    print("命中率趋势（仅主推/轻仓，走水不入分母，赢半计入命中）")
     print("=" * 70)
-    print(f"{'期号':<8}{'已完成':<10}{'亚盘命中':<10}{'亚盘率':<8}{'大小命中':<12}{'大小率':<8}")
+    print(
+        f"{'期号':<8}{'已完成':<10}{'亚盘命中':<10}{'亚盘率':<8}{'亚盘收益':<10}"
+        f"{'大小命中':<12}{'大小率':<8}{'大小收益':<10}"
+    )
     for info in issues:
         snapshot = load_issue_snapshot(db_path, info["issue"])
         done = [a for a in snapshot if a.get("final_score")]
@@ -356,10 +451,13 @@ def _print_trend(db_path: Path) -> None:
         scored = f"{len(done)}/{len(snapshot)}"
         asian_cell = f"{rates['asian_hits']}/{rates['asian_total']}"
         total_cell = f"{rates['total_hits']}/{rates['total_total']}"
+        asian_units = f"{_money(rates, 'asian'):+.1f}"
+        total_units = f"{_money(rates, 'total'):+.1f}"
         print(
             f"{info['issue']:<8}{scored:<10}{asian_cell:<10}"
-            f"{_pct(rates['asian_hits'], rates['asian_total']):<8}{total_cell:<12}"
-            f"{_pct(rates['total_hits'], rates['total_total']):<8}"
+            f"{_pct(rates['asian_hits'], rates['asian_total']):<8}{asian_units:<10}"
+            f"{total_cell:<12}{_pct(rates['total_hits'], rates['total_total']):<8}"
+            f"{total_units:<10}"
         )
         if delta_text:
             print(f"{'':<8}{delta_text}")
@@ -368,12 +466,12 @@ def _print_trend(db_path: Path) -> None:
     print(
         f"{'合计':<8}{'':<10}"
         f"{str(agg['asian_hits']) + '/' + str(agg['asian_total']):<10}"
-        f"{_pct(agg['asian_hits'], agg['asian_total']):<8}"
+        f"{_pct(agg['asian_hits'], agg['asian_total']):<8}{_money(agg, 'asian'):+.1f}{'':<10}"
         f"{str(agg['total_hits']) + '/' + str(agg['total_total']):<12}"
-        f"{_pct(agg['total_hits'], agg['total_total']):<8}"
+        f"{_pct(agg['total_hits'], agg['total_total']):<8}{_money(agg, 'total'):+.1f}"
     )
-    print("口径: 仅统计主推/轻仓推荐, 走水(盘口后净胜=0)不计入命中")
-    
+    print("口径: 仅统计主推/轻仓推荐; 走水不入分母, 赢半算命中; 有水位按水位计, 无水位按结果单位")
+
     return None
 
 
@@ -390,18 +488,77 @@ def _print_ledger_trend(db_path: Path) -> None:
     if not trend:
         print("暂无快照。analyze 时会自动写入 ev_ledger。")
         return
-    print(f"{'期号':<8}{'已对账':<10}{'命中':<10}{'命中率':<8}")
+    print(f"{'期号':<8}{'已对账':<10}{'命中':<10}{'命中率':<8}{'单位':<10}")
     agg_hits = agg_decided = 0
+    agg_units = 0.0
     for row in trend:
         decided = row["settled"] - row["push"]
         rate = f"{row['hits'] / decided * 100:.0f}%" if decided else "-"
-        print(f"{row['issue']:<8}{decided:<10}{row['hits']:<10}{rate:<8}")
+        units = float(row.get("units") or 0)
+        print(f"{row['issue']:<8}{decided:<10}{row['hits']:<10}{rate:<8}{units:+.2f}")
         agg_hits += row["hits"]
         agg_decided += decided
+        agg_units += units
     print("-" * 70)
     total_rate = f"{agg_hits / agg_decided * 100:.0f}%" if agg_decided else "-"
-    print(f"{'合计':<8}{agg_decided:<10}{agg_hits:<10}{total_rate:<8}")
-    print("口径: 按 |ev_home - ev_away| 排序选边，走水不计入命中率")
+    print(f"{'合计':<8}{agg_decided:<10}{agg_hits:<10}{total_rate:<8}{agg_units:+.2f}")
+    print("口径: 按 |ev_home - ev_away| 排序选边，走水不入分母，赢半算命中，单位按半注计且未乘水位")
+
+
+def _bet_stats_line(stats: dict) -> str:
+    return (
+        f"注单 {stats.get('bets', 0)} · 已结算 {stats.get('settled', 0)} · "
+        f"待结算 {stats.get('pending', 0)} · 投注积分 {stats.get('stake', 0):.2f} · "
+        f"净收益 {stats.get('profit', 0):+.2f} · ROI {stats.get('roi', 0):+.1f}% · "
+        f"命中率 {stats.get('hit_rate', 0):.1f}%"
+    )
+
+
+def _run_bets(args: argparse.Namespace) -> int:
+    db_path = _resolve_db_path(args.db_path)
+    if args.export:
+        path = Path(args.export)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            "\ufeff" + export_bets_csv(db_path, issue=args.issue),
+            encoding="utf-8",
+        )
+        print(f"投注 CSV：{path}")
+        return 0
+    if args.trend:
+        rows = bet_trend(db_path)
+        print("=" * 78)
+        print("投注跨期趋势")
+        print("=" * 78)
+        print(f"{'期号':<8}{'注数':<8}{'已结算':<8}{'投注积分':<12}{'净收益':<10}{'ROI':<9}{'命中率':<8}")
+        for row in rows:
+            print(
+                f"{row['issue']:<8}{row['bets']:<8}{row['settled']:<8}"
+                f"{row['stake']:<11.2f} 积分 {row['profit']:+.2f}    "
+                f"{row['roi']:+.1f}%   {row['hit_rate']:.1f}%"
+            )
+        return 0
+    rows = list_bets(db_path, issue=args.issue)
+    stats = summarize_bets(rows)
+    print(_bet_stats_line(stats))
+    for market in ("asian", "total"):
+        item = stats["markets"].get(market, {})
+        print(
+            f"{'亚盘' if market == 'asian' else '大小球'}: "
+            f"{item.get('bets', 0)} 注，净收益 {item.get('profit', 0):+.2f}，"
+            f"命中率 {item.get('hit_rate', 0):.1f}%"
+        )
+    print("-" * 78)
+    for bet in rows:
+        print(
+            f"{bet.get('issue')} {bet.get('match_no')} "
+            f"{bet.get('home_team')} vs {bet.get('away_team')} "
+            f"{bet.get('market_label')} {bet.get('selection_label')} "
+            f"{float(bet.get('stake') or 0):.2f} 积分 "
+            f"{bet.get('status_label')} {bet.get('result_label')} "
+            f"{float(bet.get('profit') or 0):+.2f}"
+        )
+    return 0
 
 
 def _run_ledger(args: argparse.Namespace) -> int:
@@ -428,7 +585,12 @@ def _run_ledger(args: argparse.Namespace) -> int:
     decided = summary["settled"] - summary["push"]
     if decided:
         rate = summary["hits"] / decided * 100
-        print(f"已对账 {summary['settled']}/{summary['rows']} 场，命中 {summary['hits']}/{decided}（{rate:.0f}%），走水 {summary['push']} 不计")
+        print(
+            f"已对账 {summary['settled']}/{summary['rows']} 场，"
+            f"命中 {summary['hits']}/{decided}（{rate:.0f}%），"
+            f"净结果 {summary['units']:+.2f} 单位（未乘水位），走水 {summary['push']}，"
+            f"赢半 {summary['half_wins']}，输半 {summary['half_losses']}"
+        )
     else:
         print(f"快照 {summary['rows']} 场，尚无比分可对账（先用 review --issue {issue} --refresh 刷新比分）")
     print("-" * 70)
@@ -523,6 +685,30 @@ def _run_refresh(args: argparse.Namespace) -> int:
     return 0
 
 
+def _market_review_line(label: str, rates: dict, key: str) -> str:
+    bets = int(rates.get(f"{key}_bets") or 0)
+    if not bets:
+        return f"{label}推荐: 无数据"
+    total = int(rates.get(f"{key}_total") or 0)
+    hits = int(rates.get(f"{key}_hits") or 0)
+    pct = f"{hits / total * 100:.0f}%" if total else "-"
+    priced = int(rates.get(f"{key}_priced") or 0)
+    if priced:
+        money = f"净收益 {float(rates.get(f'{key}_profit') or 0):+.2f} 单位"
+        if priced < bets:
+            money += f"（{priced}/{bets} 场有水位）"
+    else:
+        money = f"净结果 {float(rates.get(f'{key}_units') or 0):+.2f} 单位"
+    detail = (
+        f"{rates.get(f'{key}_wins', 0)}赢 / "
+        f"{rates.get(f'{key}_half_wins', 0)}赢半 / "
+        f"{rates.get(f'{key}_pushes', 0)}走 / "
+        f"{rates.get(f'{key}_half_losses', 0)}输半 / "
+        f"{rates.get(f'{key}_losses', 0)}输"
+    )
+    return f"{label}推荐: {hits}/{total} 命中 ({pct})，{money}（{detail}）"
+
+
 def _run_review(args: argparse.Namespace) -> int:
     """Compute hit-rate statistics for completed matches of an issue."""
     from .store import load_issue_snapshot
@@ -552,11 +738,9 @@ def _run_review(args: argparse.Namespace) -> int:
         return 0
 
     rates = summary
-    asian_hits, asian_total = rates["asian_hits"], rates["asian_total"]
-    total_hits, total_total = rates["total_hits"], rates["total_total"]
     print("-" * 60)
-    print(f"亚盘推荐: {asian_hits}/{asian_total} 命中" if asian_total else "亚盘推荐: 无数据")
-    print(f"大小球推荐: {total_hits}/{total_total} 命中" if total_total else "大小球推荐: 无数据")
+    print(_market_review_line("亚盘", rates, "asian"))
+    print(_market_review_line("大小球", rates, "total"))
     print("-" * 60)
     for item in done:
         odds = item.get("odds_analysis") or {}
@@ -577,6 +761,161 @@ def _app_root() -> Path:
 
 def _default_cache_dir() -> Path:
     return _app_root() / "cache"
+
+
+def clean_cache(
+    cache_dir: str | Path,
+    *,
+    keep: int = 3,
+    dry_run: bool = False,
+    now: float | None = None,
+) -> dict:
+    """Remove disposable cache files while retaining the newest odds artifacts."""
+    if keep < 0:
+        raise ValueError("keep must be >= 0")
+
+    root = Path(cache_dir)
+    result = {
+        "cache_dir": str(root),
+        "deleted_files": 0,
+        "deleted_bytes": 0,
+        "kept_odds": [],
+        "skipped": [],
+    }
+    if not root.is_dir():
+        return result
+
+    now = time.time() if now is None else now
+    odds_files: list[tuple[int, Path]] = []
+    for path in root.iterdir():
+        if not path.is_file():
+            continue
+        match = _ODDS_CACHE_RE.fullmatch(path.name)
+        if match:
+            odds_files.append((int(match.group(1)), path))
+
+    kept = {
+        path
+        for _, path in sorted(odds_files, key=lambda item: item[0], reverse=True)[:keep]
+    }
+    kept_issues = {
+        match.group(1)
+        for path in kept
+        if (match := _ODDS_CACHE_RE.fullmatch(path.name))
+    }
+    result["kept_odds"] = [path.name for _, path in sorted(odds_files, reverse=True)[:keep]]
+
+    def remove(path: Path) -> None:
+        result["deleted_files"] += 1
+        result["deleted_bytes"] += path.stat().st_size
+        if not dry_run:
+            path.unlink()
+
+    for path in root.iterdir():
+        if not path.is_file():
+            continue
+        if path.suffix == ".raw":
+            remove(path)
+            continue
+        should_remove = False
+        if _ODDS_CACHE_RE.fullmatch(path.name):
+            should_remove = path not in kept
+        elif (match := _ODDS_META_RE.fullmatch(path.name)):
+            should_remove = match.group(1) not in kept_issues
+        elif path.name == ".ai_scrape_progress":
+            active = False
+            try:
+                progress = json.loads(path.read_text(encoding="utf-8"))
+                phase = str(progress.get("phase") or "")
+                total = int(progress.get("total") or 0)
+                done = int(progress.get("done") or 0)
+                active = phase in {"collect", "scrape", "llm"} and (
+                    total <= 0 or done < total
+                )
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                result["skipped"].append(f"{path.name}: 无法判断状态")
+                continue
+            if active:
+                result["skipped"].append(f"{path.name}: 任务进行中")
+                continue
+            should_remove = True
+        elif path.name.startswith(".odds_partial_"):
+            age_hours = max(0.0, (now - path.stat().st_mtime) / 3600)
+            if age_hours > PARTIAL_CACHE_TTL_HOURS:
+                should_remove = True
+            else:
+                result["skipped"].append(
+                    f"{path.name}: 未超过 {PARTIAL_CACHE_TTL_HOURS:.0f}h"
+                )
+                continue
+        else:
+            continue
+        if should_remove:
+            remove(path)
+
+    return result
+
+
+def _run_cache(args: argparse.Namespace) -> int:
+    cache_dir = Path(args.cache_dir) if args.cache_dir else _default_cache_dir()
+    if args.keep < 0:
+        print("--keep 不能小于 0")
+        return 2
+    if not args.clean:
+        print(f"缓存目录：{cache_dir}")
+        print("未执行清理。需要清理时请使用：cache --clean --keep 3")
+        return 0
+    try:
+        result = clean_cache(
+            cache_dir,
+            keep=args.keep,
+            dry_run=args.dry_run,
+        )
+    except OSError as exc:
+        print(f"缓存清理失败：{exc}")
+        return 1
+    action = "预计清理" if args.dry_run else "已清理"
+    size_mb = result["deleted_bytes"] / 1024 / 1024
+    print(f"{action} {result['deleted_files']} 个文件，释放 {size_mb:.2f} MB")
+    print(f"保留盘口产物：{', '.join(result['kept_odds']) or '无'}")
+    for item in result["skipped"]:
+        print(f"跳过：{item}")
+    if not Path(cache_dir).is_dir():
+        print("缓存目录不存在，无需清理")
+    return 0
+
+
+def _run_backup(args: argparse.Namespace) -> int:
+    db_path = _resolve_db_path(args.db_path)
+    settings_path = db_path.parent / "llm_settings.json"
+    if args.restore:
+        if not args.file:
+            print("恢复时必须指定 --file")
+            return 2
+        try:
+            safety = restore_backup(args.file, db_path, settings_path)
+        except (OSError, ValueError) as exc:
+            print(f"恢复失败：{exc}")
+            return 1
+        print(f"恢复完成：{db_path}")
+        if safety:
+            print(f"恢复前安全备份：{safety}")
+        return 0
+    target = Path(args.file) if args.file else (
+        db_path.parent / "backups" / f"backup_{time.strftime('%Y%m%d_%H%M%S')}.zip"
+    )
+    try:
+        write_backup(db_path, target, settings_path)
+        summary = backup_summary(target)
+    except (OSError, ValueError) as exc:
+        print(f"备份失败：{exc}")
+        return 1
+    included = "、".join(
+        name for name, present in (("数据库", summary["database"]), ("AI 设置", summary["settings"])) if present
+    ) or "空状态"
+    print(f"备份完成：{target}")
+    print(f"包含：{included}")
+    return 0
 
 
 def _run_analyze_then_serve(parser: argparse.ArgumentParser) -> int:
@@ -613,11 +952,14 @@ def _run_analyze_then_serve(parser: argparse.ArgumentParser) -> int:
     print(f"\n即将启动异动查询服务： http://127.0.0.1:{port}/")
     print("关闭本窗口或按 Ctrl+C 即可停止服务。\n")
     try:
+        issues = list_issues(db_path)
+        default_issue = str(issues[0].get("issue") or "") if issues else ""
         serve_query(
             db_path,
             port=port,
             open_browser=not args.no_open,
             reports_dir=Path(args.output_dir),
+            default_issue=default_issue,
         )
     except KeyboardInterrupt:
         print("\n已停止查询服务。")
@@ -641,6 +983,7 @@ def _run_query(args: argparse.Namespace) -> int:
     )
     _print_query_rows(rows)
     report_links = build_issue_report_index(Path(args.output_dir))
+    bet_rows = list_bets(db_path, issue=args.issue)
     html = render_query_html(
         rows,
         issues=list_issues(db_path),
@@ -653,6 +996,10 @@ def _run_query(args: argparse.Namespace) -> int:
         latest_only=not args.all_runs,
         db_path=str(db_path),
         report_links=report_links,
+        bets=bet_rows,
+        bet_stats=summarize_bets(bet_rows),
+        bet_trend=bet_trend(db_path),
+        cache_dir=_default_cache_dir(),
     )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -667,7 +1014,16 @@ def main(argv: list[str] | None = None) -> int:
     raw = list(argv) if argv is not None else sys.argv[1:]
     if not raw:
         return _run_analyze_then_serve(parser)
-    if raw[0] not in {"analyze", "query", "review", "refresh", "ledger"}:
+    if raw[0] not in {
+        "analyze",
+        "query",
+        "review",
+        "refresh",
+        "ledger",
+        "bets",
+        "cache",
+        "backup",
+    }:
         raw = ["query", "--serve", *raw]
     args = parser.parse_args(raw)
     if args.command == "query":
@@ -678,6 +1034,12 @@ def main(argv: list[str] | None = None) -> int:
         return _run_refresh(args)
     if args.command == "ledger":
         return _run_ledger(args)
+    if args.command == "bets":
+        return _run_bets(args)
+    if args.command == "cache":
+        return _run_cache(args)
+    if args.command == "backup":
+        return _run_backup(args)
     result = _run_analyze(args)
     if getattr(sys, "frozen", False):
         input("\nPress Enter to close this window...")

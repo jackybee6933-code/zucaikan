@@ -58,7 +58,17 @@ python run.py --cache-dir cache --narrate
 python run.py query --attention-only
 python run.py query --issue 26121 --team 巴萨
 python run.py query --serve
+python run.py cache --clean --keep 3
+python run.py backup
+python run.py backup --restore --file data/backups/backup_YYYYMMDD_HHMMSS.zip
 ```
+
+`cache --clean` 会删除旧的 `.raw` 页面缓存和过期断点文件，并按期号保留最新 N 期
+
+`backup` 默认将 SQLite 与 AI 接入点设置写入 `data/backups/`。恢复前会自动生成
+`backup_before_restore_*.zip` 安全副本，并先校验 SQLite 完整性；缓存和报告属于可再生文件，
+不进入备份包。查询页“设置”窗口也提供下载与恢复备份。
+`odds_pages_*.json` 盘口产物；可加 `--dry-run` 先预览，不会删除数据库。
 
 运行后会在 `reports/` 生成：
 
@@ -84,7 +94,48 @@ python run.py query --serve
 ```powershell
 python -m pip install pyinstaller
 python -m PyInstaller --noconfirm "足球胜负彩分析工具.spec"
+python -m PyInstaller --noconfirm "足球更新器.spec"
 ```
+
+完整包（exe + 更新器 + data/cache/reports）用 `python make_package.py` 生成到 `dist/足彩分析工具_完整包_<日期>.zip`。
+
+## 自动升级（GitHub Releases）
+
+发布源是 [jackybee6933-code/zucaikan](https://github.com/jackybee6933-code/zucaikan) 的 Releases：打 `v*` tag 推送后，
+[.github/workflows/release.yml](.github/workflows/release.yml) 在 Windows runner 上构建主程序与
+`足球更新器.exe`，把「主程序 + 更新器」合成 `dist/足球分析系统完整包.zip`，连同
+`dist/latest.json`（版本 / 下载地址 / SHA-256）一起发布为 Release 资产。
+
+查询页「设置」窗口里有「软件升级」区块：
+
+- **检查更新**：`GET /update/check` 读 `latest.json` 比较版本号；
+- **一键升级**：`POST /update/install` 下载完整包并校验 SHA-256（失败不替换），
+  然后启动同目录的 `足球更新器.exe`：等主程序退出（exe 解锁）→ 从升级包取出新主程序替换
+  `足球胜负彩分析工具.exe` → 自动重启。`data/`、`cache/` 等本地数据不动。
+
+手动发版步骤：
+
+```powershell
+git tag v1.3
+git push origin v1.3
+```
+
+发版前把版本号同步到目标版本，用 [tools/release.py](tools/release.py) 一键完成
+（改版本号 + 残留检查 + 全量测试，可选 `--tag` 直接打 tag；提交与推送仍由你手动做）：
+
+```powershell
+python tools/release.py 1.4            # 同步 1.4 + 残留检查 + 跑 387 项测试
+python tools/release.py 1.4 --tag      # 顺带打 v1.4 tag
+# 然后：git add -A; git commit -m "..." ; git push origin v1.4
+```
+
+同步的文件：`football_analysis/__init__.py`（`__version__`）、`updater.py`（非包内兜底版本）、
+`query_app.py`/`query_report.py`（查询页标题、H1、启动文案）、`tests/test_store.py`/`test_query_server.py`（断言）。
+
+版本号集中在 [football_analysis/__init__.py](football_analysis/__init__.py) 的 `__version__`。
+清单地址可用环境变量 `FA_UPDATE_MANIFEST_URL` 覆盖（默认指向该仓库 `releases/latest/download/latest.json`）。
+注意：完整包必须包含 `足球更新器.exe`（make_package.py / make_release.py 都已带），
+否则 exe 内一键升级会提示手动解压新完整包。
 
 ## 归档
 

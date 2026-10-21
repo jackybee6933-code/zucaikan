@@ -48,11 +48,9 @@ def _asian_display(item: dict) -> str:
     line = str(asian.get("line_text") or "")
     home_water = _float(asian.get("home_water"))
     away_water = _float(asian.get("away_water"))
-    source = str(asian.get("source") or "")
-    suffix = f"（{source}）" if source else ""
     if home_water or away_water:
-        return f"{line} {home_water:.2f}/{away_water:.2f}{suffix}".strip()
-    return (line or "无") + suffix
+        return f"{line} {home_water:.2f}/{away_water:.2f}".strip()
+    return line or "无"
 
 
 def _total_display(item: dict) -> str:
@@ -63,11 +61,9 @@ def _total_display(item: dict) -> str:
     line = str(total.get("line_text") or "")
     over_water = _float(total.get("over_water"))
     under_water = _float(total.get("under_water"))
-    source = str(total.get("source") or "")
-    suffix = f"（{source}）" if source else ""
     if over_water or under_water:
-        return f"{line} {over_water:.2f}/{under_water:.2f}{suffix}".strip()
-    return (line or "无") + suffix
+        return f"{line} {over_water:.2f}/{under_water:.2f}".strip()
+    return line or "无"
 
 
 def _movement_level(item: dict) -> str:

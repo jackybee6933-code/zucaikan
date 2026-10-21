@@ -1,0 +1,84 @@
+import hashlib
+import json
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+from unittest import mock
+
+import importlib.util
+
+_SPEC = importlib.util.spec_from_file_location(
+    "project_updater", Path(__file__).parents[1] / "updater.py"
+)
+updater = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(updater)
+
+
+class UpdaterTests(unittest.TestCase):
+    def test_check_update_compares_versions(self):
+        payload = {
+            "version": "1.3",
+            "url": "https://example.test/package.zip",
+            "sha256": "a" * 64,
+            "notes": "new",
+        }
+        with mock.patch.object(updater, "_http_json", return_value=payload):
+            result = updater.check_update("https://example.test/latest.json", current_version="1.2")
+        self.assertTrue(result["update_available"])
+        self.assertEqual(result["latest_version"], "1.3")
+
+        with mock.patch.object(updater, "_http_json", return_value={**payload, "version": "1.2"}):
+            self.assertFalse(updater.check_update(current_version="1.2")["update_available"])
+
+    def test_check_update_rejects_invalid_manifest(self):
+        with mock.patch.object(updater, "_http_json", return_value={"version": "1.3"}):
+            with self.assertRaises(updater.UpdateError):
+                updater.check_update(current_version="1.2")
+
+    def test_download_package_checks_sha256(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "package.zip"
+            source.write_bytes(b"package")
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+
+            class Response:
+                headers = {"Content-Length": "7"}
+
+                def __init__(self):
+                    self._sent = False
+
+                def __enter__(self): return self
+                def __exit__(self, *args): return False
+                def read(self, size=-1):
+                    if self._sent:
+                        return b""
+                    self._sent = True
+                    return b"package"
+
+            info = {"url": "https://example.test/package.zip", "sha256": digest}
+            with mock.patch("urllib.request.urlopen", return_value=Response()):
+                result = updater.download_package(info)
+            self.assertEqual(result.read_bytes(), b"package")
+
+    def test_installer_archive_contains_target_exe(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "package.zip"
+            target = root / "足球胜负彩分析工具.exe"
+            target.write_bytes(b"old")
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr("足球胜负彩分析工具.exe", b"new")
+            updater_script = Path(__file__).parents[1] / "update_installer.py"
+            result = __import__("subprocess").run(
+                [__import__("sys").executable, str(updater_script),
+                 "--archive", str(archive), "--target", str(target)],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(target.read_bytes(), b"new")
+
+
+if __name__ == "__main__":
+    unittest.main()

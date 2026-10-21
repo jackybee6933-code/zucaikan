@@ -288,10 +288,10 @@ class PagesSplitRetentionTests(unittest.TestCase):
             "reasons": ["让球盘升盘"],
         }
         movement = self._run(self.SPLIT_PAGES, nowscore)
-        # 单场页是主口径：盘口取澳门/威廉，与分歧弹窗同源
+        # 单场页是主口径：盘口取威廉/澳门，与分歧弹窗同源
         self.assertEqual(movement["source"], "odds_pages")
         self.assertTrue(movement["asian"]["available"])
-        self.assertEqual(movement["asian"]["current"]["line_text"], "半球")
+        self.assertEqual(movement["asian"]["current"]["line_text"], "一球")
         self.assertEqual(movement["titan_match_id"], "3001")
         # 单场页各公司分歧仍保留
         self.assertEqual(len(movement["split"]), 1)
@@ -324,7 +324,7 @@ class PagesSplitRetentionTests(unittest.TestCase):
             "reasons": [],
         }
         movement = self._run(self.AGREED_PAGES, nowscore)
-        self.assertNotIn("split", movement)
+        self.assertEqual(movement["split"], [])
 
     def test_pages_take_over_when_nowscore_missing_asian(self):
         nowscore = {

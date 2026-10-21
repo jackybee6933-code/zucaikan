@@ -11,10 +11,10 @@ from .odds_movement import _handicap_display, analyze_prematch_movement
 
 # 抓取产物文件名：cache/odds_pages_<期号>.json
 PAGES_FILENAME = "odds_pages_{issue}.json"
+PAGES_META_FILENAME = "odds_pages_{issue}.meta.json"
 
-# 500 单场页的公司偏好：澳门(5) 与 odds.xml 的 ASIAN_COMPANY_PREFERENCE 首选项一致，
-# 但只在部分页面出现；威廉(293) 在实测 24 个页面里 100% 覆盖，作为兜底。
-CID_PREFERENCE = ("5", "293")
+# 500 单场页的公司偏好：威廉(293) 覆盖稳定，作为主口径；澳门(5) 次选。
+CID_PREFERENCE = ("293", "5")
 CID_LABELS = {"5": "澳门", "293": "威廉"}
 
 
@@ -43,7 +43,7 @@ def _status(page: dict) -> str:
 
 
 # 盘口每场都在动，产物放太久就可能不是最新；超过该小时数在报告里告警。
-PAGES_STALE_HOURS = 6.0
+PAGES_STALE_HOURS = 1.0
 
 
 def pages_age_hours(cache_root: str | Path | None, issue: str) -> float | None:
@@ -54,6 +54,21 @@ def pages_age_hours(cache_root: str | Path | None, issue: str) -> float | None:
     if not path.exists():
         return None
     return max(0.0, (time.time() - path.stat().st_mtime) / 3600)
+
+
+def pages_kind_age_hours(
+    cache_root: str | Path | None, issue: str, kind: str
+) -> float | None:
+    """Return the age of one page kind, or None when no per-kind timestamp exists."""
+    if not cache_root:
+        return None
+    path = Path(cache_root) / PAGES_META_FILENAME.format(issue=issue)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        captured_at = float(data.get(kind))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    return max(0.0, (time.time() - captured_at) / 3600)
 
 
 def has_odds_rows(cache_root: str | Path | None, issue: str) -> bool:
@@ -245,7 +260,7 @@ def _split_block(rows: list[list], label: str, converter) -> dict | None:
         "market": label,
         "picked": str(picked[0]) if picked else "",
         # 只列真正动了盘的公司，没动的留在页面上反而让人以为弹窗在重复初盘
-        "rows": [r for r in _company_rows(rows) if r["initial"] != r["current"]],
+        "rows": _company_rows(rows),
     }
 
 
@@ -327,8 +342,7 @@ def build_pages_movements(raw: dict, teams_by_fixture: dict | None = None) -> di
         analysis = analyze_prematch_movement(payload)
         # 这份盘口来自 500 单场页（澳门/威廉），不是赛前指数
         analysis["source"] = "odds_pages"
-        if fixture_id in splits:
-            analysis["split"] = splits[fixture_id]
+        analysis["split"] = splits.get(fixture_id, [])
         analysed[fixture_id] = analysis
     return analysed
 

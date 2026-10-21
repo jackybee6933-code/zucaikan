@@ -357,7 +357,7 @@ def _attach_odds_movement(
             (page.get("total") or {}).get("available")
         )
 
-    # 单场页（澳门/威廉）是主口径，查询页主列和分歧弹窗取自同一份产物；
+    # 单场页（威廉/澳门）是主口径，查询页主列和分歧弹窗取自同一份产物；
     # 缺亚盘或大小球的场次才去请求赛前指数补缺。
     movements: dict[str, dict] = dict(from_pages)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -395,7 +395,7 @@ def _attach_odds_movement(
             merged["teams"] = teams_by_fixture.get(fixture_id)
             result = analyze_prematch_movement(merged)
             result["source"] = "odds_pages"
-            if page.get("split"):
+            if "split" in page:
                 result["split"] = page["split"]
             movements[fixture_id] = result
 

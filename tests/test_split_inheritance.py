@@ -56,6 +56,16 @@ class SplitInheritanceTests(unittest.TestCase):
             rows = query_movements(db, issue="26140", latest_only=True)
             self.assertEqual(rows[0]["split"], fresh)
 
+    def test_checked_pages_without_split_do_not_inherit_stale_split(self):
+        """读取过单场页但当前不再分歧时，不能用上一 run 的旧 split。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            save_issue_movements(db, [_item("1", split=SPLIT_BLOCK)], "26140")
+            save_issue_movements(db, [_item("1", split=[])], "26140")
+
+            rows = query_movements(db, issue="26140", latest_only=True)
+            self.assertEqual(rows[0]["split"], [])
+
     def test_first_run_without_split_stays_empty(self):
         """期次首次入库、没有历史 run 时不报错也不凭空造 split。"""
         with tempfile.TemporaryDirectory() as tmp:

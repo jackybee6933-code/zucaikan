@@ -103,7 +103,7 @@ class MovementStoreTests(unittest.TestCase):
             self.assertEqual(len(all_rows), 4)
             html = render_query_html(latest, issues=issues, issue="26121", db_path=str(db))
             self.assertIn("巴萨 vs 费耶诺德", html)
-            self.assertIn("足彩分析系统1.0", html)
+            self.assertIn("足彩分析系统1.3", html)
             self.assertIn("降盘", html)
             self.assertNotIn("退盘", html)
             self.assertIn("倾向", html)
@@ -142,7 +142,8 @@ class DetailTotalDisplayTests(unittest.TestCase):
             "26122",
             "https://trade.500.com/sfc/",
         )
-        self.assertIn("3/3.5 0.90/0.97（赛前指数）", html)
+        self.assertIn("3/3.5 0.90/0.97", html)
+        self.assertNotIn("3/3.5 0.90/0.97（赛前指数）", html)
         self.assertNotIn("2.5 0.00/0.00", html)
 
     def test_detail_shows_wu_when_market_total_missing(self):
@@ -360,3 +361,12 @@ class LeagueColorTests(unittest.TestCase):
             html = render_query_html(rows, issues=[], latest_only=True)
             self.assertNotIn('<span class="league-badge"', html)
             self.assertIn("新杯赛", html)
+
+    def test_query_table_gives_match_column_more_room(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            item = _item("1", "巴塞罗那", "巴黎圣日耳曼", attention=True, level="重点关注", reason="让球盘降盘")
+            save_issue_movements(db, [item], "26121", "https://trade.500.com/sfc/")
+            html = render_query_html(query_movements(db, latest_only=True), issues=[], latest_only=True)
+            self.assertIn(".alert-table .issue-cell { width: 6%;", html)
+            self.assertIn(".alert-table .match-cell { width: 20%;", html)

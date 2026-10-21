@@ -60,6 +60,23 @@ def _probe(port: int, timeout: float = 2.0) -> bool:
         return False
 
 
+def _find_chrome() -> str:
+    """返回可用的 Chrome 路径；找不到时抛 FileNotFoundError。
+
+    依次尝试默认 64/32 位安装路径，最后回退到 PATH 里的 chrome。
+    """
+    import os
+
+    candidates = [CHROME, r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"]
+    exe = shutil.which("chrome") or shutil.which("chrome.exe")
+    if exe:
+        candidates.append(exe)
+    for path in dict.fromkeys(candidates):
+        if os.path.isfile(path):
+            return path
+    raise FileNotFoundError("未找到 Google Chrome（检查过默认 64/32 位安装路径与 PATH）；请先安装 Chrome 再使用「刷新盘口分歧」/「AI 分析」。")
+
+
 def launch_cdp_chrome(port: int = 9222, wait_seconds: float = 10.0) -> tuple[bool, list[str]]:
     """复制 cookie 并启动带调试端口的 Chrome，等端口就绪。返回 (是否就绪, 日志)。"""
     copied, skipped = copy_profile()
@@ -68,28 +85,40 @@ def launch_cdp_chrome(port: int = 9222, wait_seconds: float = 10.0) -> tuple[boo
         logs.append("跳过（被默认 Chrome 锁住，沿用已有 cookie）:")
         logs += [f"  {s}" for s in skipped]
     global _CHROME_PROC
-    proc = subprocess.Popen(
-        [
-            CHROME,
-            f"--remote-debugging-port={port}",
-            "--remote-allow-origins=*",
-            f"--user-data-dir={DST}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            *OFFSCREEN_ARGS,
-            "about:blank",
-        ],
-        shell=False,
-    )
+    try:
+        chrome_path = _find_chrome()
+    except FileNotFoundError as exc:
+        return False, [str(exc), "请先安装 Chrome（或确认默认安装路径），再重试。"]
+    try:
+        proc = subprocess.Popen(
+            [
+                chrome_path,
+                f"--remote-debugging-port={port}",
+                "--remote-allow-origins=*",
+                f"--user-data-dir={DST}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                *OFFSCREEN_ARGS,
+                "about:blank",
+            ],
+            shell=False,
+        )
+    except OSError as exc:
+        return False, [f"Chrome 启动失败：{exc}", f"路径：{chrome_path}"]
     _CHROME_PROC = proc
-    logs.append(f"Chrome 已启动 pid={proc.pid}，等待调试端口...")
+    logs.append(f"Chrome 已启动（{chrome_path} pid={proc.pid}），等待调试端口...")
     deadline = time.time() + wait_seconds
     while time.time() < deadline:
         time.sleep(0.5)
         if _probe(port):
             logs.append(f"CDP 就绪: http://127.0.0.1:{port}")
             return True, logs
-    logs.append("CDP 未就绪，请手动检查。")
+    logs.append(
+        "CDP 未就绪（Chrome 已启动但 10 秒内调试端口没通）。请手动检查："
+        "1) 防火墙/杀毒软件是否拦截了 127.0.0.1:9222 或 Chrome；"
+        "2) 企业策略（组策略/MDM）是否禁用了远程调试；"
+        "3) 是否有别的程序占用了 9222 端口。"
+    )
     return False, logs
 
 

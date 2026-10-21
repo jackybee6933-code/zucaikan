@@ -1,13 +1,30 @@
 from __future__ import annotations
 
 import json
+import base64
+import binascii
 import socket
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .bets import (
+    BetError,
+    bet_trend,
+    bet_options,
+    create_bet,
+    delete_bet,
+    export_bets_csv,
+    list_bets,
+    summarize_bets,
+    update_bet,
+)
+from .backup import build_backup_bytes, restore_backup_bytes
 from .http import Fetcher
+from .llm import test_endpoint
+from .llm_settings import public_settings, save_settings
 from .open_browser import open_in_chrome
 from .pipeline import analyze_issue
 from .report_index import build_issue_report_index
@@ -21,6 +38,29 @@ from .store import (
     rebuild_analyses_from_db,
     save_issue_movements,
 )
+import importlib.util
+from pathlib import Path as _QPath
+
+
+def _load_updater():
+    """加载 updater 模块。
+
+    单文件 exe 里 updater 通过 spec 的 hiddenimports 打进包内，直接按模块导入；
+    源码运行时仓库根目录也在 sys.path 上。导入失败再按文件位置兜底。
+    """
+    try:
+        import updater
+
+        return updater
+    except ImportError:
+        pass
+    base = _QPath(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("updater", base / "updater.py")
+    if spec is None or spec.loader is None:
+        raise ImportError("找不到 updater.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 def _first(params: dict[str, list[str]], key: str, default: str = "") -> str:
@@ -30,16 +70,40 @@ def _first(params: dict[str, list[str]], key: str, default: str = "") -> str:
 
 CDP_DEFAULT = "http://127.0.0.1:9222"
 CDP_HINT = (
-    "\u8fde\u4e0d\u4e0a Chrome \u8c03\u8bd5\u7aef\u53e3\u3002\u8bf7\u6309\u987a\u5e8f\u64cd\u4f5c\uff1a"
-    "\n  1) \u5148\u5b8c\u5168\u9000\u51fa Chrome\uff08\u7a97\u53e3\u5173\u6389\u8fd8\u4e0d\u591f\uff0c"
-    "\u6258\u76d8\u56fe\u6807\u4e5f\u8981\u9000\uff09"
-    "\n  2) \u8fd0\u884c  python setup_cdp_profile.py  "
-    "\u2014\u2014 \u5b83\u4f1a\u590d\u5236\u5df2\u9a8c\u8bc1 cookie \u5e76\u542f\u52a8\u5e26\u8c03\u8bd5\u7aef\u53e3\u7684 Chrome"
-    "\n  3) \u786e\u8ba4 http://127.0.0.1:9222/json/version \u80fd\u6253\u5f00\uff0c\u518d\u91cd\u8dd1"
-    "Cookie \u590d\u5236\u4e0d\u80fd\u7701\uff1a\u6ca1\u5b83\u4f1a\u4e00\u76f4\u5361\u5728\u9a8c\u8bc1\u9875\u3002"
+    "已自动尝试启动 Chrome（独立 profile，cookie 复制），但仍连不上调试端口。请检查："
+    "\n  1) 防火墙/杀毒软件是否拦截了 127.0.0.1:9222 或 Chrome"
+    "\n  2) 企业策略（组策略/MDM）是否禁用了远程调试"
+    "\n  3) 是否有别的程序占用了 9222 端口"
+    "\n  4) 是否安装 Google Chrome（默认路径）"
+    "Cookie 复制不能省：没有它页面会一直卡在 EdgeOne 验证页。"
 )
 
 FETCH_DEDUP_MINUTES = 30
+
+
+def _format_market_review(label: str, summary: dict, key: str) -> str:
+    total = int(summary.get(f"{key}_total") or 0)
+    bets = int(summary.get(f"{key}_bets") or total)
+    if not bets:
+        return f"{label} 无推荐"
+    hits = int(summary.get(f"{key}_hits") or 0)
+    pct = f"{hits / total * 100:.0f}%" if total else "-"
+    units = float(summary.get(f"{key}_units") or 0)
+    priced = int(summary.get(f"{key}_priced") or 0)
+    if priced:
+        money = f"净收益 {float(summary.get(f'{key}_profit') or 0):+.1f}单位"
+        if priced < bets:
+            money += f"（{priced}/{bets}场有水位）"
+    else:
+        money = f"净结果 {units:+.1f}单位"
+    detail = (
+        f"赢{summary.get(f'{key}_wins', 0)}"
+        f"/赢半{summary.get(f'{key}_half_wins', 0)}"
+        f"/走{summary.get(f'{key}_pushes', 0)}"
+        f"/输半{summary.get(f'{key}_half_losses', 0)}"
+        f"/输{summary.get(f'{key}_losses', 0)}"
+    )
+    return f"{label} {hits}/{total} ({pct})，{money}（{detail}）"
 
 
 def format_review(summary: dict) -> str:
@@ -49,12 +113,7 @@ def format_review(summary: dict) -> str:
         first += f"（run #{summary['run_id']}）"
     parts = [first]
     for label, key in (("亚盘", "asian"), ("大小球", "total")):
-        hits = summary[f"{key}_hits"]
-        count = summary[f"{key}_total"]
-        if count:
-            parts.append(f"{label} {hits}/{count} ({hits / count * 100:.0f}%)")
-        else:
-            parts.append(f"{label} 无推荐")
+        parts.append(_format_market_review(label, summary, key))
     refreshed = summary.get("refreshed") or {}
     refresh_errors: list[str] = []
     if refreshed.get("error"):
@@ -87,7 +146,7 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     from .odds_pages import (
         PAGES_STALE_HOURS,
         load_odds_pages_raw,
-        pages_age_hours,
+        pages_kind_age_hours,
         shuju_text,
     )
     from .store import (
@@ -118,7 +177,6 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     from .main import _default_cache_dir
     cache_dir = _default_cache_dir()
     _clear_progress(cache_dir)
-    age = pages_age_hours(cache_dir, actual_issue)
     needed_pages = 0
     # mtime 龄只说"文件很新"，不说里面有 shuju。产物存在但缺 shuju
     # （比如刚被"刷新盘口分歧"全量抓过、只带了 yazhi/daxiao），也要
@@ -129,7 +187,8 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
         for k, v in (load_odds_pages_raw(cache_dir, actual_issue) or {}).items()
         if k.rsplit("|", 1)[-1] == "shuju"
     )
-    if age is not None and age <= PAGES_STALE_HOURS and has_shuju:
+    shuju_age = pages_kind_age_hours(cache_dir, actual_issue, "shuju")
+    if shuju_age is not None and shuju_age <= PAGES_STALE_HOURS and has_shuju:
         pass
     else:
         cdp_error = _ensure_cdp(CDP_DEFAULT)
@@ -257,27 +316,39 @@ def run_refresh_odds(issue: str, *, cdp: str = CDP_DEFAULT, db_path: str | Path 
         PAGES_STALE_HOURS,
         load_odds_pages_raw,
         pages_age_hours,
+        pages_kind_age_hours,
     )
 
     cache_dir = _default_cache_dir()
     _clear_progress(cache_dir)
-    age = pages_age_hours(cache_dir, issue)
     # 刷新盘口只负责亚盘/大小球；shuju（球队资料）由「AI 分析」按需补抓。
     missing = _missing_kinds(load_odds_pages_raw(cache_dir, issue))
-    if age is not None and age <= PAGES_STALE_HOURS:
-        if not missing:
-            return (
-                f"{issue} \u76d8\u53e3\u4ea7\u7269\u662f {age:.1f} \u5c0f\u65f6\u524d\u7684\uff0c"
-                f"\u672a\u8d85 {PAGES_STALE_HOURS:.0f}h \u9608\u503c\uff0c\u8df3\u8fc7\u91cd\u6293"
-            )
-    missing = missing or ["yazhi", "daxiao"]
+    refresh_kinds = [
+        kind
+        for kind in ("yazhi", "daxiao")
+        if kind in missing
+        or (
+            (kind_age := pages_kind_age_hours(cache_dir, issue, kind)) is None
+            or kind_age > PAGES_STALE_HOURS
+        )
+    ]
+    if not refresh_kinds:
+        ages = [
+            pages_kind_age_hours(cache_dir, issue, kind)
+            for kind in ("yazhi", "daxiao")
+        ]
+        age_text = max(age for age in ages if age is not None)
+        return (
+            f"{issue} \u76d8\u53e3\u4ea7\u7269\u662f {age_text:.1f} \u5c0f\u65f6\u524d\u7684\uff0c"
+            f"\u672a\u8d85 {PAGES_STALE_HOURS:.0f}h \u9608\u503c\uff0c\u8df3\u8fc7\u91cd\u6293"
+        )
     endpoint = cdp.rstrip("/")
     # Ensure a Chrome debug port is reachable; auto-launch setup_cdp_profile.py if not.
     cdp_error = _ensure_cdp(endpoint)
     if cdp_error:
         return cdp_error
     try:
-        scrape_error = _run_odds_scraper(issue, cache_dir, endpoint, kinds=missing)
+        scrape_error = _run_odds_scraper(issue, cache_dir, endpoint, kinds=refresh_kinds)
     finally:
         shutdown_cdp_chrome()
     if scrape_error:
@@ -358,9 +429,14 @@ def serve_query(
     port: int = 8765,
     open_browser: bool = True,
     reports_dir: str | Path | None = None,
+    default_issue: str = "",
 ) -> None:
     db_path = str(Path(db_path))
+    settings_path = Path(db_path).parent / "llm_settings.json"
     reports_dir = Path(reports_dir) if reports_dir else Path(db_path).parent.parent / "reports"
+    from .main import _default_cache_dir
+
+    cache_dir = _default_cache_dir()
     report_links = build_issue_report_index(reports_dir)
 
     def _pick_port(preferred: int) -> int:
@@ -452,6 +528,14 @@ def serve_query(
             ai_state["running"] = False
 
     class Handler(BaseHTTPRequestHandler):
+        def _json(self, status: int, payload: dict) -> None:
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
             # fetch-status is a JSON endpoint handled via GET in JS polling
@@ -503,6 +587,62 @@ def serve_query(
                         pass
                 self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
                 return
+            if parsed.path == "/bet-options":
+                params = parse_qs(parsed.query)
+                issue = _first(params, "issue")
+                match_no = _first(params, "match_no")
+                if not issue or not match_no:
+                    self._json(400, {"error": "issue and match_no are required"})
+                    return
+                try:
+                    self._json(200, bet_options(db_path, issue, match_no))
+                except BetError as exc:
+                    self._json(exc.status, {"error": str(exc)})
+                return
+            if parsed.path == "/settings":
+                self._json(200, public_settings(settings_path))
+                return
+            if parsed.path == "/backup":
+                try:
+                    data = build_backup_bytes(db_path, settings_path)
+                    self._json(200, {
+                        "filename": f"football_analysis_backup_{time.strftime('%Y%m%d_%H%M%S')}.zip",
+                        "data": base64.b64encode(data).decode("ascii"),
+                    })
+                except (OSError, ValueError) as exc:
+                    self._json(500, {"error": f"备份失败：{exc}"})
+                return
+            if parsed.path == "/update/check":
+                try:
+                    _updater = _load_updater()
+                    self._json(200, _updater.check_update())
+                except _updater.UpdateError as exc:
+                    self._json(502, {"error": str(exc)})
+                return
+            if parsed.path == "/bets":
+                params = parse_qs(parsed.query)
+                issue = _first(params, "issue")
+                self._json(200, {"bets": list_bets(db_path, issue=issue)})
+                return
+            if parsed.path == "/bets.csv":
+                params = parse_qs(parsed.query)
+                issue = _first(params, "issue")
+                try:
+                    text = export_bets_csv(db_path, issue=issue)
+                    data = ("\ufeff" + text).encode("utf-8")
+                    safe_issue = "".join(ch for ch in issue if ch.isdigit()) or "all"
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/csv; charset=utf-8")
+                    self.send_header(
+                        "Content-Disposition",
+                        f'attachment; filename="bets_{safe_issue}.csv"',
+                    )
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                except BetError as exc:
+                    self._json(exc.status, {"error": str(exc)})
+                return
             # Serve report HTML files by filename
             if parsed.path.startswith("/report/"):
                 filename = parsed.path[len("/report/"):]
@@ -525,12 +665,20 @@ def serve_query(
                 self.wfile.write(payload)
                 return
             params = parse_qs(parsed.query)
+            # Root page (URL with no "issue" key at all) falls back to the
+            # latest issue so the list shows only current-period matches;
+            # explicit ?issue= (empty) from the form still means "all issues".
             issue = _first(params, "issue")
+            if "issue" not in params and default_issue:
+                issue = default_issue
             team = _first(params, "team")
             level = _first(params, "level")
             kind = _first(params, "kind")
             attention_only = _first(params, "attention") == "1"
             latest_only = "latest" not in params or _first(params, "latest") == "1"
+            bet_rows = list_bets(Path(db_path), issue=issue)
+            bet_stats = summarize_bets(bet_rows)
+            bet_trend_rows = bet_trend(Path(db_path))
 
             if issue:
                 rows = query_movements(
@@ -559,6 +707,10 @@ def serve_query(
                     analyses=analyses,
                     source_url=source_url,
                     report_links=report_links,
+                    bets=bet_rows,
+                    bet_stats=bet_stats,
+                    bet_trend=bet_trend_rows,
+                    cache_dir=cache_dir,
                 )
             else:
                 rows = query_movements(
@@ -576,6 +728,10 @@ def serve_query(
                     db_path=db_path,
                     port=str(port),
                     report_links=report_links,
+                    bets=bet_rows,
+                    bet_stats=bet_stats,
+                    bet_trend=bet_trend_rows,
+                    cache_dir=cache_dir,
                 )
             payload = html.encode("utf-8")
             self.send_response(200)
@@ -586,6 +742,145 @@ def serve_query(
 
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+            def _body() -> dict:
+                content_length = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(content_length).decode("utf-8") if content_length else ""
+                return json.loads(raw) if raw else {}
+
+            if parsed.path == "/settings":
+                data = _body()
+                payload: dict[str, dict[str, str]] = {}
+                for name in ("primary", "fallback"):
+                    incoming = data.get(name) if isinstance(data.get(name), dict) else {}
+                    item: dict[str, str] = {}
+                    for field in ("base_url", "model"):
+                        if field in incoming:
+                            item[field] = str(incoming.get(field) or "")
+                    if incoming.get("clear_api_key"):
+                        item["api_key"] = ""
+                    elif str(incoming.get("api_key") or "").strip():
+                        item["api_key"] = str(incoming["api_key"]).strip()
+                    payload[name] = item
+                try:
+                    save_settings(payload, settings_path)
+                    self._json(200, public_settings(settings_path))
+                except OSError as exc:
+                    self._json(500, {"error": f"设置保存失败：{exc}"})
+                return
+
+            if parsed.path == "/backup/restore":
+                data = _body()
+                encoded = str(data.get("data") or "")
+                if not encoded:
+                    self._json(400, {"error": "备份文件不能为空"})
+                    return
+                try:
+                    raw = base64.b64decode(encoded, validate=True)
+                    safety = restore_backup_bytes(raw, db_path, settings_path)
+                    self._json(200, {
+                        "ok": True,
+                        "safety_backup": str(safety) if safety else "",
+                    })
+                except (OSError, ValueError, binascii.Error) as exc:
+                    self._json(400, {"error": f"恢复失败：{exc}"})
+                return
+
+            if parsed.path == "/settings/test":
+                data = _body()
+                name = str(data.get("name") or "")
+                incoming = data.get(name) if name in ("primary", "fallback") else None
+                if not isinstance(incoming, dict):
+                    self._json(400, {"error": "接入点参数无效"})
+                    return
+                try:
+                    result = test_endpoint(
+                        name,
+                        base_url=str(incoming.get("base_url") or ""),
+                        api_key=str(incoming.get("api_key") or "").strip(),
+                        model=str(incoming.get("model") or ""),
+                        settings_path=settings_path,
+                        use_saved_key=not bool(incoming.get("clear_api_key")),
+                    )
+                    self._json(200, result)
+                except Exception as exc:  # noqa: BLE001
+                    self._json(200, {"ok": False, "message": f"测试失败：{exc}"})
+                return
+
+            if parsed.path == "/update/install":
+                try:
+                    _updater = _load_updater()
+                    info = _updater.check_update()
+                    if not info["update_available"]:
+                        self._json(200, {"ok": True, "message": "已是最新版本"})
+                        return
+                    archive = _updater.download_package(info)
+                    result = _updater.install_downloaded(archive)
+                    self._json(200, {
+                        "ok": True,
+                        "message": f"升级包已校验，更新器将在 {result['wait_seconds']} 秒内完成替换并重启",
+                    })
+                except (_updater.UpdateError, OSError) as exc:
+                    self._json(502, {"error": str(exc)})
+                return
+
+            if parsed.path == "/bets":
+                data = _body()
+                issue = str(data.get("issue") or "")
+                match_no = str(data.get("match_no") or "")
+                if not issue or not match_no:
+                    self._json(400, {"error": "issue and match_no are required"})
+                    return
+                try:
+                    self._json(
+                        201,
+                        create_bet(
+                            db_path,
+                            issue,
+                            match_no,
+                            str(data.get("market") or ""),
+                            str(data.get("selection") or ""),
+                            data.get("stake"),
+                        ),
+                    )
+                except BetError as exc:
+                    self._json(exc.status, {"error": str(exc)})
+                return
+            if parsed.path == "/bets/update":
+                data = _body()
+                try:
+                    bet_id = int(data.get("id") or 0)
+                except (TypeError, ValueError):
+                    bet_id = 0
+                if not bet_id:
+                    self._json(400, {"error": "id is required"})
+                    return
+                try:
+                    self._json(
+                        200,
+                        update_bet(
+                            db_path,
+                            bet_id,
+                            selection=data.get("selection"),
+                            stake=data.get("stake"),
+                        ),
+                    )
+                except BetError as exc:
+                    self._json(exc.status, {"error": str(exc)})
+                return
+            if parsed.path == "/bets/delete":
+                data = _body()
+                try:
+                    bet_id = int(data.get("id") or 0)
+                except (TypeError, ValueError):
+                    bet_id = 0
+                if not bet_id:
+                    self._json(400, {"error": "id is required"})
+                    return
+                try:
+                    self._json(200, delete_bet(db_path, bet_id))
+                except BetError as exc:
+                    self._json(exc.status, {"error": str(exc)})
+                return
             if parsed.path == "/fetch":
                 content_length = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(content_length).decode("utf-8")
@@ -700,7 +995,7 @@ def serve_query(
         print(f"无法监听 {host}:{port}，请检查端口是否被占用或更换端口。错误: {exc}")
         return
     url = f"http://{host}:{port}/"
-    print(f"足彩分析系统1.0 已启动：{url}")
+    print(f"足彩分析系统1.3 已启动：{url}")
     print(f"数据库：{db_path}")
     print("按 Ctrl+C 停止服务。")
     if open_browser:

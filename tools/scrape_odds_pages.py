@@ -31,6 +31,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from football_analysis.http import Fetcher
 from football_analysis.pipeline import collect_sfc_matches
+from football_analysis.odds_pages import PAGES_META_FILENAME
+from football_analysis.cdp_profile import ensure_cdp_chrome
 
 
 from football_analysis.cdp import CdpError, CdpPage
@@ -110,9 +112,12 @@ SHUJU_JS = r"""() => {
   return out.join('\n').slice(0, 12000);
 }"""
 
-CDP_HINT = """\u8fde\u4e0d\u4e0a Chrome \u8c03\u8bd5\u7aef\u53e3\u3002\u8bf7\u6309\u987a\u5e8f\u64cd\u4f5c\uff1a
-  1) \u5148\u5b8c\u5168\u9000\u51fa Chrome\uff08\u7a97\u53e3\u5173\u6389\u8fd8\u4e0d\u591f\uff0c\u6258\u76d8\u56fe\u6807\u4e5f\u8981\u9000\uff09
-  2) \u8fd0\u884c  python setup_cdp_profile.py  \u2014\u2014 \u5b83\u4f1a\u590d\u5236\u5df2\u9a8c\u8bc1 cookie \u5e76\u542f\u52a8\u5e26\u8c03\u8bd5\u7aef\u53e3\u7684 Chrome\n  3) \u786e\u8ba4 http://127.0.0.1:9222/json/version \u80fd\u6253\u5f00\uff0c\u518d\u91cd\u8dd1\u672c\u811a\u672c\nCookie \u590d\u5236\u4e0d\u80fd\u7701\uff1a\u6ca1\u5b83\u4f1a\u4e00\u76f4\u5361\u5728\u9a8c\u8bc1\u9875\u3002"""
+CDP_HINT = """已自动尝试启动带调试端口的 Chrome（独立 profile，cookie 复制），但仍连不上。请检查：
+  1) 防火墙/杀毒软件是否拦截了 127.0.0.1:9222 或 Chrome
+  2) 企业策略（组策略/MDM）是否禁用了远程调试
+  3) 是否有别的程序占用了 9222 端口
+  4) 是否安装了 Google Chrome（默认 64/32 位安装路径）
+Cookie 复制不能省：没有它页面会一直卡在验证页。"""
 
 
 class RateLimited(Exception):
@@ -211,6 +216,34 @@ def save_partial(path: Path, result: dict[str, dict]) -> None:
     }
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(pages, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def save_kind_metadata(cache_dir: Path, issue: str, fids: list[str], active_kinds: list[str], result: dict[str, dict]) -> None:
+    """Record completion time per page kind so different buttons do not share freshness."""
+    path = cache_dir / PAGES_META_FILENAME.format(issue=issue)
+    metadata: dict[str, float] = {}
+    try:
+        old = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(old, dict):
+            metadata.update(
+                {str(k): float(v) for k, v in old.items() if isinstance(v, (int, float))}
+            )
+    except (OSError, ValueError, TypeError):
+        pass
+    now = time.time()
+    for kind in active_kinds:
+        complete = all(
+            isinstance(result.get(f"{fid}|{kind}"), dict)
+            and result[f"{fid}|{kind}"].get("status") in (STATUS_OK, STATUS_EMPTY)
+            for fid in fids
+        )
+        if complete:
+            metadata[kind] = now
+    if not metadata:
+        return
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, path)
 
 
@@ -340,10 +373,37 @@ def main(argv: list[str] | None = None) -> int:
     except CdpError as exc:
         log("")
         log(f"[x] 无法连接 Chrome 调试端口：{str(exc).splitlines()[0][:100]}")
-        log("")
-        for line in CDP_HINT.splitlines():
-            log(line)
-        return 4
+        # 端口不通时自动尝试拉起带调试端口的 Chrome（独立 profile + cookie 复制），
+        # 与 exe 里「刷新盘口分歧」的 _ensure_cdp 行为一致。
+        if not args.cdp or args.cdp.startswith("http://127.0.0.1"):
+            port = 9222
+            try:
+                from urllib.parse import urlparse as _urlparse
+
+                port = _urlparse(args.cdp).port or 9222
+            except Exception:  # noqa: BLE001
+                pass
+            err = ensure_cdp_chrome(port)
+            if not err:
+                log(f"已自动启动 Chrome，重试连接 {args.cdp}")
+                try:
+                    page = acquire(args.cdp)
+                except CdpError as exc2:
+                    log("")
+                    log(f"[x] 重试仍无法连接：{str(exc2).splitlines()[0][:100]}")
+                    for line in CDP_HINT.splitlines():
+                        log(line)
+                    return 4
+            else:
+                log("")
+                for line in CDP_HINT.splitlines():
+                    log(line)
+                return 4
+        else:
+            log("")
+            for line in CDP_HINT.splitlines():
+                log(line)
+            return 4
 
     deadline = time.time() + args.max_seconds
     try:
@@ -416,6 +476,7 @@ def main(argv: list[str] | None = None) -> int:
         except (json.JSONDecodeError, OSError):
             pass  # 旧产物损坏则只用新数据
     out.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+    save_kind_metadata(cache_dir, issue, fids, active_kinds, result)
     partial.unlink(missing_ok=True)
     ok = sum(1 for page in result.values() if page.get("status") == STATUS_OK)
     empty = sum(1 for page in result.values() if page.get("status") == STATUS_EMPTY)

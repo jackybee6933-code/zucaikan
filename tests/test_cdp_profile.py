@@ -66,5 +66,20 @@ class CopyProfileTests(unittest.TestCase):
         self.assertTrue((self.dst / "Default" / "Network" / "Cookies").exists())
 
 
+class FindChromeTests(unittest.TestCase):
+    """_find_chrome 找不到 Chrome 时不能静默，要给出可操作的提示。"""
+
+    def test_missing_chrome_raises_helpful_error(self):
+        import os
+
+        with mock.patch.object(cdp_profile, "CHROME", r"C:\definitely-no-chrome\chrome.exe"), \
+             mock.patch.object(cdp_profile, "shutil") as m_shutil, \
+             mock.patch.dict(os.environ, {}, clear=False):
+            m_shutil.which.return_value = None
+            with self.assertRaises(FileNotFoundError) as cm:
+                cdp_profile._find_chrome()
+        self.assertIn("未找到 Google Chrome", str(cm.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

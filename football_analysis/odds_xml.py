@@ -16,9 +16,9 @@ ODDS_XML_URL = "https://www.500.com/static/public/jczq/xml/odds/odds.xml"
 
 
 # 500.com 的盘口按博彩公司分属性存放，如 <asian am="..." hg="..." bet365="..."/>。
-# 亚盘/大小盘以澳门为参考盘口，澳门缺数据时按序回退到第一家有数据的公司；
+# 亚盘/大小盘以威廉为参考盘口，威廉缺数据时按序回退到澳门等有数据的公司；
 # 欧赔类则以所有公司的平均值优先。
-ASIAN_COMPANY_PREFERENCE = ("am", "hg", "bet365", "lb", "wl", "avg")
+ASIAN_COMPANY_PREFERENCE = ("wl", "am", "hg", "bet365", "lb", "avg")
 EUROPE_COMPANY_PREFERENCE = ("avg", "wl", "am", "lb", "bet365", "hg")
 
 COMPANY_LABELS = {
@@ -42,7 +42,7 @@ def _pick_company_odds(
     """Return (odds_text, company_key) from the first company with data.
 
     Preferred companies are tried in order, then any other company attribute
-    on the node, so a missing 澳门盘 no longer drops the whole market.
+    on the node, so a missing 威廉盘 no longer drops the whole market.
     """
     if node is None:
         return "", ""

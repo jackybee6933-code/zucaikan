@@ -4,8 +4,13 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
-from football_analysis.odds_pages import PAGES_STALE_HOURS, pages_age_hours
+from football_analysis.odds_pages import (
+    PAGES_STALE_HOURS,
+    pages_age_hours,
+    pages_kind_age_hours,
+)
 
 ISSUE = "26135"
 FILENAME = f"odds_pages_{ISSUE}.json"
@@ -46,3 +51,16 @@ class PagesAgeTests(unittest.TestCase):
     def test_threshold_is_sane(self):
         self.assertGreater(PAGES_STALE_HOURS, 0)
         self.assertLessEqual(PAGES_STALE_HOURS, 24)
+
+    def test_kind_age_is_independent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            meta = Path(tmp) / f"odds_pages_{ISSUE}.meta.json"
+            meta.write_text(
+                '{"yazhi": 1000000, "shuju": 999900}', encoding="utf-8"
+            )
+            with mock.patch("football_analysis.odds_pages.time.time", return_value=1003600):
+                yazhi = pages_kind_age_hours(tmp, ISSUE, "yazhi")
+                shuju = pages_kind_age_hours(tmp, ISSUE, "shuju")
+            self.assertAlmostEqual(yazhi, 1.0)
+            self.assertAlmostEqual(shuju, 1.0277777778)
+            self.assertIsNone(pages_kind_age_hours(tmp, ISSUE, "daxiao"))

@@ -35,12 +35,14 @@ class HandicapSignTests(unittest.TestCase):
             r = review_issue(db, ISSUE, refresh=False)
         self.assertEqual((r["asian_hits"], r["asian_total"]), (1, 1))
 
-    def test_home_gives_one_push_is_not_a_hit(self):
+    def test_home_gives_one_push_is_excluded_from_rate(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "t.sqlite"
             save_issue_movements(db, [self._item(-1.0, "1-0", "主队赢盘")], ISSUE, "")
             r = review_issue(db, ISSUE, refresh=False)
-        self.assertEqual((r["asian_hits"], r["asian_total"]), (0, 1))
+        self.assertEqual((r["asian_hits"], r["asian_total"]), (0, 0))
+        self.assertEqual(r["asian_bets"], 1)
+        self.assertEqual(r["asian_pushes"], 1)
 
     def test_home_receives_half_and_draws_still_covers(self):
         """受让半球打平：主队赢或平都打出。旧代码在这里判错。"""
@@ -70,7 +72,9 @@ class HandicapSignTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "t.sqlite"
             items = [self._item(0.5, "1-1", "主队赢盘") for _ in range(3)]
-            items += [self._item(-1.0, "1-0", "主队赢盘")]   # 让一球走水：进分母不进命中
+            items += [self._item(-1.0, "1-0", "主队赢盘")]   # 让一球走水：不入分母
             save_issue_movements(db, items, ISSUE, "")
             r = review_issue(db, ISSUE, refresh=False)
-        self.assertEqual((r["asian_hits"], r["asian_total"]), (3, 4))
+        self.assertEqual((r["asian_hits"], r["asian_total"]), (3, 3))
+        self.assertEqual(r["asian_bets"], 4)
+        self.assertEqual(r["asian_pushes"], 1)

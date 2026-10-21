@@ -56,9 +56,35 @@ ITEMS = [
 
 # 亚盘分母 = 1,2,3,4,6 = 5；大小球分母 = 1,2,4,5 = 4。
 # 两者刻意不同，用来验证「观望」是按市场分别排除的，而不是一刀切。
-EXPECTED = {"issue": "26135", "match_count": 7, "scored": 6, "run_id": 1,
-            "asian_hits": 2, "asian_total": 5, "total_hits": 2, "total_total": 4}
-TEXT = "26135 已完成 6/7 场（run #1） · 亚盘 2/5 (40%) · 大小球 2/4 (50%)"
+EXPECTED = {
+    "issue": "26135",
+    "match_count": 7,
+    "scored": 6,
+    "run_id": 1,
+    "asian_bets": 5,
+    "asian_wins": 2,
+    "asian_half_wins": 0,
+    "asian_pushes": 2,
+    "asian_half_losses": 0,
+    "asian_losses": 1,
+    "asian_hits": 2,
+    "asian_total": 3,
+    "asian_units": 1.0,
+    "total_bets": 4,
+    "total_wins": 2,
+    "total_half_wins": 0,
+    "total_pushes": 0,
+    "total_half_losses": 0,
+    "total_losses": 2,
+    "total_hits": 2,
+    "total_total": 4,
+    "total_units": 0.0,
+}
+TEXT = (
+    "26135 已完成 6/7 场（run #1） · "
+    "亚盘 2/3 (67%)，净结果 +1.0单位（赢2/赢半0/走2/输半0/输1） · "
+    "大小球 2/4 (50%)，净结果 +0.0单位（赢2/赢半0/走0/输半0/输2）"
+)
 
 
 def _seed(tmp: str, issue: str = "26135") -> Path:
@@ -74,18 +100,73 @@ class ReviewIssueTests(unittest.TestCase):
             for key, want in EXPECTED.items():
                 self.assertEqual(got[key], want, key)
 
-    def test_push_is_counted_but_not_a_hit(self):
+    def test_push_excluded_from_rate_and_kept_in_bets(self):
         with tempfile.TemporaryDirectory() as tmp:
             got = review_issue(_seed(tmp), "26135", refresh=False)
-            self.assertEqual(got["asian_total"], 5)
+            self.assertEqual(got["asian_bets"], 5)
+            self.assertEqual(got["asian_total"], 3)
+            self.assertEqual(got["asian_pushes"], 2)
             self.assertEqual(got["asian_hits"], 2)
 
     def test_watch_action_excluded_per_market(self):
         with tempfile.TemporaryDirectory() as tmp:
             got = review_issue(_seed(tmp), "26135", refresh=False)
-            self.assertEqual(got["asian_total"], 5)
+            self.assertEqual(got["asian_bets"], 5)
+            self.assertEqual(got["asian_total"], 3)
             self.assertEqual(got["total_total"], 4)
             self.assertNotEqual(got["asian_total"], got["total_total"])
+
+    def test_quarter_line_counts_half_win_and_half_loss(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            save_issue_movements(
+                db,
+                [
+                    _item("1", "2-1", asian_line=-0.75, total_action="观望"),
+                    _item("2", "1-1", asian_line=-0.25, total_action="观望"),
+                ],
+                "26135",
+                "https://example.test",
+            )
+            got = review_issue(db, "26135", refresh=False)
+        self.assertEqual(got["asian_bets"], 2)
+        self.assertEqual(got["asian_total"], 2)
+        self.assertEqual(got["asian_half_wins"], 1)
+        self.assertEqual(got["asian_half_losses"], 1)
+        self.assertEqual(got["asian_hits"], 1)
+        self.assertEqual(got["asian_units"], 0.0)
+
+    def test_water_adjusted_profit_uses_selected_side_water(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            item = _item("1", "2-0", asian_line=-0.5, total_action="观望")
+            item["market"]["asian"]["home_water"] = 0.9
+            save_issue_movements(db, [item], "26135", "https://example.test")
+            got = review_issue(db, "26135", refresh=False)
+        self.assertAlmostEqual(got["asian_profit"], 0.9)
+        self.assertEqual(got["asian_priced"], 1)
+
+    def test_total_quarter_line_counts_half_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            save_issue_movements(
+                db,
+                [
+                    _item("1", "2-0", asian_action="观望", total_line=2.25,
+                          total_side="大球"),
+                    _item("2", "2-0", asian_action="观望", total_line=2.25,
+                          total_side="小球"),
+                ],
+                "26135",
+                "https://example.test",
+            )
+            got = review_issue(db, "26135", refresh=False)
+        self.assertEqual(got["total_bets"], 2)
+        self.assertEqual(got["total_total"], 2)
+        self.assertEqual(got["total_half_wins"], 1)
+        self.assertEqual(got["total_half_losses"], 1)
+        self.assertEqual(got["total_hits"], 1)
+        self.assertEqual(got["total_units"], 0.0)
 
     def test_unscored_match_excluded_entirely(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -124,6 +205,37 @@ class ReviewIssueTests(unittest.TestCase):
 class FormatReviewTests(unittest.TestCase):
     def test_formats_hits_and_percentages(self):
         self.assertEqual(format_review(EXPECTED), TEXT)
+
+    def test_formats_water_adjusted_profit_when_available(self):
+        text = format_review(
+            {
+                "issue": "1",
+                "scored": 1,
+                "match_count": 1,
+                "asian_bets": 1,
+                "asian_wins": 1,
+                "asian_hits": 1,
+                "asian_total": 1,
+                "asian_units": 1.0,
+                "asian_profit": 0.9,
+                "asian_priced": 1,
+            }
+        )
+        self.assertIn("亚盘 1/1 (100%)，净收益 +0.9单位", text)
+
+    def test_all_push_market_does_not_divide_by_zero(self):
+        text = format_review(
+            {
+                "issue": "1",
+                "scored": 1,
+                "match_count": 1,
+                "asian_bets": 1,
+                "asian_pushes": 1,
+                "asian_total": 0,
+            }
+        )
+        self.assertIn("亚盘 0/0 (-)", text)
+        self.assertIn("走1", text)
 
     def test_missing_recommendations_say_无推荐(self):
         text = format_review(

@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parent
 STAGE = ROOT / "build" / "pkg"
 ZIP = ROOT / "dist" / f"足彩分析工具_完整包_{date.today():%Y%m%d}.zip"
 EXE = "足球胜负彩分析工具.exe"
+UPDATER = "足球更新器.exe"
 
 
 def reset_stage() -> None:
@@ -40,19 +41,23 @@ reset_stage()
 shutil.copy2(ROOT / "dist" / EXE, STAGE / EXE)
 print(f"exe            -> {EXE}")
 
-# 2) 异动库：用 dist/data，历史更全（24 期 / 970 场已录比分）
+# 2) 更新器：自动升级链路需要它和主程序同目录（updater.install_downloaded 在 app 根找它）
+shutil.copy2(ROOT / "dist" / UPDATER, STAGE / UPDATER)
+print(f"updater        -> {UPDATER}")
+
+# 3) 异动库：用 dist/data，历史更全（24 期 / 970 场已录比分）
 n = copy_tree(ROOT / "dist" / "data", "data")
 print(f"data           -> {n} 个文件")
 
-# 3) cache：.raw 供离线重跑，加 odds_pages_<期号>.json（缺它就没有让球/大小球）
+# 4) cache：.raw 供离线重跑，加 odds_pages_<期号>.json（缺它就没有让球/大小球）
 n = copy_tree(ROOT / "cache", "cache")
 print(f"cache          -> {n} 个文件")
 
-# 4) reports：最近 7 份，与旧包体量一致
+# 5) reports：最近 7 份，与旧包体量一致
 n = copy_tree(ROOT / "reports", "reports", limit=7)
 print(f"reports        -> {n} 个文件")
 
-# 5) 刷新盘口分歧用到的脚本（run_refresh_odds 在 _app_root() 下找它们）
+# 6) 刷新盘口分歧用到的脚本（run_refresh_odds 在 _app_root() 下找它们）
 shutil.copy2(ROOT / "setup_cdp_profile.py", STAGE / "setup_cdp_profile.py")
 print("setup_cdp      -> setup_cdp_profile.py")
 (STAGE / "tools").mkdir(exist_ok=True)

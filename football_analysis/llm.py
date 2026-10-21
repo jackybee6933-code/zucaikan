@@ -10,6 +10,7 @@ import requests
 
 from .model import OUTCOME_LABELS
 from .report import history_short, h2h_short
+from .llm_settings import load_settings
 
 _H2H_ROW_LIMIT = 6
 
@@ -18,22 +19,114 @@ DEFAULT_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_MODEL = "gpt-4o-mini"
 
 
-def endpoint_config(*, base_url: str = "", api_key: str = "", model: str = "") -> tuple[str, str, str]:
-    """Shared LLM endpoint resolution from args or LLM_* env vars."""
+def endpoint_config(
+    *,
+    base_url: str = "",
+    api_key: str = "",
+    model: str = "",
+    settings_path: str | Path | None = None,
+    use_saved_key: bool = True,
+) -> tuple[str, str, str]:
+    """Shared LLM endpoint resolution from args, local settings, or env vars."""
+    saved = load_settings(settings_path)["primary"]
     return (
-        (base_url or os.environ.get("LLM_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
-        api_key or os.environ.get("LLM_API_KEY") or "",
-        model or os.environ.get("LLM_MODEL") or DEFAULT_MODEL,
+        (base_url or saved["base_url"] or os.environ.get("LLM_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
+        api_key
+        or (saved["api_key"] if use_saved_key else "")
+        or (os.environ.get("LLM_API_KEY") if use_saved_key else "")
+        or "",
+        model or saved["model"] or os.environ.get("LLM_MODEL") or DEFAULT_MODEL,
     )
 
 
-def fallback_config(*, base_url: str = "", api_key: str = "", model: str = "") -> tuple[str, str, str]:
-    """Backup LLM endpoint from LLM_FALLBACK_* env vars; empty api_key means "not configured"."""
+def fallback_config(
+    *,
+    base_url: str = "",
+    api_key: str = "",
+    model: str = "",
+    settings_path: str | Path | None = None,
+    use_saved_key: bool = True,
+) -> tuple[str, str, str]:
+    """Backup LLM endpoint from args, local settings, or LLM_FALLBACK_* env vars."""
+    saved = load_settings(settings_path)["fallback"]
     return (
-        (base_url or os.environ.get("LLM_FALLBACK_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
-        api_key or os.environ.get("LLM_FALLBACK_API_KEY") or "",
-        model or os.environ.get("LLM_FALLBACK_MODEL") or DEFAULT_MODEL,
+        (base_url or saved["base_url"] or os.environ.get("LLM_FALLBACK_BASE_URL") or DEFAULT_BASE_URL).rstrip("/"),
+        api_key
+        or (saved["api_key"] if use_saved_key else "")
+        or (os.environ.get("LLM_FALLBACK_API_KEY") if use_saved_key else "")
+        or "",
+        model or saved["model"] or os.environ.get("LLM_FALLBACK_MODEL") or DEFAULT_MODEL,
     )
+
+
+def test_endpoint(
+    name: str,
+    *,
+    base_url: str = "",
+    api_key: str = "",
+    model: str = "",
+    settings_path: str | Path | None = None,
+    use_saved_key: bool = True,
+    timeout: float = 15.0,
+) -> dict[str, object]:
+    """Send a minimal request to verify one configured OpenAI-compatible endpoint."""
+    if name == "primary":
+        resolved = endpoint_config(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            settings_path=settings_path,
+            use_saved_key=use_saved_key,
+        )
+    elif name == "fallback":
+        resolved = fallback_config(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            settings_path=settings_path,
+            use_saved_key=use_saved_key,
+        )
+    else:
+        return {"ok": False, "message": "接入点名称无效"}
+
+    resolved_url, resolved_key, resolved_model = resolved
+    if not resolved_key:
+        return {"ok": False, "message": "未配置 API Key"}
+    if not resolved_model:
+        return {"ok": False, "message": "未配置模型名"}
+    if not resolved_url.startswith(("http://", "https://")):
+        return {"ok": False, "message": "URL 必须以 http:// 或 https:// 开头"}
+
+    try:
+        response = requests.post(
+            f"{resolved_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {resolved_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": resolved_model,
+                "messages": [{"role": "user", "content": "只回复 OK"}],
+                "max_tokens": 1,
+                "temperature": 0,
+            },
+            timeout=timeout,
+        )
+    except requests.Timeout:
+        return {"ok": False, "message": "连接超时"}
+    except requests.RequestException as exc:
+        return {"ok": False, "message": f"连接失败：{exc}"[:220]}
+
+    if 200 <= response.status_code < 300:
+        return {"ok": True, "message": f"连接成功（{resolved_model}）"}
+    messages = {
+        401: "API Key 无效或已过期",
+        403: "没有访问权限",
+        404: "URL 或模型不存在",
+        429: "请求过于频繁或额度不足",
+    }
+    message = messages.get(response.status_code, f"服务返回 HTTP {response.status_code}")
+    return {"ok": False, "message": message}
 
 SYSTEM_PROMPT = """你是一名足球盘口数据分析师，负责把亚盘/大小盘从初盘到即时盘的结构化变化翻译成简短中文解读。
 
@@ -252,15 +345,18 @@ def narrate_movements(
 # --- 球队资料分析：读 500 数据分析页的资料，给亚盘让球倾向（只展示，不进任何门禁） ---
 
 TEAM_READ_TENDENCIES = ("主队赢盘", "客队赢盘", "观望")
+OVER_READ_TENDENCIES = ("大球", "小球", "观望")
 
 TEAM_READ_SYSTEM_PROMPT = """你是一名足球盘口分析师，负责读完一场比赛的球队资料后，给出这场球的亚盘让球倾向。
 
 要求：
 - 只使用输入里给出的资料（近期战绩、主客场表现、赢盘率、大小球率、历史交锋、积分排名、盘口与概率）。
 - 只能输出一个 JSON 对象，不要任何额外文字、不要代码块围栏，格式：
-  {"tendency": "主队赢盘", "confidence": 0.0, "reason": "一句话，40 字以内"}
+  {"tendency": "主队赢盘", "confidence": 0.0, "reason": "一句话，40 字以内", "over_tendency": "大球", "over_confidence": 0.0, "over_reason": "一句话，40 字以内"}
 - tendency 只能取三个值之一：主队赢盘、客队赢盘、观望。
 - 资料不足、双方势均力敌或无法判断时，tendency 必须是「观望」。
+- over_tendency 判断总进球数更可能落在大小盘线上方还是下方，只能取三个值之一：大球、小球、观望。
+- 大小盘数据缺失、双方大小球率都没有、或无法判断时，over_tendency 必须是「观望」。
 - 不要编造伤停、转会、内幕等资料里没有的信息，也不要预测比分。"""
 
 
@@ -335,7 +431,8 @@ def build_team_read_prompt(analysis: dict, page_text: str = "") -> str:
     else:
         lines.append("500 数据分析页资料：未抓到")
     lines.append(
-        "\n请判断这场比赛主队还是客队更可能赢下亚盘让球（主队赢盘 / 客队赢盘 / 观望），"
+        "\n请判断两件事：(1) 主队还是客队更可能赢下亚盘让球（主队赢盘 / 客队赢盘 / 观望）；"
+        "(2) 总进球数更可能落在大小盘线上方还是下方（大球 / 小球 / 观望）。"
         "只用上面给出的资料，资料不足就给观望。只输出 JSON，不要解释。"
     )
     return "\n".join(lines)
@@ -370,7 +467,23 @@ def parse_team_read(text: str) -> dict | None:
         confidence = 0.0
     confidence = min(1.0, max(0.0, confidence))
     reason = re.sub(r"\s+", " ", str(data.get("reason") or "")).strip()[:80]
-    return {"tendency": tendency, "confidence": confidence, "reason": reason}
+    over_tendency = str(data.get("over_tendency") or "").strip()
+    if over_tendency not in OVER_READ_TENDENCIES:
+        over_tendency = "观望"
+    try:
+        over_confidence = float(data.get("over_confidence") or 0.0)
+    except (TypeError, ValueError):
+        over_confidence = 0.0
+    over_confidence = min(1.0, max(0.0, over_confidence))
+    over_reason = re.sub(r"\s+", " ", str(data.get("over_reason") or "")).strip()[:80]
+    return {
+        "tendency": tendency,
+        "confidence": confidence,
+        "reason": reason,
+        "over_tendency": over_tendency,
+        "over_confidence": over_confidence,
+        "over_reason": over_reason,
+    }
 
 
 class TeamReader:

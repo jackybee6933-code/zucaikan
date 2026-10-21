@@ -103,6 +103,11 @@ class ResumeMainTests(unittest.TestCase):
             self.assertEqual(fetched, ["https://odds.500.com/fenxi/yazhi-222.shtml"])
             saved = json.loads((cache / "odds_pages_26144.json").read_text(encoding="utf-8"))
             self.assertEqual(set(saved), {"111|yazhi", "222|yazhi"})
+            metadata = json.loads(
+                (cache / "odds_pages_26144.meta.json").read_text(encoding="utf-8")
+            )
+            self.assertIn("yazhi", metadata)
+            self.assertNotIn("daxiao", metadata)
             self.assertFalse(mod.partial_path(cache, "26144").exists())
 
 

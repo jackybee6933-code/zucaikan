@@ -50,6 +50,14 @@ def _artifact(
     path.write_text(json.dumps(payload), encoding="utf-8")
     stamp = time.time() - age_hours * 3600
     os.utime(path, (stamp, stamp))
+    meta = {
+        kind: stamp
+        for kind in ("yazhi", "daxiao", "shuju")
+        if any(key.endswith(f"|{kind}") for key in payload)
+    }
+    (cache_dir / f"odds_pages_{issue}.meta.json").write_text(
+        json.dumps(meta), encoding="utf-8"
+    )
     return path
 
 
@@ -169,6 +177,14 @@ class RefreshOddsOnlyMissingKindsTests(unittest.TestCase):
         path.write_text(json.dumps(payload), encoding="utf-8")
         stamp = time.time() - age_hours * 3600
         os.utime(path, (stamp, stamp))
+        meta = {
+            kind: stamp
+            for kind in ("yazhi", "daxiao", "shuju")
+            if any(key.endswith(f"|{kind}") for key in payload)
+        }
+        (cache / "odds_pages_26143.meta.json").write_text(
+            json.dumps(meta), encoding="utf-8"
+        )
 
     def _run(self, payload: dict, age_hours: float):
         with tempfile.TemporaryDirectory() as tmp:
@@ -223,6 +239,33 @@ class RefreshOddsOnlyMissingKindsTests(unittest.TestCase):
         }
         ensure, scraper = self._run(payload, PAGES_STALE_HOURS / 2)
         scraper.assert_not_called()
+
+    def test_ai_capture_does_not_refresh_odds_timestamp(self):
+        """shuju 刚抓过时，过期的亚盘/大小球仍必须补抓。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "cache"
+            cache.mkdir()
+            payload = {
+                "9|yazhi": {"status": "ok", "rows": [[293, "0.90", "平手", "0.95", "0.90", "平手", "0.90"]]},
+                "9|daxiao": {"status": "ok", "rows": [[293, "0.90", "2.5", "0.90", "0.90", "2.5", "0.90"]]},
+                "9|shuju": {"status": "ok", "text": "资料"},
+            }
+            self._write_artifact(cache, payload, 0)
+            old = time.time() - (PAGES_STALE_HOURS + 1) * 3600
+            (cache / "odds_pages_26143.meta.json").write_text(
+                json.dumps({"yazhi": old, "daxiao": old, "shuju": time.time()}),
+                encoding="utf-8",
+            )
+            with mock.patch("football_analysis.main._app_root", return_value=root), \
+                 mock.patch.object(query_app, "_ensure_cdp", return_value=None), \
+                 mock.patch.object(query_app, "_run_odds_scraper", return_value=None) as scraper, \
+                 mock.patch("football_analysis.cdp_profile.shutdown_cdp_chrome"), \
+                 mock.patch.object(query_app, "analyze_issue", return_value=([_item()], "26143", "u")), \
+                 mock.patch.object(query_app, "save_issue_movements", return_value={"match_count": 1, "attention_count": 0}):
+                query_app.run_refresh_odds("26143", db_path=root / "x.sqlite")
+            scraper.assert_called_once()
+            self.assertEqual(scraper.call_args.kwargs["kinds"], ["yazhi", "daxiao"])
 
 
 class StaleProgressSnapshotTests(unittest.TestCase):

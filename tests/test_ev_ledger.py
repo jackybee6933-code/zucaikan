@@ -40,6 +40,30 @@ def _item(
     }
 
 
+def _summary(
+    *,
+    rows: int,
+    settled: int,
+    wins: int,
+    half_wins: int,
+    push: int,
+    half_losses: int,
+    losses: int,
+    units: float,
+) -> dict:
+    return {
+        "rows": rows,
+        "settled": settled,
+        "wins": wins,
+        "half_wins": half_wins,
+        "push": push,
+        "half_losses": half_losses,
+        "losses": losses,
+        "hits": wins + half_wins,
+        "units": units,
+    }
+
+
 class BuildLedgerRowsTests(unittest.TestCase):
     def test_sorts_byAbsoluteEvDiffDescending(self):
         rows = build_ledger_rows(
@@ -83,13 +107,18 @@ class CoverResultTests(unittest.TestCase):
     """符号约定与 main._issue_hit_rates 一致：home_handicap = (主进球-客进球) + line。"""
 
     def test_homePickCoversWhenGoalDiffPlusLinePositive(self):
-        self.assertEqual(_cover_result(3, 1, -1.0, "home"), 1)   # 2-1=1 +(-1)=1 赢
-        self.assertEqual(_cover_result(2, 1, -1.0, "home"), 0)   # 平局走水
-        self.assertEqual(_cover_result(1, 2, -1.0, "home"), -1)
+        self.assertAlmostEqual(_cover_result(3, 1, -1.0, "home"), 1.0)   # 2-1=1 +(-1)=1 赢
+        self.assertAlmostEqual(_cover_result(2, 1, -1.0, "home"), 0.0)   # 平局走水
+        self.assertAlmostEqual(_cover_result(1, 2, -1.0, "home"), -1.0)
 
     def test_awayPickUsesNegatedHandicap(self):
-        self.assertEqual(_cover_result(3, 1, -1.0, "away"), -1)
-        self.assertEqual(_cover_result(0, 0, -1.0, "away"), 1)   # 主让一球 0-0，客队赢
+        self.assertAlmostEqual(_cover_result(3, 1, -1.0, "away"), -1.0)
+        self.assertAlmostEqual(_cover_result(0, 0, -1.0, "away"), 1.0)   # 主让一球 0-0，客队赢
+
+    def test_quarter_lines_return_half_results(self):
+        self.assertAlmostEqual(_cover_result(2, 1, -0.75, "home"), 0.5)
+        self.assertAlmostEqual(_cover_result(1, 1, -0.25, "home"), -0.5)
+        self.assertAlmostEqual(_cover_result(2, 1, -0.75, "away"), -0.5)
 
     def test_noPickIsNone(self):
         self.assertIsNone(_cover_result(3, 1, -1.0, ""))
@@ -125,7 +154,11 @@ class SaveAndReconcileTests(unittest.TestCase):
             summary = reconcile_ledger(
                 db, "26135", {"1": "3-1", "2": "3-1", "3": "2-1"}
             )
-            self.assertEqual(summary, {"rows": 3, "settled": 3, "hits": 1, "push": 1})
+            self.assertEqual(
+                summary,
+                _summary(rows=3, settled=3, wins=1, half_wins=0, push=1,
+                         half_losses=0, losses=1, units=0.0),
+            )
             self.assertEqual(top_picks(db, "26135", limit=1)[0]["final_score"], "3-1")
 
     def test_reconcileReadsScoresFromMovements(self):
@@ -144,14 +177,34 @@ class SaveAndReconcileTests(unittest.TestCase):
                 3,
             )
             summary = reconcile_ledger(db, "26135")
-        self.assertEqual(summary, {"rows": 3, "settled": 3, "hits": 1, "push": 1})
+        self.assertEqual(
+            summary,
+            _summary(rows=3, settled=3, wins=1, half_wins=0, push=1,
+                     half_losses=0, losses=1, units=0.0),
+        )
 
     def test_reconcileUnknownIssueIsEmpty(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(
                 reconcile_ledger(Path(tmp) / "t.sqlite", "99999"),
-                {"rows": 0, "settled": 0, "hits": 0, "push": 0},
+                _summary(rows=0, settled=0, wins=0, half_wins=0, push=0,
+                         half_losses=0, losses=0, units=0.0),
             )
+
+    def test_reconcile_counts_half_wins_and_half_losses(self):
+        items = [
+            _item("1", 0.5, -0.2, line=-0.75),
+            _item("2", 0.5, -0.2, line=-0.25),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "t.sqlite"
+            save_ev_ledger(db, items, "26135", 1)
+            summary = reconcile_ledger(db, "26135", {"1": "2-1", "2": "1-1"})
+        self.assertEqual(
+            summary,
+            _summary(rows=2, settled=2, wins=0, half_wins=1, push=0,
+                     half_losses=1, losses=0, units=0.0),
+        )
 
 
 class LedgerTrendTests(unittest.TestCase):
@@ -164,10 +217,22 @@ class LedgerTrendTests(unittest.TestCase):
             reconcile_ledger(db, "26136", {"1": "0-0"})
             trend = ledger_trend(db)
         self.assertEqual([row["issue"] for row in trend], ["26135", "26136"])
-        self.assertEqual(trend[0], {"issue": "26135", "rows": 2, "settled": 2,
-                                    "hits": 1, "push": 0})
-        self.assertEqual(trend[1], {"issue": "26136", "rows": 1, "settled": 1,
-                                    "hits": 0, "push": 0})
+        self.assertEqual(
+            trend[0],
+            {
+                **_summary(rows=2, settled=2, wins=1, half_wins=0, push=0,
+                           half_losses=0, losses=1, units=0.0),
+                "issue": "26135",
+            },
+        )
+        self.assertEqual(
+            trend[1],
+            {
+                **_summary(rows=1, settled=1, wins=0, half_wins=0, push=0,
+                           half_losses=0, losses=1, units=-1.0),
+                "issue": "26136",
+            },
+        )
 
 
 if __name__ == "__main__":

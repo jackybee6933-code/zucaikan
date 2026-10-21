@@ -14,6 +14,8 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
+from .settlement import settle_asian, summarize
+
 
 LEDGER_SCHEMA = """
 CREATE TABLE IF NOT EXISTS ev_ledger (
@@ -163,18 +165,14 @@ def _score_goals(score: str) -> tuple[int, int] | None:
     return home, away
 
 
-def _cover_result(home_goals: int, away_goals: int, line: float, picked_side: str) -> int | None:
-    """picked_side 视角的赢盘结果：1 赢、-1 输、0 走水。picked_side 为空时 None。"""
-    if not picked_side:
-        return None
-    # home_line 符号约定：负=主让，正=主受让，统一算 goal_diff + line
-    home_handicap = (home_goals - away_goals) + line
-    side_value = home_handicap if picked_side == "home" else -home_handicap
-    if side_value > 0:
-        return 1
-    if side_value < 0:
-        return -1
-    return 0
+def _cover_result(
+    home_goals: int,
+    away_goals: int,
+    line: float,
+    picked_side: str,
+) -> float | None:
+    """picked_side 视角的赢盘结果：1/0.5/0/-0.5/-1；空选边为 None。"""
+    return settle_asian(home_goals, away_goals, line, picked_side)
 
 
 def reconcile_ledger(
@@ -185,7 +183,7 @@ def reconcile_ledger(
     """对账：用 movement 表的 final_score 回填 ev_ledger 并统计命中率。
 
     scores 可直接传入（键为 match_no），不传则从 match_movements 取同一期的最终比分。
-    走水不计入命中率。返回 {'rows': n, 'settled': n, 'hits': n, 'push': n}。
+    走水不入分母，赢半算命中；返回五类结果、命中数与净结果单位。
     """
     conn = sqlite3.connect(Path(db_path))
     try:
@@ -194,7 +192,17 @@ def reconcile_ledger(
             "SELECT MAX(run_id) FROM ev_ledger WHERE issue = ?", (issue,)
         ).fetchone()[0]
         if run_id is None:
-            return {"rows": 0, "settled": 0, "hits": 0, "push": 0}
+            return {
+                "rows": 0,
+                "settled": 0,
+                "wins": 0,
+                "half_wins": 0,
+                "push": 0,
+                "half_losses": 0,
+                "losses": 0,
+                "hits": 0,
+                "units": 0.0,
+            }
 
         if scores is None:
             mv_run = conn.execute(
@@ -209,7 +217,7 @@ def reconcile_ledger(
                     if row[1]:
                         scores[str(row[0])] = str(row[1])
 
-        settled = hits = push = 0
+        results: list[float] = []
         for row in conn.execute(
             "SELECT id, match_no, asian_line, picked_side FROM ev_ledger WHERE run_id = ?",
             (run_id,),
@@ -222,23 +230,25 @@ def reconcile_ledger(
             result = _cover_result(goals[0], goals[1], line, picked)
             if result is None:
                 continue
-            settled += 1
-            if result == 1:
-                hits += 1
-            elif result == 0:
-                push += 1
+            results.append(result)
             conn.execute(
                 "UPDATE ev_ledger SET final_score = ? WHERE id = ?",
                 (score, ledger_id),
             )
         conn.commit()
+        stats = summarize(results)
         return {
             "rows": conn.execute(
                 "SELECT COUNT(*) FROM ev_ledger WHERE run_id = ?", (run_id,)
             ).fetchone()[0],
-            "settled": settled,
-            "hits": hits,
-            "push": push,
+            "settled": stats["bets"],
+            "wins": stats["wins"],
+            "half_wins": stats["half_wins"],
+            "push": stats["pushes"],
+            "half_losses": stats["half_losses"],
+            "losses": stats["losses"],
+            "hits": stats["hits"],
+            "units": stats["units"],
         }
     finally:
         conn.close()
@@ -297,7 +307,7 @@ def ledger_trend(db_path: str | Path) -> list[dict]:
                 for r in rows:
                     scores.setdefault(r["match_no"], r.get("final_score", ""))
 
-            settled = hits = push = 0
+            results: list[float] = []
             for r in rows:
                 goals = _score_goals(scores.get(r["match_no"], ""))
                 if goals is None:
@@ -305,16 +315,20 @@ def ledger_trend(db_path: str | Path) -> list[dict]:
                 result = _cover_result(goals[0], goals[1], r["asian_line"], r["picked_side"])
                 if result is None:
                     continue
-                settled += 1
-                hits += result == 1
-                push += result == 0
+                results.append(result)
+            stats = summarize(results)
             out.append(
                 {
                     "issue": issue,
                     "rows": len(rows),
-                    "settled": settled,
-                    "hits": hits,
-                    "push": push,
+                    "settled": stats["bets"],
+                    "wins": stats["wins"],
+                    "half_wins": stats["half_wins"],
+                    "push": stats["pushes"],
+                    "half_losses": stats["half_losses"],
+                    "losses": stats["losses"],
+                    "hits": stats["hits"],
+                    "units": stats["units"],
                 }
             )
         return out

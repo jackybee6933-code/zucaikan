@@ -70,7 +70,7 @@ class FixtureIdFallbackTests(unittest.TestCase):
         import football_analysis.llm as llm_mod
         import football_analysis.store as store_mod
 
-        p1 = mock.patch.object(odds_pages, "pages_age_hours", return_value=1.0)
+        p1 = mock.patch.object(odds_pages, "pages_kind_age_hours", return_value=1.0)
         p2 = mock.patch.object(odds_pages, "load_odds_pages_raw", return_value=raw)
         p3 = mock.patch.object(store_mod, "rebuild_analyses_from_db", return_value=analyses)
         p4 = mock.patch.object(llm_mod, "enrich_team_reads", side_effect=fake_enrich)
