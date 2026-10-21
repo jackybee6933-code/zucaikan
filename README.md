@@ -119,8 +119,8 @@ Windows runner 上中文资产名会被 GitHub Actions 处理成 `default.exe` �
 手动发版步骤：
 
 ```powershell
-git tag v1.3
-git push origin v1.3
+git tag v1.4
+git push origin v1.4
 ```
 
 发版前把版本号同步到目标版本，用 [tools/release.py](tools/release.py) 一键完成
