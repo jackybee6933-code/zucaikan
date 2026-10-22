@@ -128,7 +128,7 @@ git push origin v1.4
 （改版本号 + 残留检查 + 全量测试，可选 `--tag` 直接打 tag；提交与推送仍由你手动做）：
 
 ```powershell
-python tools/release.py 1.4            # 同步 1.4 + 残留检查 + 跑 387 项测试
+python tools/release.py 1.4            # 同步 1.4 + 残留检查 + 跑全量测试
 python tools/release.py 1.4 --tag      # 顺带打 v1.4 tag
 # 然后：git add -A; git commit -m "..." ; git push origin v1.4
 ```
