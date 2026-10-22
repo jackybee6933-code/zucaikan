@@ -52,6 +52,17 @@ def _stop_running_app(pid: int) -> None:
         pass
 
 
+def _install_updater_if_missing(zf: zipfile.ZipFile, root: Path) -> None:
+    """旧版中文更新器升级时，补出新版 updater.exe；已有则不覆盖正在运行的更新器。"""
+    target = root / "updater.exe"
+    if target.exists() or "updater.exe" not in zf.namelist():
+        return
+    staged = root / "updater.exe.new"
+    with zf.open("updater.exe") as src, staged.open("wb") as dst:
+        shutil.copyfileobj(src, dst)
+    staged.rename(target)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive", required=True)
@@ -74,6 +85,7 @@ def main() -> int:
             staged = target.with_name(target.name + ".new")
             with zf.open(name) as src, staged.open("wb") as dst:
                 shutil.copyfileobj(src, dst)
+            _install_updater_if_missing(zf, target.parent)
         if not _target_unlocked(target):
             raise TimeoutError("main app still running, cannot replace")
         backup = target.with_name(target.name + ".old")

@@ -7,7 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 VERSION = os.environ.get("VERSION", "").lstrip("v")
 APP = "足球胜负彩分析工具.exe"
-UPDATER = "足球更新器.exe"
+UPDATER = "updater.exe"
 # Release 资产名必须用 ASCII：GitHub Actions 在 Windows runner 上处理中文文件名会失败
 APP_ASSET = "football_analysis.exe"
 UPDATER_ASSET = "updater.exe"

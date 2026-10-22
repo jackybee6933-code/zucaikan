@@ -103,7 +103,7 @@ python -m PyInstaller --noconfirm "足球更新器.spec"
 
 发布源是 [jackybee6933-code/zucaikan](https://github.com/jackybee6933-code/zucaikan) 的 Releases：打 `v*` tag 推送后，
 [.github/workflows/release.yml](.github/workflows/release.yml) 在 Windows runner 上构建主程序与
-`足球更新器.exe`，把「主程序 + 更新器」合成 `dist/football_analysis_full.zip`，连同
+`updater.exe`，把「主程序 + 更新器」合成 `dist/football_analysis_full.zip`，连同
 `dist/latest.json`（版本 / 下载地址 / SHA-256）一起发布为 Release 资产。
 Release 资产统一用 ASCII 文件名（`football_analysis.exe` / `updater.exe` /
 `football_analysis_full.zip` / `latest.json`），压缩包内仍保留中文 exe 名；
@@ -113,7 +113,7 @@ Windows runner 上中文资产名会被 GitHub Actions 处理成 `default.exe` �
 
 - **检查更新**：`GET /update/check` 读 `latest.json` 比较版本号；
 - **一键升级**：`POST /update/install` 下载完整包并校验 SHA-256（失败不替换），
-  然后启动同目录的 `足球更新器.exe`：等主程序退出（exe 解锁）→ 从升级包取出新主程序替换
+  然后启动同目录的 `updater.exe`：等主程序退出（exe 解锁）→ 从升级包取出新主程序替换
   `足球胜负彩分析工具.exe` → 自动重启。`data/`、`cache/` 等本地数据不动。
 
 手动发版步骤：
@@ -137,7 +137,7 @@ python tools/release.py 1.4 --tag      # 顺带打 v1.4 tag
 
 版本号集中在 [football_analysis/__init__.py](football_analysis/__init__.py) 的 `__version__`。
 清单地址可用环境变量 `FA_UPDATE_MANIFEST_URL` 覆盖（默认指向该仓库 `releases/latest/download/latest.json`）。
-注意：完整包必须包含 `足球更新器.exe`（make_package.py / make_release.py 都已带），
+注意：完整包必须包含 `updater.exe`（make_package.py / make_release.py 都已带），
 否则 exe 内一键升级会提示手动解压新完整包。
 
 ## 归档

@@ -19,7 +19,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="足球更新器",
+    name="updater",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

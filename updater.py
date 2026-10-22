@@ -13,13 +13,14 @@ from pathlib import Path
 if __package__:
     from . import __version__
 else:
-    __version__ = "1.3.1"
+    __version__ = "1.3.2"
 
 DEFAULT_MANIFEST_URL = (
     "https://github.com/jackybee6933-code/zucaikan/releases/latest/download/latest.json"
 )
 APP_EXE_NAME = "足球胜负彩分析工具.exe"
-UPDATER_EXE_NAME = "足球更新器.exe"
+UPDATER_EXE_NAME = "updater.exe"
+LEGACY_UPDATER_EXE_NAME = "足球更新器.exe"
 
 
 class UpdateError(RuntimeError):
@@ -110,9 +111,13 @@ def install_downloaded(archive: Path, *, wait_seconds: int = 10) -> dict:
     target = root / APP_EXE_NAME
     if not target.is_file():
         raise UpdateError(f"未找到主程序：{target}")
-    updater = root / UPDATER_EXE_NAME
-    if not updater.is_file():
-        raise UpdateError("完整包缺少足球更新器.exe，请手动解压新完整包")
+    updater = next(
+        (root / name for name in (UPDATER_EXE_NAME, LEGACY_UPDATER_EXE_NAME)
+         if (root / name).is_file()),
+        None,
+    )
+    if updater is None:
+        raise UpdateError("完整包缺少 updater.exe，请手动解压新完整包")
     process = subprocess.Popen(
         [
             str(updater),

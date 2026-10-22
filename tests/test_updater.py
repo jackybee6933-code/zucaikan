@@ -79,6 +79,19 @@ class UpdaterTests(unittest.TestCase):
         self.assertIn("--restart", args)
         self.assertEqual(result["updater_pid"], 4321)
 
+    def test_install_downloaded_accepts_legacy_updater_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / updater.APP_EXE_NAME).write_bytes(b"app")
+            (root / updater.LEGACY_UPDATER_EXE_NAME).write_bytes(b"legacy")
+            archive = root / "package.zip"
+            archive.write_bytes(b"zip")
+            with mock.patch.object(updater, "app_root", return_value=root), \
+                    mock.patch("subprocess.Popen") as popen:
+                popen.return_value.pid = 4322
+                updater.install_downloaded(archive)
+        self.assertEqual(popen.call_args[0][0][0], str(root / updater.LEGACY_UPDATER_EXE_NAME))
+
     def test_installer_archive_contains_target_exe(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -87,6 +100,7 @@ class UpdaterTests(unittest.TestCase):
             target.write_bytes(b"old")
             with zipfile.ZipFile(archive, "w") as zf:
                 zf.writestr("足球胜负彩分析工具.exe", b"new")
+                zf.writestr("updater.exe", b"new updater")
             updater_script = Path(__file__).parents[1] / "update_installer.py"
             result = __import__("subprocess").run(
                 [__import__("sys").executable, str(updater_script),
@@ -96,6 +110,7 @@ class UpdaterTests(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(target.read_bytes(), b"new")
+            self.assertEqual((root / "updater.exe").read_bytes(), b"new updater")
 
 
 if __name__ == "__main__":
