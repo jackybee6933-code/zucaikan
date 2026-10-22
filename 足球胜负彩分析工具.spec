@@ -5,7 +5,7 @@ a = Analysis(
     ['run.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('tools/scrape_odds_pages.py', 'tools')],
     hiddenimports=['football_analysis.cdp', 'football_analysis.cdp_profile', 'updater'],
     hookspath=[],
     hooksconfig={},

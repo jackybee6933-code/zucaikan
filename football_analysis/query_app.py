@@ -4,6 +4,7 @@ import json
 import base64
 import binascii
 import socket
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -377,6 +378,11 @@ def _odds_scraper_script() -> Path:
     script = _app_root() / "tools" / "scrape_odds_pages.py"
     if script.is_file():
         return script
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        script = Path(meipass) / "tools" / "scrape_odds_pages.py"
+        if script.is_file():
+            return script
     return Path(__file__).resolve().parent.parent / "tools" / "scrape_odds_pages.py"
 
 
@@ -995,7 +1001,7 @@ def serve_query(
         print(f"无法监听 {host}:{port}，请检查端口是否被占用或更换端口。错误: {exc}")
         return
     url = f"http://{host}:{port}/"
-    print(f"足彩分析系统1.3.2 已启动：{url}")
+    print(f"足彩分析系统1.3.3 已启动：{url}")
     print(f"数据库：{db_path}")
     print("按 Ctrl+C 停止服务。")
     if open_browser:

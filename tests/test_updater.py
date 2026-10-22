@@ -101,6 +101,7 @@ class UpdaterTests(unittest.TestCase):
             with zipfile.ZipFile(archive, "w") as zf:
                 zf.writestr("足球胜负彩分析工具.exe", b"new")
                 zf.writestr("updater.exe", b"new updater")
+                zf.writestr("tools/scrape_odds_pages.py", b"new scraper")
             updater_script = Path(__file__).parents[1] / "update_installer.py"
             result = __import__("subprocess").run(
                 [__import__("sys").executable, str(updater_script),
@@ -111,6 +112,9 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(target.read_bytes(), b"new")
             self.assertEqual((root / "updater.exe").read_bytes(), b"new updater")
+            self.assertEqual(
+                (root / "tools" / "scrape_odds_pages.py").read_bytes(), b"new scraper"
+            )
 
 
 if __name__ == "__main__":

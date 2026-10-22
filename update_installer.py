@@ -63,6 +63,19 @@ def _install_updater_if_missing(zf: zipfile.ZipFile, root: Path) -> None:
     staged.rename(target)
 
 
+def _install_support_files(zf: zipfile.ZipFile, root: Path) -> None:
+    """Install runtime scripts required by the main executable."""
+    for name in ("tools/scrape_odds_pages.py",):
+        if name not in zf.namelist():
+            continue
+        target = root.joinpath(*name.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        staged = target.with_name(target.name + ".new")
+        with zf.open(name) as src, staged.open("wb") as dst:
+            shutil.copyfileobj(src, dst)
+        staged.replace(target)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--archive", required=True)
@@ -86,6 +99,7 @@ def main() -> int:
             with zf.open(name) as src, staged.open("wb") as dst:
                 shutil.copyfileobj(src, dst)
             _install_updater_if_missing(zf, target.parent)
+            _install_support_files(zf, target.parent)
         if not _target_unlocked(target):
             raise TimeoutError("main app still running, cannot replace")
         backup = target.with_name(target.name + ".old")

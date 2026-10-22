@@ -8,6 +8,7 @@ DIST = ROOT / "dist"
 VERSION = os.environ.get("VERSION", "").lstrip("v")
 APP = "足球胜负彩分析工具.exe"
 UPDATER = "updater.exe"
+SCRAPER = "tools/scrape_odds_pages.py"
 # Release 资产名必须用 ASCII：GitHub Actions 在 Windows runner 上处理中文文件名会失败
 APP_ASSET = "football_analysis.exe"
 UPDATER_ASSET = "updater.exe"
@@ -21,6 +22,11 @@ def main() -> None:
     stage.mkdir(parents=True)
     shutil.copy2(DIST / APP, stage / APP)
     shutil.copy2(DIST / UPDATER, stage / UPDATER)
+    scraper = ROOT / SCRAPER
+    if not scraper.is_file():
+        raise FileNotFoundError(f"release package requires {scraper}")
+    (stage / "tools").mkdir()
+    shutil.copy2(scraper, stage / SCRAPER)
     zip_path = DIST / PACKAGE_ASSET
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
         for path in sorted(stage.rglob("*")):

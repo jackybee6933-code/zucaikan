@@ -13,7 +13,7 @@ from pathlib import Path
 if __package__:
     from . import __version__
 else:
-    __version__ = "1.3.2"
+    __version__ = "1.3.3"
 
 DEFAULT_MANIFEST_URL = (
     "https://github.com/jackybee6933-code/zucaikan/releases/latest/download/latest.json"

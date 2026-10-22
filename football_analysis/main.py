@@ -650,6 +650,10 @@ def _run_refresh(args: argparse.Namespace) -> int:
 
     script = _app_root() / "tools" / "scrape_odds_pages.py"
     if not script.is_file():
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            script = Path(meipass) / "tools" / "scrape_odds_pages.py"
+    if not script.is_file():
         script = Path(__file__).resolve().parent.parent / "tools" / "scrape_odds_pages.py"
     if not script.is_file():
         print(f"找不到抓取脚本 {script}")
