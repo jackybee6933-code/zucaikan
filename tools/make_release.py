@@ -27,7 +27,8 @@ def main() -> None:
             if path.is_file():
                 zf.write(path, path.relative_to(stage).as_posix())
     shutil.copy2(DIST / APP, DIST / APP_ASSET)
-    shutil.copy2(DIST / UPDATER, DIST / UPDATER_ASSET)
+    if UPDATER != UPDATER_ASSET:
+        shutil.copy2(DIST / UPDATER, DIST / UPDATER_ASSET)
     shutil.rmtree(stage)
     print(f"{APP_ASSET}, {UPDATER_ASSET}, {PACKAGE_ASSET}")
 
