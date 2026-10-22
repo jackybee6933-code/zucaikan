@@ -374,6 +374,24 @@ _FETCH_BLOCK = \
       <symbol id="icon-list-checks" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="m3 7 2 2 4-4m-6 12 2 2 4-4M13 6h8M13 12h8M13 18h8"/>
       </symbol>
+      <symbol id="icon-plug" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22v-5M9 8V2M15 8V2M4 8h16"/>
+        <path d="M5 8v4a7 7 0 0 0 14 0V8"/>
+      </symbol>
+      <symbol id="icon-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 16V4m0 0L7 9m5-5 5 5M4 20h16"/>
+      </symbol>
+      <symbol id="icon-arrow-up-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="M12 16V8m0 0L8 12m4-4 4 4"/>
+      </symbol>
+      <symbol id="icon-check-circle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="m8 12 2.5 2.5L16 9"/>
+      </symbol>
+      <symbol id="icon-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m18 6-12 12M6 6l12 12"/>
+      </symbol>
       <symbol id="icon-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/>
         <path d="m19.4 15 .1.1a2 2 0 1 1-2.8 2.8l-.1-.1a2 2 0 0 0-3.4 1.4V19a2 2 0 1 1-4 0v-.2a2 2 0 0 0-3.4-1.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A2 2 0 0 0 3.6 11H3a2 2 0 1 1 0-4h.6a2 2 0 0 0 1.4-3.4l-.1-.1A2 2 0 1 1 7.7.7l.1.1A2 2 0 0 0 11.2 0H12a2 2 0 1 1 4 0v.6a2 2 0 0 0 3.4 1.4l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A2 2 0 0 0 20.8 8h.2a2 2 0 1 1 0 4h-.2a2 2 0 0 0-1.4 3.4Z"/>
@@ -546,7 +564,7 @@ _FETCH_BLOCK = \
       <form id="settings-form">
         <div class="settings-head">
           <strong>AI 模型设置</strong>
-          <button type="button" id="settings-close" class="icon-btn" title="关闭">×</button>
+          <button type="button" id="settings-close" class="icon-btn" title="关闭" aria-label="关闭"><svg class="settings-icon" aria-hidden="true"><use href="#icon-x"></use></svg></button>
         </div>
         <div class="settings-grid">
           <fieldset>
@@ -563,7 +581,7 @@ _FETCH_BLOCK = \
             <label class="settings-clear"><input id="settings-primary-clear" type="checkbox"> 清空已保存 Key</label>
             <div id="settings-primary-status" class="muted"></div>
             <div class="settings-test-row">
-              <button type="button" class="settings-test" data-name="primary">测试连接</button>
+              <button type="button" class="settings-test settings-button" data-name="primary"><svg class="settings-icon" aria-hidden="true"><use href="#icon-plug"></use></svg>测试连接</button>
               <span id="settings-primary-test-status" class="muted"></span>
             </div>
           </fieldset>
@@ -581,7 +599,7 @@ _FETCH_BLOCK = \
             <label class="settings-clear"><input id="settings-fallback-clear" type="checkbox"> 清空已保存 Key</label>
             <div id="settings-fallback-status" class="muted"></div>
             <div class="settings-test-row">
-              <button type="button" class="settings-test" data-name="fallback">测试连接</button>
+              <button type="button" class="settings-test settings-button" data-name="fallback"><svg class="settings-icon" aria-hidden="true"><use href="#icon-plug"></use></svg>测试连接</button>
               <span id="settings-fallback-test-status" class="muted"></span>
             </div>
           </fieldset>
@@ -591,8 +609,8 @@ _FETCH_BLOCK = \
           <strong>本地数据</strong>
           <span class="muted">备份包含 SQLite 和 AI 设置，不包含可再生成的缓存与报告。</span>
           <div class="settings-backup-actions">
-            <button type="button" id="backup-download">下载备份</button>
-            <label class="backup-restore-label">恢复备份
+            <button type="button" id="backup-download" class="settings-button"><svg class="settings-icon" aria-hidden="true"><use href="#icon-download"></use></svg>下载备份</button>
+            <label class="backup-restore-label settings-button"><svg class="settings-icon" aria-hidden="true"><use href="#icon-upload"></use></svg>恢复备份
               <input type="file" id="backup-file" accept=".zip,application/zip" hidden>
             </label>
           </div>
@@ -602,8 +620,8 @@ _FETCH_BLOCK = \
           <strong>软件升级</strong>
           <span class="muted">当前版本：v{_esc(__version__)}。升级包来自 GitHub Releases，下载后会校验 SHA-256。</span>
           <div class="settings-backup-actions">
-            <button type="button" id="update-check">检查更新</button>
-            <button type="button" id="update-install" disabled>一键升级</button>
+            <button type="button" id="update-check" class="settings-button"><svg class="settings-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>检查更新</button>
+            <button type="button" id="update-install" class="settings-button settings-button-primary" disabled><svg class="settings-icon" aria-hidden="true"><use href="#icon-arrow-up-circle"></use></svg>一键升级</button>
           </div>
           <div id="update-status" class="muted"></div>
           <div id="update-details" class="update-details" hidden>
@@ -614,8 +632,8 @@ _FETCH_BLOCK = \
           </div>
         </div>
         <div class="settings-actions">
-          <button type="button" id="settings-cancel">取消</button>
-          <button type="submit" id="settings-save">保存设置</button>
+          <button type="button" id="settings-cancel" class="settings-button"><svg class="settings-icon" aria-hidden="true"><use href="#icon-x"></use></svg>取消</button>
+          <button type="submit" id="settings-save" class="settings-button settings-button-primary"><svg class="settings-icon" aria-hidden="true"><use href="#icon-check-circle"></use></svg>保存设置</button>
         </div>
       </form>
     </dialog>
@@ -1458,7 +1476,7 @@ def render_query_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>足彩分析系统1.3.5</title>
+  <title>足彩分析系统1.3.6</title>
   <style>
     :root {{
       --canvas: #f3f5f7; --panel: #ffffff; --ink: #1d2733; --muted: #64748b;
@@ -1536,9 +1554,15 @@ def render_query_html(
 #settings-dialog::backdrop {{ background: rgba(15, 23, 42, .45); }}
 .settings-backup {{ margin: 14px 20px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 6px; }}
 .settings-backup-actions {{ display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }}
+.settings-button {{ display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); font-size: 13px; font-weight: 500; line-height: 1; text-decoration: none; white-space: nowrap; }}
+.settings-button:hover {{ background: #f8fafc; border-color: #94a3b8; }}
+.settings-button:disabled {{ background: #e2e8f0; color: #64748b; border-color: #cbd5e1; cursor: not-allowed; }}
+.settings-button-primary {{ background: var(--blue); color: #fff; border-color: var(--blue); }}
+.settings-button-primary:hover {{ background: var(--blue-dark); color: #fff; border-color: var(--blue-dark); }}
+.settings-icon {{ display: inline-block; flex: 0 0 15px; width: 15px; height: 15px; }}
 .update-details {{ display: grid; gap: 5px; overflow-wrap: anywhere; }}
 .update-details a {{ width: fit-content; }}
-.backup-restore-label {{ display: inline-flex; align-items: center; cursor: pointer; }}
+.backup-restore-label {{ flex-direction: row; cursor: pointer; }}
 #settings-form {{ display: block; margin: 0; padding: 18px; background: transparent; border: 0; }}
 .settings-head {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }}
 .settings-head strong {{ font-size: 17px; }}
@@ -1551,7 +1575,7 @@ def render_query_html(
 .settings-clear input {{ margin: 0; }}
 .settings-grid .muted {{ margin-top: 7px; font-size: 12px; }}
 .settings-test-row {{ display: flex; align-items: center; gap: 8px; margin-top: 10px; min-height: 28px; }}
-.settings-test {{ padding: 5px 9px; font-size: 12px; }}
+.settings-test {{ min-height: 28px; padding: 5px 9px; font-size: 12px; }}
 .settings-test-status {{ margin-top: 0 !important; }}
 .settings-test-status.ok {{ color: var(--green); }}
 .settings-test-status.fail {{ color: var(--red); }}
@@ -1592,7 +1616,8 @@ def render_query_html(
 #bet-form {{ display: block; margin: 0; padding: 16px; background: transparent; border: 0; }}
 .bet-dialog-head {{ display: flex; gap: 12px; justify-content: space-between; align-items: flex-start; margin-bottom: 10px; }}
 .bet-dialog-head strong {{ display: block; font-size: 16px; margin-bottom: 4px; }}
-.icon-btn {{ padding: 2px 8px; background: transparent; color: var(--ink); border-color: transparent; font-size: 20px; line-height: 1; }}
+.icon-btn {{ display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; background: transparent; color: var(--muted); border-color: transparent; }}
+.icon-btn:hover {{ background: #f1f5f9; color: var(--ink); }}
 .bet-existing {{ margin-bottom: 10px; padding: 8px 10px; background: #f8fafc; border: 1px solid var(--line); border-radius: 6px; }}
 .bet-existing-title {{ margin-bottom: 5px; font-size: 12px; font-weight: 600; color: var(--muted); }}
 .bet-existing-row {{ display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; padding: 3px 0; font-size: 12px; }}
@@ -1646,7 +1671,7 @@ def render_query_html(
 </head>
 <body>
   <div class="page">
-    <h1>足彩分析系统1.3.5</h1>
+    <h1>足彩分析系统1.3.6</h1>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}　上盘=让球方，下盘=受让方；上盘让球增加为升盘，减少为降盘。</div>
     {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
     {f'<div class="meta">{bet_chip}</div>' if bet_chip else ''}
@@ -1699,6 +1724,8 @@ def render_query_html(
         const v = sel ? sel.value : "";
         const file = v ? (reports[v] || null) : null;
         btn.disabled = !file;
+        btn.classList.toggle("action-primary", Boolean(file));
+        btn.classList.toggle("action-neutral", !file);
         if (rbtn) rbtn.disabled = !v;
         if (file) {{
           btn.dataset.report = file;

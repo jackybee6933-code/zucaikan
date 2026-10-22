@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 VERSION = os.environ.get("VERSION", "").lstrip("v")
-APP = "足球胜负彩分析工具.exe"
+APP = "football_analysis.exe"
 UPDATER = "updater.exe"
 SCRAPER = "tools/scrape_odds_pages.py"
 # Release 资产名必须用 ASCII：GitHub Actions 在 Windows runner 上处理中文文件名会失败
@@ -32,7 +32,8 @@ def main() -> None:
         for path in sorted(stage.rglob("*")):
             if path.is_file():
                 zf.write(path, path.relative_to(stage).as_posix())
-    shutil.copy2(DIST / APP, DIST / APP_ASSET)
+    if APP != APP_ASSET:
+        shutil.copy2(DIST / APP, DIST / APP_ASSET)
     if UPDATER != UPDATER_ASSET:
         shutil.copy2(DIST / UPDATER, DIST / UPDATER_ASSET)
     shutil.rmtree(stage)

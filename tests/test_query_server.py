@@ -121,16 +121,19 @@ class QueryServerTests(unittest.TestCase):
     def test_root_serves_query_page(self):
         status, body = _get(self.base + "/")
         self.assertEqual(status, 200)
-        self.assertIn("足彩分析系统1.3.5", body)
+        self.assertIn("足彩分析系统1.3.6", body)
         self.assertIn(">更新比分</button>", body)
         self.assertIn("data-freshness", body)
         self.assertIn("选择期号后查看", body)
+        self.assertIn('"26135": "issue_26135_20260101_000000.html"', body)
+        self.assertIn('btn.classList.toggle("action-primary", Boolean(file));', body)
+        self.assertIn('btn.classList.toggle("action-neutral", !file);', body)
 
     def test_unknown_get_path_falls_back_to_query_page(self):
         """do_GET 没有 404 兜底，未知路径按单页应用方式回落到查询页。"""
         status, body = _get(self.base + "/nope")
         self.assertEqual(status, 200)
-        self.assertIn("足彩分析系统1.3.5", body)
+        self.assertIn("足彩分析系统1.3.6", body)
 
     def test_root_defaults_to_latest_issue_when_default_issue_given(self):
         """根页（无 query 参数）+ default_issue：只列当前期比赛、下拉框预选；?issue=（空）走全部期号分支。"""
@@ -308,6 +311,10 @@ class QueryServerTests(unittest.TestCase):
         self.assertIn('id="update-details"', body)
         self.assertIn('id="update-release"', body)
         self.assertIn("window.confirm", body)
+        self.assertIn('use href="#icon-plug"', body)
+        self.assertIn('use href="#icon-download"', body)
+        self.assertIn('use href="#icon-arrow-up-circle"', body)
+        self.assertIn('id="settings-save" class="settings-button settings-button-primary"', body)
         self.assertNotIn('name="attention"', body)
         self.assertNotIn('name="latest"', body)
 

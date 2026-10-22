@@ -7,7 +7,7 @@ from datetime import date
 ROOT = Path(__file__).resolve().parent
 STAGE = ROOT / "build" / "pkg"
 ZIP = ROOT / "dist" / f"足彩分析工具_完整包_{date.today():%Y%m%d}.zip"
-EXE = "足球胜负彩分析工具.exe"
+EXE = "football_analysis.exe"
 UPDATER = "updater.exe"
 
 

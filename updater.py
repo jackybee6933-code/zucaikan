@@ -16,14 +16,14 @@ from pathlib import Path
 if __package__:
     from . import __version__
 else:
-    __version__ = "1.3.5"
+    __version__ = "1.3.6"
 
 DEFAULT_MANIFEST_URL = (
     "https://github.com/jackybee6933-code/zucaikan/releases/latest/download/latest.json"
 )
 UPDATE_CACHE_FILENAME = ".update_manifest.json"
 RELEASES_BASE_URL = "https://github.com/jackybee6933-code/zucaikan/releases/tag/v"
-APP_EXE_NAME = "足球胜负彩分析工具.exe"
+APP_EXE_NAME = "football_analysis.exe"
 UPDATER_EXE_NAME = "updater.exe"
 LEGACY_UPDATER_EXE_NAME = "足球更新器.exe"
 

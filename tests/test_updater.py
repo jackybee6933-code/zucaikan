@@ -125,10 +125,10 @@ class UpdaterTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             archive = root / "package.zip"
-            target = root / "足球胜负彩分析工具.exe"
+            target = root / updater.APP_EXE_NAME
             target.write_bytes(b"old")
             with zipfile.ZipFile(archive, "w") as zf:
-                zf.writestr("足球胜负彩分析工具.exe", b"new")
+                zf.writestr(updater.APP_EXE_NAME, b"new")
                 zf.writestr("updater.exe", b"new updater")
                 zf.writestr("tools/scrape_odds_pages.py", b"new scraper")
             updater_script = Path(__file__).parents[1] / "update_installer.py"

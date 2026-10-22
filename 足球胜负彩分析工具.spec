@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='足球胜负彩分析工具',
+    name='football_analysis',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

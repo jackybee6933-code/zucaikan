@@ -79,14 +79,14 @@ python run.py backup --restore --file data/backups/backup_YYYYMMDD_HHMMSS.zip
 
 ## 独立版 exe
 
-已打包的 Windows 单文件程序位于 `dist/足球胜负彩分析工具.exe`，不依赖本机 Python。放到任意可写目录后双击运行，程序会抓取最新一期、入库，并在同目录的 `cache/` 保存可复用抓取缓存、在 `reports/` 生成报告，随后起动异动查询服务并打开浏览器（关闭窗口或 Ctrl+C 停止）。
+已打包的 Windows 单文件程序位于 `dist/football_analysis.exe`，不依赖本机 Python。放到任意可写目录后双击运行，程序会抓取最新一期、入库，并在同目录的 `cache/` 保存可复用抓取缓存、在 `reports/` 生成报告，随后起动异动查询服务并打开浏览器（关闭窗口或 Ctrl+C 停止）。
 
 命令行缺省自动抓取最新一期；也可指定缓存目录或历史期号：
 
 ```powershell
-.\dist\足球胜负彩分析工具.exe            # 默认：抓最新一期 → 入库 → 起异动查询服务 → 打开查询页
+.\dist\football_analysis.exe              # 默认：抓最新一期 → 入库 → 起异动查询服务 → 打开查询页
 
-.\dist\足球胜负彩分析工具.exe analyze --cache-dir .\cache --no-open   # 只分析，不起服务、不开浏览器
+.\dist\football_analysis.exe analyze --cache-dir .\cache --no-open     # 只分析，不起服务、不开浏览器
 ```
 
 重新打包：
@@ -114,7 +114,7 @@ Windows runner 上中文资产名会被 GitHub Actions 处理成 `default.exe` �
 - **检查更新**：`GET /update/check` 读 `latest.json` 比较版本号；
 - **一键升级**：`POST /update/install` 下载完整包并校验 SHA-256（失败不替换），
   然后启动同目录的 `updater.exe`：等主程序退出（exe 解锁）→ 从升级包取出新主程序替换
-  `足球胜负彩分析工具.exe` → 自动重启。`data/`、`cache/` 等本地数据不动。
+  `football_analysis.exe` → 自动重启。`data/`、`cache/` 等本地数据不动。
 
 手动发版步骤：
 
@@ -142,7 +142,7 @@ python tools/release.py 1.4 --tag      # 顺带打 v1.4 tag
 
 ## 归档
 
-原型收尾状态、验证基线和交接边界见 `docs/归档说明.md`。正式归档包位于 `archives/football-analysis-mvp-20260910-r6.zip`，包含源码、测试、文档、独立 exe 和一份示例报告，不包含缓存与构建临时文件。归档包解压后，exe 在顶层 `football-analysis-mvp/足球胜负彩分析工具.exe`；`dist/` 只存在于当前源码树，不在归档包内。
+原型收尾状态、验证基线和交接边界见 `docs/归档说明.md`。正式归档包位于 `archives/football-analysis-mvp-20260910-r6.zip`，包含源码、测试、文档、独立 exe 和一份示例报告，不包含缓存与构建临时文件。归档包解压后，exe 在顶层 `football-analysis-mvp/football_analysis.exe`；`dist/` 只存在于当前源码树，不在归档包内。
 ## 目录结构
 
 ```text
