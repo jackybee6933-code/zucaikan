@@ -474,6 +474,47 @@ def rebuild_analyses_from_db(db_path: str | Path, issue: str) -> list[dict]:
 def load_issue_snapshot(db_path: str | Path, issue: str) -> list[dict]:
     """Read the full analysis snapshot for one issue from the DB."""
     return rebuild_analyses_from_db(db_path, issue)
+
+
+def load_issue_scores(db_path: str | Path, issue: str) -> dict[str, str]:
+    """Return known scores for an issue, ignoring all-0-0 cached runs."""
+    conn = connect(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT run_id, match_no, final_score
+            FROM match_movements
+            WHERE issue = ? AND final_score != ''
+            ORDER BY run_id DESC
+            """,
+            (issue,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    by_run: dict[int, dict[str, str]] = {}
+    for row in rows:
+        by_run.setdefault(int(row["run_id"]), {})[str(row["match_no"])] = str(
+            row["final_score"]
+        ).strip()
+
+    scores: dict[str, str] = {}
+    for run_scores in by_run.values():
+        all_zero = len(run_scores) > 1 and all(
+            score.replace(" ", "") == "0-0" for score in run_scores.values()
+        )
+        if all_zero:
+            continue
+        for match_no, score in run_scores.items():
+            scores.setdefault(match_no, score)
+
+    if not scores:
+        for run_scores in by_run.values():
+            for match_no, score in run_scores.items():
+                scores.setdefault(match_no, score)
+    return scores
+
+
 def update_match_scores(
     db_path: str | Path,
     issue: str,

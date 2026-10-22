@@ -20,7 +20,13 @@ from .query_report import render_query_html
 from .settlement import profit_units, settle_asian, settle_total, summarize
 from .store import list_leagues
 from .report import print_console, write_report_files
-from .store import default_db_path, list_issues, query_movements, save_issue_movements
+from .store import (
+    default_db_path,
+    list_issues,
+    load_issue_scores,
+    query_movements,
+    save_issue_movements,
+)
 from .store import update_match_scores
 
 # 查询页默认端口；analyze→serve 的组合流程没有 query 子命令的 Namespace 可取，直接用这个常量。
@@ -172,7 +178,12 @@ def _backfill_previous_issue(cache_dir: Path | None, db_path: Path, fetcher: Fet
         return
     print(f"回填上期 {prev_issue} 比分（使用缓存）...")
     try:
+        known_scores = load_issue_scores(db_path, prev_issue)
         analyses, prev_issue_out, _ = analyze_issue(prev_issue, fetcher=fetcher, max_workers=workers)
+        for item in analyses:
+            known = known_scores.get(str(item.get("match_no") or ""))
+            if known:
+                item["final_score"] = known
         saved = save_issue_movements(db_path, analyses, prev_issue_out, "")
         print(f"  上期 DB 更新：run_id={saved['run_id']}  异动={saved['attention_count']}/{saved['match_count']}")
     except Exception as exc:  # noqa: BLE001
