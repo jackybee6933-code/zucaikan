@@ -600,12 +600,18 @@ _FETCH_BLOCK = \
         </div>
         <div class="settings-backup">
           <strong>软件升级</strong>
-          <span class="muted">当前版本：{_esc(__version__)}。升级包来自 GitHub Releases，下载后会校验 SHA-256。</span>
+          <span class="muted">当前版本：v{_esc(__version__)}。升级包来自 GitHub Releases，下载后会校验 SHA-256。</span>
           <div class="settings-backup-actions">
             <button type="button" id="update-check">检查更新</button>
             <button type="button" id="update-install" disabled>一键升级</button>
           </div>
           <div id="update-status" class="muted"></div>
+          <div id="update-details" class="update-details" hidden>
+            <div id="update-versions"></div>
+            <div id="update-notes"></div>
+            <div id="update-diagnostics" class="muted"></div>
+            <a id="update-release" href="https://github.com/jackybee6933-code/zucaikan/releases" target="_blank" rel="noopener">打开 GitHub Releases</a>
+          </div>
         </div>
         <div class="settings-actions">
           <button type="button" id="settings-cancel">取消</button>
@@ -707,29 +713,67 @@ _FETCH_BLOCK = \
       const backupStatus = document.getElementById("backup-status");
       const updateStatus = document.getElementById("update-status");
       const updateInstall = document.getElementById("update-install");
+      const updateCheck = document.getElementById("update-check");
+      const updateDetails = document.getElementById("update-details");
+      const updateVersions = document.getElementById("update-versions");
+      const updateNotes = document.getElementById("update-notes");
+      const updateDiagnostics = document.getElementById("update-diagnostics");
+      const updateRelease = document.getElementById("update-release");
       let updateInfo = null;
-      document.getElementById("update-check").addEventListener("click", async function () {
-        this.disabled = true;
-        updateStatus.textContent = "正在检查更新...";
+      async function checkForUpdate() {
+        updateCheck.disabled = true;
+        updateInstall.disabled = true;
+        updateStatus.textContent = "正在检查更新清单...";
+        updateDetails.hidden = true;
         try {
           const response = await fetch("/update/check");
           const data = await response.json();
-          if (!response.ok) throw new Error(data.error || "检查更新失败");
+          if (!response.ok) {
+            updateStatus.textContent = (data.error || "检查更新失败") +
+              "。可检查网络/代理后重试，或打开 GitHub Releases 手动查看。";
+            updateDiagnostics.textContent = "清单：" + (data.manifest_url || "未取得") +
+              "；耗时 " + (data.elapsed_ms || 0) + " ms";
+            updateDetails.hidden = false;
+            updateRelease.href = "https://github.com/jackybee6933-code/zucaikan/releases";
+            return;
+          }
           updateInfo = data;
-          updateStatus.textContent = data.update_available
-            ? `发现新版本 ${data.latest_version}`
-            : `当前已是最新版本 ${data.current_version}`;
-          updateInstall.disabled = !data.update_available;
+          const offline = Boolean(data.cached);
+          updateStatus.textContent = offline
+            ? `GitHub 暂不可达，以下为缓存清单（${data.checked_at || "时间未知"}），仅供查看。`
+            : data.update_available
+              ? `发现新版本 v${data.latest_version}`
+              : `当前已是最新版本 v${data.current_version}`;
+          updateVersions.textContent =
+            `当前版本：v${data.current_version}　最新版本：v${data.latest_version}`;
+          updateNotes.textContent = data.notes ? "更新说明：" + data.notes : "暂无更新说明";
+          updateDiagnostics.textContent =
+            `清单：${data.manifest_url || "未知"}；检查耗时 ${data.elapsed_ms || 0} ms` +
+            (offline ? "；离线缓存" : "");
+          const releaseUrl = String(data.release_url || "");
+          updateRelease.href = releaseUrl.indexOf("https://github.com/jackybee6933-code/zucaikan/releases/") === 0
+            ? releaseUrl
+            : "https://github.com/jackybee6933-code/zucaikan/releases";
+          updateRelease.textContent = `打开 v${data.latest_version} 发布页`;
+          updateDetails.hidden = false;
+          updateInstall.disabled = !data.update_available || offline;
         } catch (e) {
-          updateStatus.textContent = e.message || String(e);
+          updateStatus.textContent = e instanceof TypeError
+            ? "无法连接本地更新服务，请刷新页面后重试。"
+            : (e.message || String(e)) + "。可重试或打开 GitHub Releases。";
+          updateRelease.href = "https://github.com/jackybee6933-code/zucaikan/releases";
+          updateDetails.hidden = false;
         } finally {
-          this.disabled = false;
+          updateCheck.disabled = false;
         }
-      });
+      }
+      updateCheck.addEventListener("click", checkForUpdate);
       updateInstall.addEventListener("click", async function () {
         if (!updateInfo?.update_available) return;
+        const targetVersion = `v${updateInfo.latest_version}`;
+        if (!window.confirm(`将下载并安装 ${targetVersion}，校验通过后会关闭并重启程序。是否继续？`)) return;
         this.disabled = true;
-        updateStatus.textContent = "正在下载并校验升级包...";
+        updateStatus.textContent = `正在下载并校验 ${targetVersion}，请保持程序运行...`;
         try {
           const response = await fetch("/update/install", {method: "POST"});
           const data = await response.json();
@@ -1147,7 +1191,9 @@ def render_query_html(
     bets = bets or []
     bet_stats = bet_stats or summarize_bets(bets)
     bet_trend = bet_trend or []
-    fetch_block = _FETCH_BLOCK
+    fetch_block = _FETCH_BLOCK.replace(
+        "{_esc(__version__)}", _esc(__version__)
+    )
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     freshness = _data_freshness(
         rows,
@@ -1412,7 +1458,7 @@ def render_query_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>足彩分析系统1.3.3</title>
+  <title>足彩分析系统1.3.5</title>
   <style>
     :root {{
       --canvas: #f3f5f7; --panel: #ffffff; --ink: #1d2733; --muted: #64748b;
@@ -1490,6 +1536,8 @@ def render_query_html(
 #settings-dialog::backdrop {{ background: rgba(15, 23, 42, .45); }}
 .settings-backup {{ margin: 14px 20px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 6px; }}
 .settings-backup-actions {{ display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }}
+.update-details {{ display: grid; gap: 5px; overflow-wrap: anywhere; }}
+.update-details a {{ width: fit-content; }}
 .backup-restore-label {{ display: inline-flex; align-items: center; cursor: pointer; }}
 #settings-form {{ display: block; margin: 0; padding: 18px; background: transparent; border: 0; }}
 .settings-head {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }}
@@ -1598,7 +1646,7 @@ def render_query_html(
 </head>
 <body>
   <div class="page">
-    <h1>足彩分析系统1.3.3</h1>
+    <h1>足彩分析系统1.3.5</h1>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}　上盘=让球方，下盘=受让方；上盘让球增加为升盘，减少为降盘。</div>
     {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
     {f'<div class="meta">{bet_chip}</div>' if bet_chip else ''}

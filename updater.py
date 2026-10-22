@@ -7,17 +7,22 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 if __package__:
     from . import __version__
 else:
-    __version__ = "1.3.3"
+    __version__ = "1.3.5"
 
 DEFAULT_MANIFEST_URL = (
     "https://github.com/jackybee6933-code/zucaikan/releases/latest/download/latest.json"
 )
+UPDATE_CACHE_FILENAME = ".update_manifest.json"
+RELEASES_BASE_URL = "https://github.com/jackybee6933-code/zucaikan/releases/tag/v"
 APP_EXE_NAME = "足球胜负彩分析工具.exe"
 UPDATER_EXE_NAME = "updater.exe"
 LEGACY_UPDATER_EXE_NAME = "足球更新器.exe"
@@ -31,11 +36,15 @@ def _manifest_url() -> str:
     return os.environ.get("FA_UPDATE_MANIFEST_URL", DEFAULT_MANIFEST_URL)
 
 
-def _http_json(url: str, *, timeout: float = 10.0) -> dict:
+def _http_json(url: str, *, timeout: float = 20.0) -> dict:
     request = urllib.request.Request(url, headers={"User-Agent": "football-analysis-updater"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise UpdateError("访问 GitHub 更新清单超时，请检查网络或代理（如 Clash）后重试") from exc
+        raise UpdateError(f"无法读取更新清单：{exc}") from exc
     except Exception as exc:
         raise UpdateError(f"无法读取更新清单：{exc}") from exc
     if not isinstance(payload, dict):
@@ -43,15 +52,16 @@ def _http_json(url: str, *, timeout: float = 10.0) -> dict:
     return payload
 
 
-def _version_tuple(value: str) -> tuple[int, ...]:
-    try:
-        return tuple(int(part) for part in str(value).strip().lstrip("vV").split("."))
-    except ValueError as exc:
-        raise UpdateError(f"版本号无效：{value}") from exc
+def _cache_path() -> Path:
+    return app_root() / "cache" / UPDATE_CACHE_FILENAME
 
 
-def check_update(manifest_url: str | None = None, *, current_version: str = __version__) -> dict:
-    data = _http_json(manifest_url or _manifest_url())
+def _release_url(version: str, data: dict) -> str:
+    value = str(data.get("release_url") or data.get("html_url") or "").strip()
+    return value or f"{RELEASES_BASE_URL}{version.lstrip('vV')}"
+
+
+def _validated_info(data: dict, *, current_version: str) -> dict:
     version = str(data.get("version", "")).strip()
     url = str(data.get("url", "")).strip()
     sha256 = str(data.get("sha256", "")).strip().lower()
@@ -66,7 +76,62 @@ def check_update(manifest_url: str | None = None, *, current_version: str = __ve
         "url": url,
         "sha256": sha256,
         "notes": str(data.get("notes", "")),
+        "release_url": _release_url(version, data),
     }
+
+
+def _save_cache(data: dict, *, manifest_url: str, checked_at: str) -> None:
+    payload = dict(data)
+    payload["_manifest_url"] = manifest_url
+    payload["_checked_at"] = checked_at
+    path = _cache_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix(path.suffix + ".tmp")
+        temp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        os.replace(temp, path)
+    except OSError:
+        # 更新缓存只是诊断和离线兜底，不能阻断正常升级。
+        pass
+
+
+def load_cached_update(*, current_version: str = __version__) -> dict:
+    path = _cache_path()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UpdateError("本地没有可用的更新清单缓存") from exc
+    info = _validated_info(payload, current_version=current_version)
+    info.update({
+        "cached": True,
+        "checked_at": str(payload.get("_checked_at") or "").strip(),
+        "manifest_url": str(payload.get("_manifest_url") or _manifest_url()),
+        "elapsed_ms": 0,
+    })
+    return info
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in str(value).strip().lstrip("vV").split("."))
+    except ValueError as exc:
+        raise UpdateError(f"版本号无效：{value}") from exc
+
+
+def check_update(manifest_url: str | None = None, *, current_version: str = __version__) -> dict:
+    target = manifest_url or _manifest_url()
+    started = time.monotonic()
+    data = _http_json(target)
+    checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    info = _validated_info(data, current_version=current_version)
+    info.update({
+        "cached": False,
+        "checked_at": checked_at,
+        "manifest_url": target,
+        "elapsed_ms": max(0, round((time.monotonic() - started) * 1000)),
+    })
+    _save_cache(data, manifest_url=target, checked_at=checked_at)
+    return info
 
 
 def _sha256(path: Path) -> str:

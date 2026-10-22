@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+import urllib.error
 import zipfile
 from pathlib import Path
 from unittest import mock
@@ -17,6 +18,12 @@ _SPEC.loader.exec_module(updater)
 
 
 class UpdaterTests(unittest.TestCase):
+    def test_manifest_timeout_has_network_guidance(self):
+        error = urllib.error.URLError(TimeoutError("timed out"))
+        with mock.patch("urllib.request.urlopen", side_effect=error):
+            with self.assertRaisesRegex(updater.UpdateError, "检查网络或代理"):
+                updater._http_json("https://example.test/latest.json")
+
     def test_check_update_compares_versions(self):
         payload = {
             "version": "1.3",
@@ -31,6 +38,28 @@ class UpdaterTests(unittest.TestCase):
 
         with mock.patch.object(updater, "_http_json", return_value={**payload, "version": "1.2"}):
             self.assertFalse(updater.check_update(current_version="1.2")["update_available"])
+
+    def test_check_update_reports_diagnostics_and_caches_manifest(self):
+        payload = {
+            "version": "1.4",
+            "url": "https://example.test/package.zip",
+            "sha256": "b" * 64,
+            "notes": "Fixes",
+        }
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(updater, "_cache_path", return_value=Path(tmp) / "cache" / "manifest.json"), \
+                mock.patch.object(updater, "_http_json", return_value=payload):
+            result = updater.check_update(
+                "https://example.test/latest.json", current_version="1.3"
+            )
+            cached = updater.load_cached_update(current_version="1.3")
+        self.assertEqual(result["manifest_url"], "https://example.test/latest.json")
+        self.assertGreaterEqual(result["elapsed_ms"], 0)
+        self.assertFalse(result["cached"])
+        self.assertTrue(result["release_url"].endswith("/v1.4"))
+        self.assertTrue(cached["cached"])
+        self.assertEqual(cached["latest_version"], "1.4")
+        self.assertEqual(cached["notes"], "Fixes")
 
     def test_check_update_rejects_invalid_manifest(self):
         with mock.patch.object(updater, "_http_json", return_value={"version": "1.3"}):

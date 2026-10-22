@@ -619,11 +619,25 @@ def serve_query(
                     self._json(500, {"error": f"备份失败：{exc}"})
                 return
             if parsed.path == "/update/check":
+                _updater = _load_updater()
+                started = time.monotonic()
                 try:
-                    _updater = _load_updater()
-                    self._json(200, _updater.check_update())
+                    info = _updater.check_update()
+                    self._json(200, info)
                 except _updater.UpdateError as exc:
-                    self._json(502, {"error": str(exc)})
+                    elapsed_ms = max(0, round((time.monotonic() - started) * 1000))
+                    try:
+                        cached = _updater.load_cached_update()
+                    except _updater.UpdateError:
+                        self._json(502, {
+                            "error": str(exc),
+                            "manifest_url": _updater._manifest_url(),
+                            "elapsed_ms": elapsed_ms,
+                        })
+                    else:
+                        cached["offline_error"] = str(exc)
+                        cached["elapsed_ms"] = elapsed_ms
+                        self._json(200, cached)
                 return
             if parsed.path == "/bets":
                 params = parse_qs(parsed.query)
@@ -1001,7 +1015,7 @@ def serve_query(
         print(f"无法监听 {host}:{port}，请检查端口是否被占用或更换端口。错误: {exc}")
         return
     url = f"http://{host}:{port}/"
-    print(f"足彩分析系统1.3.3 已启动：{url}")
+    print(f"足彩分析系统1.3.5 已启动：{url}")
     print(f"数据库：{db_path}")
     print("按 Ctrl+C 停止服务。")
     if open_browser:

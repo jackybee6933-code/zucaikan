@@ -15,6 +15,8 @@ import urllib.request
 from pathlib import Path
 from unittest import mock
 
+import updater
+from football_analysis import __version__
 from football_analysis.query_app import serve_query
 from football_analysis.store import save_issue_movements
 
@@ -119,7 +121,7 @@ class QueryServerTests(unittest.TestCase):
     def test_root_serves_query_page(self):
         status, body = _get(self.base + "/")
         self.assertEqual(status, 200)
-        self.assertIn("足彩分析系统1.3.3", body)
+        self.assertIn("足彩分析系统1.3.5", body)
         self.assertIn(">更新比分</button>", body)
         self.assertIn("data-freshness", body)
         self.assertIn("选择期号后查看", body)
@@ -128,7 +130,7 @@ class QueryServerTests(unittest.TestCase):
         """do_GET 没有 404 兜底，未知路径按单页应用方式回落到查询页。"""
         status, body = _get(self.base + "/nope")
         self.assertEqual(status, 200)
-        self.assertIn("足彩分析系统1.3.3", body)
+        self.assertIn("足彩分析系统1.3.5", body)
 
     def test_root_defaults_to_latest_issue_when_default_issue_given(self):
         """根页（无 query 参数）+ default_issue：只列当前期比赛、下拉框预选；?issue=（空）走全部期号分支。"""
@@ -297,11 +299,40 @@ class QueryServerTests(unittest.TestCase):
         self.assertIn('history.scrollRestoration = "manual"', body)
         self.assertIn('id="settings-btn"', body)
         self.assertIn("settings-dialog", body)
+        self.assertIn(f"当前版本：v{__version__}", body)
+        self.assertNotIn("{_esc(__version__)}", body)
+        self.assertIn("无法连接本地更新服务，请刷新页面后重试。", body)
         self.assertIn('data-name="primary"', body)
         self.assertIn('data-name="fallback"', body)
         self.assertIn("/settings/test", body)
+        self.assertIn('id="update-details"', body)
+        self.assertIn('id="update-release"', body)
+        self.assertIn("window.confirm", body)
         self.assertNotIn('name="attention"', body)
         self.assertNotIn('name="latest"', body)
+
+    def test_update_check_falls_back_to_last_manifest_cache(self):
+        payload = {
+            "version": "9.9",
+            "url": "https://example.test/package.zip",
+            "sha256": "a" * 64,
+            "notes": "cached notes",
+        }
+        with tempfile.TemporaryDirectory() as tmp, \
+                mock.patch.object(updater, "_cache_path", return_value=Path(tmp) / "cache.json"), \
+                mock.patch.object(updater, "_http_json", return_value=payload):
+            updater.check_update("https://example.test/latest.json", current_version="1.0")
+            with mock.patch("football_analysis.query_app._load_updater", return_value=updater), \
+                    mock.patch.object(
+                        updater, "_http_json",
+                        side_effect=updater.UpdateError("GitHub timeout"),
+                    ):
+                status, body = _get(self.base + "/update/check")
+        result = json.loads(body)
+        self.assertEqual(status, 200)
+        self.assertTrue(result["cached"])
+        self.assertIn("GitHub timeout", result["offline_error"])
+        self.assertEqual(result["latest_version"], "9.9")
 
     def test_settings_endpoint_masks_api_keys_and_saves_endpoints(self):
         status, body = _get(self.base + "/settings")
