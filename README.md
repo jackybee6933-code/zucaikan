@@ -112,7 +112,8 @@ Windows runner 上中文资产名会被 GitHub Actions 处理成 `default.exe` �
 查询页「设置」窗口里有「软件升级」区块：
 
 - **检查更新**：`GET /update/check` 读 `latest.json` 比较版本号；
-- **一键升级**：`POST /update/install` 下载完整包并校验 SHA-256（失败不替换），
+- **一键升级**：`POST /update/install` 下载完整包，失败自动重试 3 次并校验下载长度与 SHA-256，
+  任一步失败都不替换，
   然后启动同目录的 `updater.exe`：等主程序退出（exe 解锁）→ 从升级包取出新主程序替换
   `football_analysis.exe` → 自动重启。`data/`、`cache/` 等本地数据不动。
 

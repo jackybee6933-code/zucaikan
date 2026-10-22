@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,8 @@ DEFAULT_MANIFEST_URL = (
 )
 UPDATE_CACHE_FILENAME = ".update_manifest.json"
 RELEASES_BASE_URL = "https://github.com/jackybee6933-code/zucaikan/releases/tag/v"
+DOWNLOAD_ATTEMPTS = 3
+DOWNLOAD_RETRY_DELAYS = (2, 5)
 APP_EXE_NAME = "football_analysis.exe"
 UPDATER_EXE_NAME = "updater.exe"
 LEGACY_UPDATER_EXE_NAME = "足球更新器.exe"
@@ -149,26 +152,38 @@ def download_package(info: dict, *, progress=None) -> Path:
         raise UpdateError("更新信息无效")
     temp_dir = Path(tempfile.mkdtemp(prefix="fa_update_"))
     target = temp_dir / "package.zip"
-    request = urllib.request.Request(url, headers={"User-Agent": "football-analysis-updater"})
-    try:
-        with urllib.request.urlopen(request, timeout=30) as resp, target.open("wb") as out:
-            total = int(resp.headers.get("Content-Length") or 0)
-            downloaded = 0
-            while True:
-                chunk = resp.read(1024 * 1024)
-                if not chunk:
-                    break
-                out.write(chunk)
-                downloaded += len(chunk)
-                if progress:
-                    progress(downloaded, total)
-    except Exception as exc:
-        raise UpdateError(f"下载升级包失败：{exc}") from exc
-    actual = _sha256(target)
-    if actual != expected:
-        target.unlink(missing_ok=True)
-        raise UpdateError("升级包 SHA-256 校验失败")
-    return target
+    last_error = None
+    for attempt in range(DOWNLOAD_ATTEMPTS):
+        request = urllib.request.Request(url, headers={"User-Agent": "football-analysis-updater"})
+        try:
+            with urllib.request.urlopen(request, timeout=30) as resp, target.open("wb") as out:
+                total = int(resp.headers.get("Content-Length") or 0)
+                downloaded = 0
+                while True:
+                    chunk = resp.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    downloaded += len(chunk)
+                    if progress:
+                        progress(downloaded, total)
+            if total > 0 and downloaded != total:
+                raise UpdateError(f"升级包下载不完整：{downloaded}/{total} 字节")
+            actual = _sha256(target)
+            if actual != expected:
+                raise UpdateError("升级包 SHA-256 校验失败")
+            return target
+        except Exception as exc:
+            last_error = exc
+            target.unlink(missing_ok=True)
+            if attempt + 1 < DOWNLOAD_ATTEMPTS:
+                time.sleep(DOWNLOAD_RETRY_DELAYS[attempt])
+    shutil.rmtree(temp_dir, ignore_errors=True)
+    if isinstance(last_error, UpdateError):
+        raise UpdateError(f"{last_error}（已尝试 {DOWNLOAD_ATTEMPTS} 次）") from last_error
+    raise UpdateError(
+        f"下载升级包失败（已尝试 {DOWNLOAD_ATTEMPTS} 次）：{last_error}"
+    ) from last_error
 
 
 def install_downloaded(archive: Path, *, wait_seconds: int = 10) -> dict:
