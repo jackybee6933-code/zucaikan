@@ -103,7 +103,7 @@ class MovementStoreTests(unittest.TestCase):
             self.assertEqual(len(all_rows), 4)
             html = render_query_html(latest, issues=issues, issue="26121", db_path=str(db))
             self.assertIn("巴萨 vs 费耶诺德", html)
-            self.assertIn("足彩分析系统1.3.8", html)
+            self.assertIn("足彩分析系统1.3.10", html)
             self.assertIn("降盘", html)
             self.assertNotIn("退盘", html)
             self.assertIn("倾向", html)

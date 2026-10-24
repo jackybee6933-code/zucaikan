@@ -114,6 +114,7 @@ class DefaultFlowTests(unittest.TestCase):
             root = Path(tmp) / "app"
             root.mkdir()
             with mock.patch.object(main, "_app_root", return_value=root), \
+                 mock.patch.object(main, "_determine_latest_issue", return_value="26146"), \
                  mock.patch.object(main, "_run_analyze", return_value=3), \
                  mock.patch.object(main, "serve_query") as serve:
                 rc = main._run_analyze_then_serve(main.build_parser())

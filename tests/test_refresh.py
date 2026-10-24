@@ -59,9 +59,6 @@ class RefreshTests(unittest.TestCase):
         self.cache = str(Path(self.tmp.name) / "cache")
         Path(self.cache).mkdir(parents=True)
         # 抓取脚本必须存在，_run_refresh 才会走到加载那一步
-        tools = Path(self.tmp.name) / "tools"
-        tools.mkdir()
-        (tools / "scrape_odds_pages.py").write_text("# stub\n", encoding="utf-8")
         self.addCleanup(self.tmp.cleanup)
 
     def _run_with_scrape(self, args, rc=0, fake=None):
@@ -75,21 +72,17 @@ class RefreshTests(unittest.TestCase):
                 calls.append(argv)
                 return fake(argv)
 
-        def _fake_spec(name, path):
-            return mock.MagicMock(loader=mock.MagicMock(exec_module=lambda mod: None))
-
         with mock.patch("urllib.request.urlopen", _ctx_ok()), \
-             mock.patch("importlib.util.spec_from_file_location", side_effect=_fake_spec), \
-             mock.patch("importlib.util.module_from_spec", return_value=_Mod()):
+             mock.patch("football_analysis.scrape_odds_pages.main", side_effect=_Mod().main):
             rc_out = main._run_refresh(args)
         return rc_out, calls
 
     def test_fresh_artifact_skips_without_touching_browser(self):
         _artifact(self.cache, PAGES_STALE_HOURS / 2)
-        with mock.patch("importlib.util.spec_from_file_location") as spec:
+        with mock.patch("football_analysis.scrape_odds_pages.main") as scraper:
             rc = main._run_refresh(_args(self.cache))
         self.assertEqual(rc, 0)
-        spec.assert_not_called()
+        scraper.main.assert_not_called()
 
     def test_force_regrabs_even_when_fresh(self):
         _artifact(self.cache, 0.1)
@@ -133,10 +126,10 @@ class RefreshTests(unittest.TestCase):
             (root / "cache").mkdir(parents=True)
             _artifact(str(root / "cache"), 0.5)
             with mock.patch.object(main, "_app_root", return_value=root), \
-                 mock.patch("importlib.util.spec_from_file_location") as spec:
+                 mock.patch("football_analysis.scrape_odds_pages.main") as scraper:
                 rc = main._run_refresh(_args(cache_dir=""))
             self.assertEqual(rc, 0)
-            spec.assert_not_called()   # 新鲜产物不该去抓
+            scraper.main.assert_not_called()   # 新鲜产物不该去抓
 
     def test_empty_db_without_issue_is_an_error(self):
         with mock.patch.object(main, "list_issues", return_value=[]):

@@ -57,13 +57,6 @@ print(f"cache          -> {n} 个文件")
 n = copy_tree(ROOT / "reports", "reports", limit=7)
 print(f"reports        -> {n} 个文件")
 
-# 6) 刷新盘口分歧用到的脚本（run_refresh_odds 在 _app_root() 下找它们）
-shutil.copy2(ROOT / "setup_cdp_profile.py", STAGE / "setup_cdp_profile.py")
-print("setup_cdp      -> setup_cdp_profile.py")
-(STAGE / "tools").mkdir(exist_ok=True)
-shutil.copy2(ROOT / "tools" / "scrape_odds_pages.py", STAGE / "tools" / "scrape_odds_pages.py")
-print("scrape script  -> tools/scrape_odds_pages.py")
-
 if ZIP.exists():
     ZIP.unlink()
 with zipfile.ZipFile(ZIP, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:

@@ -657,30 +657,10 @@ def _run_refresh(args: argparse.Namespace) -> int:
     except OSError:
         print(f"\n连不上 {endpoint}，请先把 Chrome 启动到调试模式：")
         print("  1) 完全退出 Chrome（托盘图标也要退）")
-        print("  2) python setup_cdp_profile.py")
+        print("  2) 确认已安装 Chrome，并重试刷新")
         return 1
 
-    script = _app_root() / "tools" / "scrape_odds_pages.py"
-    if not script.is_file():
-        meipass = getattr(sys, "_MEIPASS", "")
-        if meipass:
-            script = Path(meipass) / "tools" / "scrape_odds_pages.py"
-    if not script.is_file():
-        script = Path(__file__).resolve().parent.parent / "tools" / "scrape_odds_pages.py"
-    if not script.is_file():
-        print(f"找不到抓取脚本 {script}")
-        return 2
-
-    # exe 里 sys.executable 是 exe 本身，subprocess 跑不了 .py；
-    # 抓取脚本已不依赖 playwright，直接 import 加载即可。
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("scrape_odds_pages", script)
-    if spec is None or spec.loader is None:
-        print(f"无法加载抓取脚本 {script}")
-        return 2
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    from . import scrape_odds_pages as mod
     code = mod.main(
         [
             "--issue", issue,

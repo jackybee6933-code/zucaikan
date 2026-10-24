@@ -1,4 +1,3 @@
-import importlib.util
 import json
 import os
 import tempfile
@@ -11,12 +10,15 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def _scraper():
-    spec = importlib.util.spec_from_file_location(
-        "scrape_odds_pages", ROOT / "tools" / "scrape_odds_pages.py"
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    from football_analysis import scrape_odds_pages
+    return scrape_odds_pages
+
+
+class ScraperPackagingTests(unittest.TestCase):
+    def test_compatibility_script_forwards_to_packaged_module(self):
+        source = (ROOT / "tools" / "scrape_odds_pages.py").read_text(encoding="utf-8-sig")
+        self.assertIn("from football_analysis.scrape_odds_pages import main", source)
+        self.assertNotIn("CdpPage", source)
 
 
 class PartialFileTests(unittest.TestCase):

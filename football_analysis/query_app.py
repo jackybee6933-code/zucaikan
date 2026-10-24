@@ -369,7 +369,7 @@ def run_refresh_odds(issue: str, *, cdp: str = CDP_DEFAULT, db_path: str | Path 
         earliest = min(stale_kickoffs).strftime("%m-%d %H:%M")
         print(f"{issue} 盘口产物早于开赛时间 {earliest}，按未来期重抓")
     endpoint = cdp.rstrip("/")
-    # Ensure a Chrome debug port is reachable; auto-launch setup_cdp_profile.py if not.
+    # Require a reachable Chrome debug port before starting the scraper.
     cdp_error = _ensure_cdp(endpoint)
     if cdp_error:
         return cdp_error
@@ -395,20 +395,6 @@ def run_refresh_odds(issue: str, *, cdp: str = CDP_DEFAULT, db_path: str | Path 
         f"{issue} \u76d8\u53e3\u4ea7\u7269\u5df2\u5237\u65b0\uff08{new_age:.1f} h\uff09\uff0c"
         f"\u672c\u671f\u5171 {saved['match_count']} \u573a\u3001\u5f02\u52a8 {saved['attention_count']} \u6761"
     )
-
-
-def _odds_scraper_script() -> Path:
-    from .main import _app_root
-
-    script = _app_root() / "tools" / "scrape_odds_pages.py"
-    if script.is_file():
-        return script
-    meipass = getattr(sys, "_MEIPASS", "")
-    if meipass:
-        script = Path(meipass) / "tools" / "scrape_odds_pages.py"
-        if script.is_file():
-            return script
-    return Path(__file__).resolve().parent.parent / "tools" / "scrape_odds_pages.py"
 
 
 def _missing_kinds(raw: dict) -> list[str]:
@@ -438,17 +424,8 @@ def _run_odds_scraper(
     kinds: list[str] | None = None,
     delay: float | None = None,
 ) -> str | None:
-    """Run tools/scrape_odds_pages.py. Return an error string, or None on success."""
-    script = _odds_scraper_script()
-    if not script.is_file():
-        return f"找不到抓取脚本 {script}"
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("scrape_odds_pages", script)
-    if spec is None or spec.loader is None:
-        return f"无法加载抓取脚本 {script}"
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    """Run the packaged odds scraper. Return an error string, or None on success."""
+    from . import scrape_odds_pages as mod
     if delay is None:
         from .app_settings import load_scrape_delay
         delay = load_scrape_delay()
@@ -1057,7 +1034,7 @@ def serve_query(
         print(f"无法监听 {host}:{port}，请检查端口是否被占用或更换端口。错误: {exc}")
         return
     url = f"http://{host}:{port}/"
-    print(f"足彩分析系统1.3.8 已启动：{url}")
+    print(f"足彩分析系统1.3.10 已启动：{url}")
     print(f"数据库：{db_path}")
     print("按 Ctrl+C 停止服务。")
     if open_browser:
