@@ -13,8 +13,8 @@ from .odds_movement import _handicap_display, analyze_prematch_movement
 PAGES_FILENAME = "odds_pages_{issue}.json"
 PAGES_META_FILENAME = "odds_pages_{issue}.meta.json"
 
-# 500 单场页的公司偏好：威廉(293) 覆盖稳定，作为主口径；澳门(5) 次选。
-CID_PREFERENCE = ("293", "5")
+# 500 单场页的公司偏好：澳门(5) 主选，威廉(293) 作为备选。
+CID_PREFERENCE = ("5", "293")
 CID_LABELS = {"5": "澳门", "293": "威廉"}
 
 

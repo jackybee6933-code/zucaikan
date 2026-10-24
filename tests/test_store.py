@@ -220,6 +220,17 @@ class UpdateMatchScoresTests(unittest.TestCase):
             rows = query_movements(db, latest_only=True)
             self.assertEqual(rows[0]["final_score"], "0 - 1")
 
+    def test_new_run_inherits_backfilled_score(self):
+        """已回填真比分后，重跑同一场不能把新 run 的比分清空。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            item = _item("1", "H", "A", attention=False, level="稳定", reason="")
+            save_issue_movements(db, [item], "26120")
+            update_match_scores(db, "26120", {"1": "2 - 1"})
+            save_issue_movements(db, [item], "26120")
+            rows = query_movements(db, issue="26120", latest_only=True)
+            self.assertEqual(rows[0]["final_score"], "2 - 1")
+
 
 class LatestCapturedAtTests(unittest.TestCase):
     def test_returns_none_when_issue_missing(self):

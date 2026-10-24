@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import base64
 import binascii
+from datetime import datetime, timedelta
 import socket
 import sys
 import threading
@@ -16,6 +17,7 @@ from .bets import (
     bet_trend,
     bet_options,
     create_bet,
+    parse_kickoff,
     delete_bet,
     export_bets_csv,
     list_bets,
@@ -339,10 +341,33 @@ def run_refresh_odds(issue: str, *, cdp: str = CDP_DEFAULT, db_path: str | Path 
             for kind in ("yazhi", "daxiao")
         ]
         age_text = max(age for age in ages if age is not None)
-        return (
-            f"{issue} \u76d8\u53e3\u4ea7\u7269\u662f {age_text:.1f} \u5c0f\u65f6\u524d\u7684\uff0c"
-            f"\u672a\u8d85 {PAGES_STALE_HOURS:.0f}h \u9608\u503c\uff0c\u8df3\u8fc7\u91cd\u6293"
-        )
+        # "3h fresh" only proves odds are current for an already-started issue.
+        # When fixtures are still in the future, compare them to the artifact
+        # age and force a refresh if the artifact predates kickoff.
+        stale_kickoffs: list[datetime] = []
+        if db_path:
+            matches = rebuild_analyses_from_db(Path(db_path), issue)
+            artifact_at = datetime.now() - timedelta(hours=age_text)
+            stale_kickoffs = [
+                kickoff
+                for match in matches
+                if (
+                    kickoff := parse_kickoff(
+                        issue,
+                        str(match.get("match_time") or ""),
+                        str(match.get("captured_at") or ""),
+                    )
+                )
+                and kickoff > artifact_at
+            ]
+        if not stale_kickoffs:
+            return (
+                f"{issue} \u76d8\u53e3\u4ea7\u7269\u662f {age_text:.1f} \u5c0f\u65f6\u524d\u7684\uff0c"
+                f"\u672a\u8d85 {PAGES_STALE_HOURS:.0f}h \u9608\u503c\uff0c\u8df3\u8fc7\u91cd\u6293"
+            )
+        refresh_kinds = ["yazhi", "daxiao"]
+        earliest = min(stale_kickoffs).strftime("%m-%d %H:%M")
+        print(f"{issue} 盘口产物早于开赛时间 {earliest}，按未来期重抓")
     endpoint = cdp.rstrip("/")
     # Ensure a Chrome debug port is reachable; auto-launch setup_cdp_profile.py if not.
     cdp_error = _ensure_cdp(endpoint)
@@ -406,7 +431,12 @@ def _missing_kinds(raw: dict) -> list[str]:
 
 
 def _run_odds_scraper(
-    issue: str, cache_dir: Path, endpoint: str, *, kinds: list[str] | None = None
+    issue: str,
+    cache_dir: Path,
+    endpoint: str,
+    *,
+    kinds: list[str] | None = None,
+    delay: float | None = None,
 ) -> str | None:
     """Run tools/scrape_odds_pages.py. Return an error string, or None on success."""
     script = _odds_scraper_script()
@@ -419,7 +449,15 @@ def _run_odds_scraper(
         return f"无法加载抓取脚本 {script}"
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    argv = ["--issue", issue, "--cache-dir", str(cache_dir), "--cdp", endpoint]
+    if delay is None:
+        from .app_settings import load_scrape_delay
+        delay = load_scrape_delay()
+    argv = [
+        "--issue", issue,
+        "--cache-dir", str(cache_dir),
+        "--cdp", endpoint,
+        "--delay", str(delay),
+    ]
     if kinds:
         argv.extend(["--kinds", *kinds])
     code = mod.main(argv)
@@ -606,7 +644,9 @@ def serve_query(
                     self._json(exc.status, {"error": str(exc)})
                 return
             if parsed.path == "/settings":
-                self._json(200, public_settings(settings_path))
+                self._json(200, {
+                    **public_settings(settings_path),
+                })
                 return
             if parsed.path == "/backup":
                 try:
@@ -783,7 +823,9 @@ def serve_query(
                     payload[name] = item
                 try:
                     save_settings(payload, settings_path)
-                    self._json(200, public_settings(settings_path))
+                    self._json(200, {
+                        **public_settings(settings_path),
+                    })
                 except OSError as exc:
                     self._json(500, {"error": f"设置保存失败：{exc}"})
                 return

@@ -28,19 +28,19 @@ TOTAL_ROWS = [["5", "1.25", "3/3.5", "0.75", "0.75", "2.5", "1.00"]]
 
 
 class OddsPagesTests(unittest.TestCase):
-    def test_prefers_william_cid_293(self):
+    def test_prefers_macau_cid_5(self):
         parsed = parse_odds_pages(_raw({"9|yazhi": ASIAN_ROWS}))
         asian = parsed["9"]
-        self.assertEqual(asian["asian_line_text"], "两球")
-        self.assertEqual(asian["asian_home_line"], -2.0)
-        self.assertEqual(asian["asian_home_water"], 0.73)
-        self.assertEqual(asian["asian_away_water"], 1.0)
-        self.assertEqual(asian["asian_company"], "威廉")
+        self.assertEqual(asian["asian_line_text"], "一球")
+        self.assertEqual(asian["asian_home_line"], -1.0)
+        self.assertEqual(asian["asian_home_water"], 1.0)
+        self.assertEqual(asian["asian_away_water"], 0.84)
+        self.assertEqual(asian["asian_company"], "澳门")
 
-    def test_falls_back_to_macau_when_william_missing(self):
-        parsed = parse_odds_pages(_raw({"9|yazhi": [ASIAN_ROWS[0]]}))
-        self.assertEqual(parsed["9"]["asian_line_text"], "一球")
-        self.assertEqual(parsed["9"]["asian_company"], "澳门")
+    def test_falls_back_to_william_when_macau_missing(self):
+        parsed = parse_odds_pages(_raw({"9|yazhi": [ASIAN_ROWS[1]]}))
+        self.assertEqual(parsed["9"]["asian_line_text"], "两球")
+        self.assertEqual(parsed["9"]["asian_company"], "威廉")
 
     def test_source_label_keeps_real_name_for_new_rows(self):
         rows = [["5", "*门", "1.000", "一球", "0.840", "1.000", "一球", "0.840"]]
@@ -86,7 +86,7 @@ class OddsPagesTests(unittest.TestCase):
         analysis = _build_single_analysis(row, parsed["9"], home_record={}, away_record={})
         self.assertTrue(analysis["market"]["has_asian"])
         self.assertTrue(analysis["market"]["has_total"])
-        self.assertEqual(asian_display(analysis), "两球 0.73/1.00（威廉）")
+        self.assertEqual(asian_display(analysis), "一球 1.00/0.84（澳门）")
         self.assertEqual(total_display(analysis), "3/3.5 1.25/0.75（澳门）")
 
     def test_load_reads_expected_filename(self):

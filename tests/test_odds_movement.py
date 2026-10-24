@@ -291,7 +291,7 @@ class PagesSplitRetentionTests(unittest.TestCase):
         # 单场页是主口径：盘口取威廉/澳门，与分歧弹窗同源
         self.assertEqual(movement["source"], "odds_pages")
         self.assertTrue(movement["asian"]["available"])
-        self.assertEqual(movement["asian"]["current"]["line_text"], "一球")
+        self.assertEqual(movement["asian"]["current"]["line_text"], "半球")
         self.assertEqual(movement["titan_match_id"], "3001")
         # 单场页各公司分歧仍保留
         self.assertEqual(len(movement["split"]), 1)

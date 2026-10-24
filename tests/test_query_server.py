@@ -315,6 +315,8 @@ class QueryServerTests(unittest.TestCase):
         self.assertIn('use href="#icon-download"', body)
         self.assertIn('use href="#icon-arrow-up-circle"', body)
         self.assertIn('id="settings-save" class="settings-button settings-button-primary"', body)
+        self.assertNotIn("抓取间隔", body)
+        self.assertNotIn("scrape_delay_seconds", body)
         self.assertNotIn('name="attention"', body)
         self.assertNotIn('name="latest"', body)
 

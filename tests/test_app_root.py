@@ -36,23 +36,27 @@ class DefaultFlowTests(unittest.TestCase):
 
     def _run(self, root: Path):
         captured = {}
+        order = []
 
         def fake_analyze(args, **kwargs):
+            order.append(("analyze", args.issue))
             captured["args"] = args
             captured["kwargs"] = kwargs
             return 0
 
         with mock.patch.object(main, "_app_root", return_value=root), \
+             mock.patch.object(main, "_determine_latest_issue", side_effect=lambda _: order.append(("latest", "")) or "26146"), \
+             mock.patch.object(main, "_refresh_previous_issue_scores", side_effect=lambda *args: order.append(("scores", args[1]))), \
              mock.patch.object(main, "_run_analyze", side_effect=fake_analyze), \
              mock.patch.object(main, "serve_query") as serve:
             rc = main._run_analyze_then_serve(main.build_parser())
-        return rc, captured, serve
+        return rc, captured, serve, order
 
     def test_passes_app_root_cache_and_db_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "app"
             root.mkdir()
-            rc, captured, _ = self._run(root)
+            rc, captured, _, _ = self._run(root)
 
             self.assertEqual(rc, 0)
             args = captured["args"]
@@ -73,14 +77,14 @@ class DefaultFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "app"
             root.mkdir()
-            _, captured, _ = self._run(root)
+            _, captured, _, _ = self._run(root)
             self.assertFalse(captured["kwargs"].get("open_report", True))
 
     def test_serves_the_same_db_it_wrote_to(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "app"
             root.mkdir()
-            _, captured, serve = self._run(root)
+            _, captured, serve, _ = self._run(root)
             self.assertEqual(
                 Path(serve.call_args.args[0]), Path(captured["args"].db_path)
             )
@@ -89,7 +93,7 @@ class DefaultFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "app"
             root.mkdir()
-            _, captured, serve = self._run(root)
+            _, captured, serve, _ = self._run(root)
             self.assertEqual(
                 Path(serve.call_args.kwargs["reports_dir"]), root / "reports"
             )
@@ -115,6 +119,54 @@ class DefaultFlowTests(unittest.TestCase):
                 rc = main._run_analyze_then_serve(main.build_parser())
             self.assertEqual(rc, 3)
             serve.assert_not_called()
+
+    def test_startup_order_is_latest_then_previous_scores_then_latest_analysis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "app"
+            root.mkdir()
+            rc, captured, _, order = self._run(root)
+
+            self.assertEqual(rc, 0)
+            self.assertEqual(
+                order,
+                [("latest", ""), ("scores", "26146"), ("analyze", "26146")],
+            )
+            self.assertEqual(captured["args"].issue, "26146")
+
+    def test_previous_score_refresh_skips_issue_without_matches(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(
+                main,
+                "list_issues",
+                return_value=[{"issue": "26145", "match_count": 0}],
+            ), mock.patch.object(main, "_refresh_scores") as refresh:
+                main._refresh_previous_issue_scores(
+                    Path(tmp) / "db.sqlite",
+                    "26146",
+                    Path(tmp) / "cache",
+                )
+            refresh.assert_not_called()
+
+    def test_previous_score_refresh_uses_existing_issue(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(
+                main,
+                "list_issues",
+                return_value=[{"issue": "26145", "match_count": 14}],
+            ), mock.patch.object(
+                main,
+                "_refresh_scores",
+                return_value={"filled": 14, "match_count": 14, "updated": 14},
+            ) as refresh:
+                main._refresh_previous_issue_scores(
+                    Path(tmp) / "db.sqlite",
+                    "26146",
+                    Path(tmp) / "cache",
+                )
+            self.assertEqual(
+                refresh.call_args.args,
+                (Path(tmp) / "db.sqlite", "26145"),
+            )
 
 
 if __name__ == "__main__":

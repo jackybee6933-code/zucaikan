@@ -11,8 +11,9 @@ from pathlib import Path
 from .http import Fetcher
 from .bets import bet_trend, export_bets_csv, list_bets, summarize_bets
 from .backup import backup_summary, restore_backup, write_backup
+from .app_settings import load_scrape_delay
 from .ev_ledger import save_ev_ledger
-from .pipeline import analyze_issue
+from .pipeline import analyze_issue, collect_sfc_matches
 from .query_app import serve_query
 from .report_index import build_issue_report_index
 from .open_browser import open_in_chrome
@@ -101,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     refresh.add_argument(
         "--cache-dir", default="", help="产物所在目录，缺省用 exe 所在目录下的 cache"
     )
-    refresh.add_argument("--delay", type=float, default=5.0, help="抓取时页面间隔秒数")
+    refresh.add_argument("--delay", type=float, default=None, help="抓取时页面间隔秒数，缺省读 data/app_settings.json")
     refresh.add_argument("--cdp", default="http://127.0.0.1:9222", help="Chrome 调试端口")
     refresh.add_argument("--force", action="store_true", help="即使未过期也重抓")
     refresh.add_argument("--db-path", default=None, help="仅用于确定期号")
@@ -684,7 +685,11 @@ def _run_refresh(args: argparse.Namespace) -> int:
         [
             "--issue", issue,
             "--cache-dir", str(cache_dir),
-            "--delay", str(args.delay),
+            "--delay", str(
+                args.delay
+                if args.delay is not None
+                else load_scrape_delay()
+            ),
             "--cdp", endpoint,
         ]
     )
@@ -933,6 +938,61 @@ def _run_backup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _determine_latest_issue(cache_dir: Path) -> str:
+    """Fetch the current SFC page and return the issue published there."""
+    fetcher = Fetcher(cache_dir=cache_dir)
+    _, issue = collect_sfc_matches("", fetcher)
+    # Pin the confirmed issue to fresh current-source pages during analyze.
+    from .sfc import ISSUE_URL
+
+    for key in (
+        f"sfc:{ISSUE_URL.format(issue=issue)}",
+        "jczq:current",
+        "odds_xml:current",
+    ):
+        fetcher.cache.evict(key)
+    return issue
+
+
+def _previous_issue(issue: str) -> str:
+    try:
+        number = int(issue[-3:]) - 1
+    except (TypeError, ValueError):
+        return ""
+    return issue[:2] + str(number).zfill(3)
+
+
+def _refresh_previous_issue_scores(
+    db_path: Path, latest_issue: str, cache_dir: Path
+) -> None:
+    previous = _previous_issue(latest_issue)
+    if not previous:
+        return
+    known_issues = {
+        str(row.get("issue") or "")
+        for row in list_issues(db_path)
+        if int(row.get("match_count") or 0) > 0
+    }
+    if previous not in known_issues:
+        print(f"上期 {previous} 没有本地比赛数据，跳过比分刷新。")
+        return
+    print(f"刷新上期 {previous} 最终比分...")
+    try:
+        refreshed = _refresh_scores(db_path, previous, cache_dir=cache_dir)
+    except Exception as exc:  # noqa: BLE001
+        print(f"上期 {previous} 比分刷新失败，将继续抓取最新期：{exc}")
+        return
+    if refreshed.get("error"):
+        print(refreshed["error"])
+    for line in refreshed.get("errors") or []:
+        print(line)
+    print(
+        f"上期 {previous} 比分刷新："
+        f"{refreshed.get('filled', 0)}/{refreshed.get('match_count', 0)} 场有值，"
+        f"DB 更新 {refreshed.get('updated', 0)} 条"
+    )
+
+
 def _run_analyze_then_serve(parser: argparse.ArgumentParser) -> int:
     """exe 双击的默认流程：抓取入库后直接起异动查询服务，并打开查询页。"""
     # cache / db / reports 三者都必须挂 exe 目录：
@@ -941,11 +1001,12 @@ def _run_analyze_then_serve(parser: argparse.ArgumentParser) -> int:
     # - output_dir 同理，报告与查询页的「分析报告」链接会指到别处
     db_path = _app_root() / "data" / "football_analysis.sqlite"
     db_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_dir = _default_cache_dir()
     args = parser.parse_args(
         [
             "analyze",
             "--cache-dir",
-            str(_default_cache_dir()),
+            str(cache_dir),
             "--db-path",
             str(db_path),
             "--output-dir",
@@ -953,6 +1014,9 @@ def _run_analyze_then_serve(parser: argparse.ArgumentParser) -> int:
         ]
     )
     try:
+        latest_issue = _determine_latest_issue(cache_dir)
+        _refresh_previous_issue_scores(db_path, latest_issue, cache_dir)
+        args.issue = latest_issue
         result = _run_analyze(args, open_report=False)
     except Exception:  # noqa: BLE001
         traceback.print_exc()

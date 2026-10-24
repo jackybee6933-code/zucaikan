@@ -188,6 +188,23 @@ def _load_prev_team_reads(conn, issue, run_id):
     return reads
 
 
+def _load_prev_final_scores(conn, issue, run_id):
+    """取上一 run 的已回填比分，供新 run 继承，避免重跑把比分清空。"""
+    rows = conn.execute(
+        """
+        SELECT match_no, final_score
+        FROM match_movements
+        WHERE issue = ? AND run_id < ? AND final_score != ''
+        ORDER BY run_id DESC
+        """,
+        (issue, run_id),
+    ).fetchall()
+    scores = {}
+    for match_no, score in rows:
+        scores.setdefault(str(match_no), str(score))
+    return scores
+
+
 def save_issue_movements(
     db_path: str | Path,
     analyses: list[dict],
@@ -214,6 +231,7 @@ def save_issue_movements(
         # 避免查询页只看最新 run 时盘口分歧「消失」。
         prev_splits = _load_prev_splits(conn, issue, run_id)
         prev_team_reads = _load_prev_team_reads(conn, issue, run_id)
+        prev_final_scores = _load_prev_final_scores(conn, issue, run_id)
         rows = []
         for item in analyses:
             movement = item.get("odds_movement") or {}
@@ -225,6 +243,10 @@ def save_issue_movements(
                 inherited_read = prev_team_reads.get(str(item.get("match_no") or ""))
                 if inherited_read:
                     item["team_read"] = inherited_read
+            if prev_final_scores and not item.get("final_score"):
+                inherited_score = prev_final_scores.get(str(item.get("match_no") or ""))
+                if inherited_score:
+                    item["final_score"] = inherited_score
             asian = movement.get("asian") or {}
             initial = asian.get("initial") or {}
             current = asian.get("current") or {}

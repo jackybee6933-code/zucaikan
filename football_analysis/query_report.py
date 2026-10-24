@@ -715,7 +715,10 @@ _FETCH_BLOCK = \
           const response = await fetch("/settings", {
             method: "POST",
             headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({primary: endpoint("primary"), fallback: endpoint("fallback")})
+            body: JSON.stringify({
+              primary: endpoint("primary"),
+              fallback: endpoint("fallback"),
+            })
           });
           const data = await response.json();
           if (!response.ok) throw new Error(data.error || "保存设置失败");
@@ -1580,6 +1583,7 @@ def render_query_html(
 .settings-test-status.ok {{ color: var(--green); }}
 .settings-test-status.fail {{ color: var(--red); }}
 .settings-error {{ min-height: 20px; margin-top: 10px; color: var(--green); font-size: 12px; }}
+.settings-input {{ width: 120px; min-height: 30px; padding: 4px 8px; }}
 .settings-actions {{ display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }}
 @media (max-width: 640px) {{ .settings-grid {{ grid-template-columns: 1fr; }} }}
 .bet-cell {{ width: 8%; white-space: nowrap; }}
