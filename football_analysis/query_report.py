@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import html
 import json
@@ -624,6 +624,10 @@ _FETCH_BLOCK = \
             <button type="button" id="update-install" class="settings-button settings-button-primary" disabled><svg class="settings-icon" aria-hidden="true"><use href="#icon-arrow-up-circle"></use></svg>一键升级</button>
           </div>
           <div id="update-status" class="muted"></div>
+          <div id="update-progress-wrap" class="update-progress-wrap" hidden>
+            <progress id="update-progress" max="100" value="0"></progress>
+            <span id="update-progress-label" class="muted"></span>
+          </div>
           <div id="update-details" class="update-details" hidden>
             <div id="update-versions"></div>
             <div id="update-notes"></div>
@@ -740,7 +744,79 @@ _FETCH_BLOCK = \
       const updateNotes = document.getElementById("update-notes");
       const updateDiagnostics = document.getElementById("update-diagnostics");
       const updateRelease = document.getElementById("update-release");
+      const updateProgressWrap = document.getElementById("update-progress-wrap");
+      const updateProgress = document.getElementById("update-progress");
+      const updateProgressLabel = document.getElementById("update-progress-label");
       let updateInfo = null;
+      let updatePollTimer = null;
+      function stopUpdatePolling() {
+        if (updatePollTimer) clearTimeout(updatePollTimer);
+        updatePollTimer = null;
+      }
+      function pollUpdateStatus(targetVersion) {
+        stopUpdatePolling();
+        updatePollTimer = setTimeout(async function poll() {
+          try {
+            const response = await fetch("/update/install-status");
+            const state = await response.json();
+            if (!response.ok) throw new Error(state.error || "读取升级进度失败");
+            if (state.phase === "download" && state.total > 0) {
+              const pct = Math.min(100, Math.floor(state.downloaded * 100 / state.total));
+              updateProgress.removeAttribute("value");
+              updateProgress.value = pct;
+              updateProgress.setAttribute("value", pct);
+              updateProgressLabel.textContent =
+                `${pct}%　${state.downloaded.toLocaleString()} / ${state.total.toLocaleString()} 字节`;
+              updateStatus.textContent = `正在下载 v${targetVersion}...`;
+            } else if (state.phase === "download") {
+              updateProgress.removeAttribute("value");
+              updateProgressLabel.textContent = "正在下载...";
+              updateStatus.textContent = `正在下载 v${targetVersion}...`;
+            } else if (state.phase === "verify") {
+              updateProgress.value = 100;
+              updateProgress.setAttribute("value", "100");
+              updateProgressLabel.textContent = "下载完成，正在校验 SHA-256...";
+              updateStatus.textContent = "正在验证升级包完整性...";
+            } else if (state.phase === "ready") {
+              updateProgress.value = 100;
+              updateProgress.setAttribute("value", "100");
+              updateProgressLabel.textContent = "SHA-256 校验通过，正在准备安装...";
+              updateStatus.textContent = "升级包验证完成";
+            } else if (state.phase === "installing") {
+              updateProgress.value = 100;
+              updateProgress.setAttribute("value", "100");
+              updateProgressLabel.textContent = "校验通过，正在启动更新器...";
+              updateStatus.textContent = "升级器即将替换程序并重启";
+            } else if (state.phase === "complete") {
+              stopUpdatePolling();
+              updateProgressWrap.hidden = true;
+              updateStatus.textContent = state.result || "升级已启动";
+              setTimeout(() => location.reload(), 8000);
+              return;
+            } else if (state.phase === "error") {
+              stopUpdatePolling();
+              updateProgressWrap.hidden = true;
+              updateStatus.textContent = state.error || "升级失败";
+              updateInstall.disabled = false;
+              return;
+            } else if (state.running) {
+              updateProgress.removeAttribute("value");
+              updateProgressLabel.textContent = "正在准备升级...";
+            } else {
+              stopUpdatePolling();
+              updateProgressWrap.hidden = true;
+              updateInstall.disabled = false;
+              return;
+            }
+            if (state.running) updatePollTimer = setTimeout(poll, 500);
+          } catch (e) {
+            stopUpdatePolling();
+            updateProgressWrap.hidden = true;
+            updateStatus.textContent = e.message || String(e);
+            updateInstall.disabled = false;
+          }
+        }, 250);
+      }
       async function checkForUpdate() {
         updateCheck.disabled = true;
         updateInstall.disabled = true;
@@ -794,15 +870,24 @@ _FETCH_BLOCK = \
         const targetVersion = `v${updateInfo.latest_version}`;
         if (!window.confirm(`将下载并安装 ${targetVersion}，校验通过后会关闭并重启程序。是否继续？`)) return;
         this.disabled = true;
+        updateProgressWrap.hidden = false;
+        updateProgress.removeAttribute("value");
+        updateProgressLabel.textContent = "正在准备升级...";
         updateStatus.textContent = `正在下载并校验 ${targetVersion}，请保持程序运行...`;
         try {
           const response = await fetch("/update/install", {method: "POST"});
           const data = await response.json();
           if (!response.ok || !data.ok) throw new Error(data.error || "升级失败");
-          updateStatus.textContent = data.message;
-          setTimeout(() => location.reload(), 8000);
+          if (data.busy || data.started) {
+            pollUpdateStatus(targetVersion);
+            return;
+          }
+          updateStatus.textContent = data.message || "已是最新版本";
+          updateProgressWrap.hidden = true;
+          this.disabled = false;
         } catch (e) {
           updateStatus.textContent = e.message || String(e);
+          updateProgressWrap.hidden = true;
           this.disabled = false;
         }
       });
@@ -1479,7 +1564,7 @@ def render_query_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>足彩分析系统1.3.10</title>
+  <title>足彩分析系统1.3.11</title>
   <style>
     :root {{
       --canvas: #f3f5f7; --panel: #ffffff; --ink: #1d2733; --muted: #64748b;
@@ -1555,6 +1640,9 @@ def render_query_html(
 .settings-btn {{ margin-left: auto; }}
 #settings-dialog {{ width: min(760px, calc(100vw - 24px)); max-height: calc(100vh - 24px); padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); box-shadow: 0 20px 60px rgba(15, 23, 42, .3); }}
 #settings-dialog::backdrop {{ background: rgba(15, 23, 42, .45); }}
+.update-progress-wrap {{ display:flex; align-items:center; gap:10px; margin-top:8px; }}
+.update-progress-wrap[hidden] {{ display:none; }}
+.update-progress-wrap progress {{ width:min(100%, 360px); height:8px; accent-color:#2563eb; }}
 .settings-backup {{ margin: 14px 20px 0; padding: 12px; border: 1px solid var(--line); border-radius: 8px; display: grid; gap: 6px; }}
 .settings-backup-actions {{ display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }}
 .settings-button {{ display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 32px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: #fff; color: var(--ink); font-size: 13px; font-weight: 500; line-height: 1; text-decoration: none; white-space: nowrap; }}
@@ -1675,7 +1763,7 @@ def render_query_html(
 </head>
 <body>
   <div class="page">
-    <h1>足彩分析系统1.3.10</h1>
+    <h1>足彩分析系统1.3.11</h1>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}　上盘=让球方，下盘=受让方；上盘让球增加为升盘，减少为降盘。</div>
     {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
     {f'<div class="meta">{bet_chip}</div>' if bet_chip else ''}
@@ -1825,3 +1913,4 @@ def render_query_html(
 </body>
 </html>
 """
+

@@ -92,9 +92,17 @@ class UpdaterTests(unittest.TestCase):
             source.write_bytes(b"package")
             digest = hashlib.sha256(source.read_bytes()).hexdigest()
             info = {"url": "https://example.test/package.zip", "sha256": digest}
+            progress = []
+            phases = []
             with mock.patch("urllib.request.urlopen", return_value=_Response(b"package")):
-                result = updater.download_package(info)
+                result = updater.download_package(
+                    info,
+                    progress=lambda downloaded, total: progress.append((downloaded, total)),
+                    phase=phases.append,
+                )
             self.assertEqual(result.read_bytes(), b"package")
+            self.assertEqual(progress, [(7, 7)])
+            self.assertEqual(phases, ["verify", "ready"])
 
     def test_download_package_retries_after_connection_error(self):
         data = b"package"

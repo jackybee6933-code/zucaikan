@@ -1,4 +1,4 @@
-"""Check GitHub Releases and download a verified application package."""
+﻿"""Check GitHub Releases and download a verified application package."""
 from __future__ import annotations
 
 import hashlib
@@ -17,7 +17,7 @@ from pathlib import Path
 if __package__:
     from . import __version__
 else:
-    __version__ = "1.3.10"
+    __version__ = "1.3.11"
 
 DEFAULT_MANIFEST_URL = (
     "https://github.com/jackybee6933-code/zucaikan/releases/latest/download/latest.json"
@@ -145,7 +145,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def download_package(info: dict, *, progress=None) -> Path:
+def download_package(info: dict, *, progress=None, phase=None) -> Path:
     url = str(info.get("url", ""))
     expected = str(info.get("sha256", "")).lower()
     if not url or len(expected) != 64:
@@ -169,9 +169,13 @@ def download_package(info: dict, *, progress=None) -> Path:
                         progress(downloaded, total)
             if total > 0 and downloaded != total:
                 raise UpdateError(f"升级包下载不完整：{downloaded}/{total} 字节")
+            if phase:
+                phase("verify")
             actual = _sha256(target)
             if actual != expected:
                 raise UpdateError("升级包 SHA-256 校验失败")
+            if phase:
+                phase("ready")
             return target
         except Exception as exc:
             last_error = exc
@@ -216,3 +220,4 @@ def app_root() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path.cwd()
+

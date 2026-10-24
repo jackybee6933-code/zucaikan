@@ -20,15 +20,15 @@ VERSION_EDITS = [
     ("football_analysis/__init__.py",
      '__version__ = "{old}"', '__version__ = "{v}"'),
     ("updater.py",
-     '    __version__ = "1.3.8"', '    __version__ = "{v}"'),
+     '    __version__ = "{old}"', '    __version__ = "{v}"'),
     ("football_analysis/query_app.py",
-     '足彩分析系统1.3.8', '足彩分析系统{v}'),
+     '足彩分析系统{old}', '足彩分析系统{v}'),
     ("football_analysis/query_report.py",
-     '足彩分析系统1.3.8', '足彩分析系统{v}'),
+     '足彩分析系统{old}', '足彩分析系统{v}'),
     ("tests/test_store.py",
-     'self.assertIn("足彩分析系统1.3.8"', 'self.assertIn("足彩分析系统{v}"'),
+     'self.assertIn("足彩分析系统{old}"', 'self.assertIn("足彩分析系统{v}"'),
     ("tests/test_query_server.py",
-     'self.assertIn("足彩分析系统1.3.8"', 'self.assertIn("足彩分析系统{v}"'),
+     'self.assertIn("足彩分析系统{old}"', 'self.assertIn("足彩分析系统{v}"'),
 ]
 
 # 残留检查只看这些文件（排除 dist/build/cache/data/reports 等生成物）
@@ -68,7 +68,7 @@ def residual_check(new: str) -> int:
             continue
         src = p.read_text(encoding="utf-8")
         if rel not in ("football_analysis/__init__.py", "updater.py"):
-            src = src.replace("足彩分析系统1.3.8", "")
+            src = re.sub(r"足彩分析系统\d+\.\d+(?:\.\d+)?", "", src)
         for m in re.finditer(r"足彩分析系统(\d+\.\d+(?:\.\d+)?)", src):
             if m.group(1) != new:
                 bad += 1

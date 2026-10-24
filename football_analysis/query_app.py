@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import base64
@@ -64,6 +64,9 @@ def _load_updater():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+_UPDATER_LOADER = _load_updater
 
 
 def _first(params: dict[str, list[str]], key: str, default: str = "") -> str:
@@ -539,6 +542,62 @@ def serve_query(
     # State for the background AI-analyze job
     ai_state: dict = {"running": False, "issue": "", "result": "", "error": ""}
     ai_lock = threading.Lock()
+    update_state: dict = {
+        "running": False,
+        "phase": "idle",
+        "downloaded": 0,
+        "total": 0,
+        "attempt": 0,
+        "attempts": 0,
+        "result": "",
+        "error": "",
+    }
+    update_lock = threading.Lock()
+
+    def _do_update_install() -> None:
+        try:
+            _updater = _UPDATER_LOADER()
+            info = _updater.check_update()
+            if not info["update_available"]:
+                with update_lock:
+                    update_state.update(
+                        running=False, phase="complete", result="已是最新版本"
+                    )
+                return
+
+            def _progress(downloaded: int, total: int) -> None:
+                with update_lock:
+                    update_state.update(
+                        downloaded=downloaded,
+                        total=total,
+                        phase="download",
+                    )
+
+            def _phase(value: str) -> None:
+                with update_lock:
+                    update_state["phase"] = value
+
+            archive = _updater.download_package(
+                info, progress=_progress, phase=_phase
+            )
+            with update_lock:
+                update_state["phase"] = "installing"
+            result = _updater.install_downloaded(archive)
+            with update_lock:
+                update_state.update(
+                    running=False,
+                    phase="complete",
+                    result=(
+                        f"升级包已校验，更新器将在 {result['wait_seconds']} 秒内完成替换并重启"
+                    ),
+                )
+        except Exception as exc:  # noqa: BLE001
+            with update_lock:
+                update_state.update(
+                    running=False,
+                    phase="error",
+                    error=f"升级失败：{exc}",
+                )
 
     def _do_ai(issue: str) -> None:
         try:
@@ -607,6 +666,10 @@ def serve_query(
                     except (OSError, json.JSONDecodeError):
                         pass
                 self.wfile.write(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+                return
+            if parsed.path == "/update/install-status":
+                with update_lock:
+                    self._json(200, dict(update_state))
                 return
             if parsed.path == "/bet-options":
                 params = parse_qs(parsed.query)
@@ -846,20 +909,21 @@ def serve_query(
                 return
 
             if parsed.path == "/update/install":
-                try:
-                    _updater = _load_updater()
-                    info = _updater.check_update()
-                    if not info["update_available"]:
-                        self._json(200, {"ok": True, "message": "已是最新版本"})
+                with update_lock:
+                    if update_state["running"]:
+                        self._json(200, {"ok": True, "busy": True})
                         return
-                    archive = _updater.download_package(info)
-                    result = _updater.install_downloaded(archive)
-                    self._json(200, {
-                        "ok": True,
-                        "message": f"升级包已校验，更新器将在 {result['wait_seconds']} 秒内完成替换并重启",
+                    update_state.update({
+                        "running": True,
+                        "phase": "starting",
+                        "downloaded": 0,
+                        "total": 0,
+                        "result": "",
+                        "error": "",
                     })
-                except (_updater.UpdateError, OSError) as exc:
-                    self._json(502, {"error": str(exc)})
+                worker = threading.Thread(target=_do_update_install, daemon=True)
+                worker.start()
+                self._json(202, {"ok": True, "started": True})
                 return
 
             if parsed.path == "/bets":
@@ -1034,7 +1098,7 @@ def serve_query(
         print(f"无法监听 {host}:{port}，请检查端口是否被占用或更换端口。错误: {exc}")
         return
     url = f"http://{host}:{port}/"
-    print(f"足彩分析系统1.3.10 已启动：{url}")
+    print(f"足彩分析系统1.3.11 已启动：{url}")
     print(f"数据库：{db_path}")
     print("按 Ctrl+C 停止服务。")
     if open_browser:
@@ -1061,3 +1125,4 @@ def _dedup_message(db_path: str | Path, issue: str) -> str | None:
     if (datetime.now() - last_dt).total_seconds() < FETCH_DEDUP_MINUTES * 60:
         return f"{issue} 刚抓取过（{last}），{FETCH_DEDUP_MINUTES} 分钟内不重复入库"
     return None
+

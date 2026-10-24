@@ -1,4 +1,4 @@
-"""HTTP 层集成测试：真起 serve_query，用真请求打各端点。
+﻿"""HTTP 层集成测试：真起 serve_query，用真请求打各端点。
 
 服务跑在 daemon 线程里，靠进程退出回收——因此不需要给 serve_query 加
 shutdown 钩子，也不用为测试改生产代码。端口先自己挑一个空闲的，
@@ -121,7 +121,7 @@ class QueryServerTests(unittest.TestCase):
     def test_root_serves_query_page(self):
         status, body = _get(self.base + "/")
         self.assertEqual(status, 200)
-        self.assertIn("足彩分析系统1.3.10", body)
+        self.assertIn("足彩分析系统1.3.11", body)
         self.assertIn(">更新比分</button>", body)
         self.assertIn("data-freshness", body)
         self.assertIn("选择期号后查看", body)
@@ -133,7 +133,7 @@ class QueryServerTests(unittest.TestCase):
         """do_GET 没有 404 兜底，未知路径按单页应用方式回落到查询页。"""
         status, body = _get(self.base + "/nope")
         self.assertEqual(status, 200)
-        self.assertIn("足彩分析系统1.3.10", body)
+        self.assertIn("足彩分析系统1.3.11", body)
 
     def test_root_defaults_to_latest_issue_when_default_issue_given(self):
         """根页（无 query 参数）+ default_issue：只列当前期比赛、下拉框预选；?issue=（空）走全部期号分支。"""
@@ -310,6 +310,10 @@ class QueryServerTests(unittest.TestCase):
         self.assertIn("/settings/test", body)
         self.assertIn('id="update-details"', body)
         self.assertIn('id="update-release"', body)
+        self.assertIn('id="update-progress-wrap"', body)
+        self.assertIn('id="update-progress"', body)
+        self.assertIn("/update/install-status", body)
+        self.assertIn("state.downloaded * 100 / state.total", body)
         self.assertIn("window.confirm", body)
         self.assertIn('use href="#icon-plug"', body)
         self.assertIn('use href="#icon-download"', body)
@@ -342,6 +346,72 @@ class QueryServerTests(unittest.TestCase):
         self.assertTrue(result["cached"])
         self.assertIn("GitHub timeout", result["offline_error"])
         self.assertEqual(result["latest_version"], "9.9")
+
+    def test_update_install_runs_in_background_and_reports_download_progress(self):
+        from football_analysis import query_app
+
+        entered = threading.Event()
+        release = threading.Event()
+        class FakeUpdater:
+            class UpdateError(Exception):
+                pass
+
+            @staticmethod
+            def check_update():
+                return {"update_available": True}
+
+            @staticmethod
+            def download_package(info, *, progress, phase):
+                progress(25, 100)
+                entered.set()
+                release.wait(2)
+                phase("verify")
+                progress(100, 100)
+                phase("ready")
+                return Path("package.zip")
+
+            @staticmethod
+            def install_downloaded(archive):
+                return {"wait_seconds": 10}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "update.sqlite"
+            save_issue_movements(db, [_analysis()], ISSUE, "https://example.test")
+            port = _free_port()
+            base = f"http://127.0.0.1:{port}"
+            original_loader = query_app._UPDATER_LOADER
+            query_app._UPDATER_LOADER = lambda: FakeUpdater
+            try:
+                thread = threading.Thread(
+                    target=serve_query,
+                    args=(db,),
+                    kwargs={"port": port, "open_browser": False},
+                    daemon=True,
+                )
+                thread.start()
+                deadline = time.time() + 5
+                while time.time() < deadline:
+                    try:
+                        _get(base + "/update/install-status")
+                        break
+                    except OSError:
+                        time.sleep(0.05)
+                status, body = _post(base + "/update/install", {})
+                self.assertEqual(status, 202)
+                self.assertTrue(json.loads(body)["started"])
+                self.assertTrue(entered.wait(2))
+                status, body = _get(base + "/update/install-status")
+                self.assertEqual(status, 200)
+                state = json.loads(body)
+                self.assertTrue(state["running"])
+                self.assertEqual(state["downloaded"], 25)
+                self.assertEqual(state["total"], 100)
+                self.assertEqual(state["phase"], "download")
+                release.set()
+                state = _wait_idle(base, "/update/install-status")
+                self.assertEqual(state["phase"], "complete")
+            finally:
+                query_app._UPDATER_LOADER = original_loader
 
     def test_settings_endpoint_masks_api_keys_and_saves_endpoints(self):
         status, body = _get(self.base + "/settings")
@@ -675,3 +745,4 @@ class BetServerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
