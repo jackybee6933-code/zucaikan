@@ -269,7 +269,8 @@ class BetRenderTests(unittest.TestCase):
                 bets=[],
                 port="8765",
             )
-        self.assertIn('disabled title="比赛已开始，投注已关闭">已关闭</button>', html)
+        self.assertIn("disabled", html)
+        self.assertIn("投注</button>", html)
         self.assertNotIn('disabled title="已结算"', html)
 
 

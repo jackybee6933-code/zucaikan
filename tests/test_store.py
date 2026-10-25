@@ -103,7 +103,7 @@ class MovementStoreTests(unittest.TestCase):
             self.assertEqual(len(all_rows), 4)
             html = render_query_html(latest, issues=issues, issue="26121", db_path=str(db))
             self.assertIn("巴萨 vs 费耶诺德", html)
-            self.assertIn("足彩分析系统1.3.10", html)
+            self.assertIn("足彩分析系统1.3.12", html)
             self.assertIn("降盘", html)
             self.assertNotIn("退盘", html)
             self.assertIn("倾向", html)
@@ -381,3 +381,4 @@ class LeagueColorTests(unittest.TestCase):
             html = render_query_html(query_movements(db, latest_only=True), issues=[], latest_only=True)
             self.assertIn(".alert-table .issue-cell { width: 6%;", html)
             self.assertIn(".alert-table .match-cell { width: 20%;", html)
+
