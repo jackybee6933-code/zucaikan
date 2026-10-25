@@ -347,6 +347,36 @@ def narrate_movements(
 TEAM_READ_TENDENCIES = ("主队赢盘", "客队赢盘", "观望")
 OVER_READ_TENDENCIES = ("大球", "小球", "观望")
 
+
+def normalize_team_read(payload: dict) -> dict:
+    """Keep a directional tendency aligned with its probability."""
+    result = dict(payload)
+    tendency = str(result.get("tendency") or "").strip()
+    try:
+        confidence = float(result.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if 0.0 < confidence < 0.5:
+        if tendency == "主队赢盘":
+            result["tendency"] = "客队赢盘"
+            result["confidence"] = 1.0 - confidence
+        elif tendency == "客队赢盘":
+            result["tendency"] = "主队赢盘"
+            result["confidence"] = 1.0 - confidence
+    over_tendency = str(result.get("over_tendency") or "").strip()
+    try:
+        over_confidence = float(result.get("over_confidence") or 0.0)
+    except (TypeError, ValueError):
+        over_confidence = 0.0
+    if 0.0 < over_confidence < 0.5:
+        if over_tendency == "大球":
+            result["over_tendency"] = "小球"
+            result["over_confidence"] = 1.0 - over_confidence
+        elif over_tendency == "小球":
+            result["over_tendency"] = "大球"
+            result["over_confidence"] = 1.0 - over_confidence
+    return result
+
 TEAM_READ_SYSTEM_PROMPT = """你是一名足球盘口分析师，负责读完一场比赛的球队资料后，给出这场球的亚盘让球倾向。
 
 要求：
@@ -476,14 +506,14 @@ def parse_team_read(text: str) -> dict | None:
         over_confidence = 0.0
     over_confidence = min(1.0, max(0.0, over_confidence))
     over_reason = re.sub(r"\s+", " ", str(data.get("over_reason") or "")).strip()[:80]
-    return {
+    return normalize_team_read({
         "tendency": tendency,
         "confidence": confidence,
         "reason": reason,
         "over_tendency": over_tendency,
         "over_confidence": over_confidence,
         "over_reason": over_reason,
-    }
+    })
 
 
 class TeamReader:
@@ -608,7 +638,7 @@ def enrich_team_reads(
             page_text = str(page_texts[index] or "")
         result = reader.read(item, page_text)
         if result:
-            item["team_read"] = result
+            item["team_read"] = normalize_team_read(result)
             count += 1
     _report("llm", len(analyses), len(analyses))
     print(f"  球队资料分析：{count}/{len(analyses)} 场已生成倾向")

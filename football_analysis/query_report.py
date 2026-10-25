@@ -18,6 +18,7 @@ from .odds_pages import (
 )
 from .report_index import build_issue_report_index
 from . import __version__
+from .llm import normalize_team_read
 
 
 def _esc(value: object) -> str:
@@ -223,6 +224,8 @@ def _lean_cell(row: dict) -> str:
         read = json.loads(str(row.get("team_read") or "") or "{}")
     except (json.JSONDecodeError, TypeError):
         read = {}
+    if isinstance(read, dict):
+        read = normalize_team_read(read)
     tendency = str(read.get("tendency") or "").strip()
     if tendency:
         try:
@@ -818,6 +821,9 @@ _FETCH_BLOCK = \
         }, 250);
       }
       async function checkForUpdate() {
+        function formatElapsedSeconds(milliseconds) {
+          return (Number(milliseconds || 0) / 1000).toFixed(2) + " 秒";
+        }
         updateCheck.disabled = true;
         updateInstall.disabled = true;
         updateStatus.textContent = "正在检查更新清单...";
@@ -829,7 +835,7 @@ _FETCH_BLOCK = \
             updateStatus.textContent = (data.error || "检查更新失败") +
               "。可检查网络/代理后重试，或打开 GitHub Releases 手动查看。";
             updateDiagnostics.textContent = "清单：" + (data.manifest_url || "未取得") +
-              "；耗时 " + (data.elapsed_ms || 0) + " ms";
+              "；耗时 " + formatElapsedSeconds(data.elapsed_ms);
             updateDetails.hidden = false;
             updateRelease.href = "https://github.com/jackybee6933-code/zucaikan/releases";
             return;
@@ -845,7 +851,7 @@ _FETCH_BLOCK = \
             `当前版本：v${data.current_version}　最新版本：v${data.latest_version}`;
           updateNotes.textContent = data.notes ? "更新说明：" + data.notes : "暂无更新说明";
           updateDiagnostics.textContent =
-            `清单：${data.manifest_url || "未知"}；检查耗时 ${data.elapsed_ms || 0} ms` +
+            `清单：${data.manifest_url || "未知"}；检查耗时 ${formatElapsedSeconds(data.elapsed_ms)}` +
             (offline ? "；离线缓存" : "");
           const releaseUrl = String(data.release_url || "");
           updateRelease.href = releaseUrl.indexOf("https://github.com/jackybee6933-code/zucaikan/releases/") === 0
@@ -1563,7 +1569,7 @@ def render_query_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>足彩分析系统1.3.12</title>
+  <title>足彩分析系统1.3.13</title>
   <style>
     :root {{
       --canvas: #f3f5f7; --panel: #ffffff; --ink: #1d2733; --muted: #64748b;
@@ -1762,7 +1768,7 @@ def render_query_html(
 </head>
 <body>
   <div class="page">
-    <h1>足彩分析系统1.3.12</h1>
+    <h1>足彩分析系统1.3.13</h1>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}　上盘=让球方，下盘=受让方；上盘让球增加为升盘，减少为降盘。</div>
     {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
     {f'<div class="meta">{bet_chip}</div>' if bet_chip else ''}

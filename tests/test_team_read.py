@@ -175,6 +175,34 @@ class ParseTests(unittest.TestCase):
         self.assertLessEqual(len(parsed["reason"]), 80)
         self.assertNotIn("  ", parsed["reason"])
 
+    def test_reverses_direction_when_confidence_is_below_half(self):
+        away = llm.parse_team_read(json.dumps({
+            "tendency": "\u5ba2\u961f\u8d62\u76d8",
+            "confidence": 0.45,
+            "reason": "x",
+        }))
+        self.assertEqual(away["tendency"], "\u4e3b\u961f\u8d62\u76d8")
+        self.assertAlmostEqual(away["confidence"], 0.55)
+
+        home = llm.parse_team_read(json.dumps({
+            "tendency": "\u4e3b\u961f\u8d62\u76d8",
+            "confidence": 0.35,
+            "reason": "x",
+        }))
+        self.assertEqual(home["tendency"], "\u5ba2\u961f\u8d62\u76d8")
+        self.assertAlmostEqual(home["confidence"], 0.65)
+
+    def test_reverses_over_direction_when_confidence_is_below_half(self):
+        parsed = llm.parse_team_read(json.dumps({
+            "tendency": "\u89c2\u671b",
+            "confidence": 0.5,
+            "over_tendency": "\u5c0f\u7403",
+            "over_confidence": 0.45,
+            "over_reason": "x",
+        }))
+        self.assertEqual(parsed["over_tendency"], "\u5927\u7403")
+        self.assertAlmostEqual(parsed["over_confidence"], 0.55)
+
 
 class _StubReader:
     enabled = True
@@ -276,7 +304,8 @@ class ReaderTests(unittest.TestCase):
             llm.requests, "post", side_effect=[self._throttled(), ok]
         ) as post:
             result = reader.read(_analysis())
-        self.assertEqual(result["tendency"], "客队赢盘")
+        self.assertEqual(result["tendency"], "主队赢盘")
+        self.assertAlmostEqual(result["confidence"], 0.6)
         self.assertEqual(post.call_count, 2)
         self.assertTrue(post.call_args.args[0].startswith("http://backup/v1"))
         self.assertEqual(post.call_args.kwargs["json"]["model"], "m2")
@@ -301,6 +330,26 @@ class ShujuTextTests(unittest.TestCase):
 
 
 class StoreAndReportTests(unittest.TestCase):
+    def test_legacy_low_confidence_direction_is_reversed_on_render(self):
+        rendered = _lean_cell(_analysis(team_read=json.dumps({
+            "tendency": "\u5ba2\u961f\u8d62\u76d8",
+            "confidence": 0.45,
+            "reason": "x",
+        })))
+        self.assertIn("模型 \u4e3b\u961f\u8d62\u76d8 55%", rendered)
+        self.assertNotIn("模型 \u5ba2\u961f\u8d62\u76d8 45%", rendered)
+
+    def test_legacy_low_confidence_over_direction_is_reversed_on_render(self):
+        rendered = _lean_cell(_analysis(team_read=json.dumps({
+            "tendency": "\u89c2\u671b",
+            "confidence": 0.5,
+            "over_tendency": "\u5c0f\u7403",
+            "over_confidence": 0.45,
+            "over_reason": "x",
+        })))
+        self.assertIn("模型 \u5927\u7403 55%", rendered)
+        self.assertNotIn("模型 \u5c0f\u7403 45%", rendered)
+
     def test_team_read_round_trip_and_rendering(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "t.sqlite"

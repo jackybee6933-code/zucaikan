@@ -121,7 +121,7 @@ class QueryServerTests(unittest.TestCase):
     def test_root_serves_query_page(self):
         status, body = _get(self.base + "/")
         self.assertEqual(status, 200)
-        self.assertIn("足彩分析系统1.3.12", body)
+        self.assertIn("足彩分析系统1.3.13", body)
         self.assertIn(">更新比分</button>", body)
         self.assertIn("data-freshness", body)
         self.assertIn("选择期号后查看", body)
@@ -133,7 +133,7 @@ class QueryServerTests(unittest.TestCase):
         """do_GET 没有 404 兜底，未知路径按单页应用方式回落到查询页。"""
         status, body = _get(self.base + "/nope")
         self.assertEqual(status, 200)
-        self.assertIn("足彩分析系统1.3.12", body)
+        self.assertIn("足彩分析系统1.3.13", body)
 
     def test_root_defaults_to_latest_issue_when_default_issue_given(self):
         """根页（无 query 参数）+ default_issue：只列当前期比赛、下拉框预选；?issue=（空）走全部期号分支。"""
@@ -313,6 +313,9 @@ class QueryServerTests(unittest.TestCase):
         self.assertIn('id="update-progress-wrap"', body)
         self.assertIn('id="update-progress"', body)
         self.assertIn("/update/install-status", body)
+        self.assertIn("formatElapsedSeconds", body)
+        self.assertIn("检查耗时 ${formatElapsedSeconds(data.elapsed_ms)}", body)
+        self.assertIn('toFixed(2) + " 秒"', body)
         self.assertIn("state.downloaded * 100 / state.total", body)
         self.assertIn("window.confirm", body)
         self.assertIn('use href="#icon-plug"', body)
