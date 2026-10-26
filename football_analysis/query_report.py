@@ -1461,25 +1461,15 @@ def render_query_html(
             rec_text += " · 跟随"
         elif rec_action in ("主推", "轻仓"):
             rec_text += " · 偏离"
-        actions = []
-        if can_bet_ui and bet.get("can_edit"):
-            actions.append(
-                f'<button type="button" class="bet-edit" data-bet-id="{int(bet.get("id") or 0)}" '
-                f'data-issue="{_esc(bet.get("issue"))}" data-match-no="{_esc(bet.get("match_no"))}">修改</button>'
-            )
-        if can_bet_ui and bet.get("can_delete"):
-            actions.append(
-                f'<button type="button" class="bet-delete" data-bet-id="{int(bet.get("id") or 0)}">删除</button>'
-            )
-        action_text = " ".join(actions) or ("已锁定" if not can_bet_ui else "-")
         bet_table_rows.append(
             f"""
             <tr id="bet-row-{int(bet.get('id') or 0)}">
-              <td>{_esc(bet.get("issue"))}</td>
+              <td class="issue-cell">{_esc(bet.get("issue"))}</td>
               <td class="match-cell">
                 <strong>{_esc(bet.get("home_team"))} vs {_esc(bet.get("away_team"))}</strong>
                 <div class="muted">{_esc(bet.get("match_time"))}</div>
               </td>
+              <td class="score-cell">{_esc(bet.get("final_score") or "未开赛")}</td>
               <td>{_esc(bet.get("market_label"))}</td>
               <td>
                 {_esc(bet.get("selection_label"))}
@@ -1490,7 +1480,6 @@ def render_query_html(
               <td>{_esc(bet.get("status_label"))}<div class="muted">{_esc(bet.get("result_label"))}</div></td>
               <td class="profit-cell">{profit}</td>
               <td class="rec-cell">{_esc(rec_text)}</td>
-              <td class="bet-actions">{action_text}</td>
             </tr>
             """
         )
@@ -1514,7 +1503,7 @@ def render_query_html(
           <summary>跨期投注趋势</summary>
           <div class="table-scroll">
             <table class="bets-table">
-              <thead><tr><th>期号</th><th>注数</th><th>已结算</th><th>投注积分</th><th>净收益</th><th>ROI</th><th>命中率</th></tr></thead>
+              <thead><tr><th class="issue-cell">期号</th><th>注数</th><th>已结算</th><th>投注积分</th><th>净收益</th><th>ROI</th><th>命中率</th></tr></thead>
               <tbody>{''.join(trend_rows)}</tbody>
             </table>
           </div>
@@ -1539,7 +1528,7 @@ def render_query_html(
       <div class="table-scroll">
         <table class="bets-table">
           <thead>
-            <tr><th>期号</th><th>比赛</th><th>市场</th><th>方向</th><th>积分</th><th>状态</th><th>收益</th><th>模型</th><th>操作</th></tr>
+            <tr><th class="issue-cell">期号</th><th class="match-cell">比赛</th><th class="score-cell">完场比分</th><th>市场</th><th>方向</th><th>积分</th><th>状态</th><th>收益</th><th>模型</th></tr>
           </thead>
           <tbody>{''.join(bet_table_rows) or '<tr><td colspan="9" class="bets-empty">本期还没有投注。</td></tr>'}</tbody>
         </table>
@@ -1569,7 +1558,7 @@ def render_query_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>足彩分析系统1.3.14</title>
+  <title>足彩分析系统1.3.15</title>
   <style>
     :root {{
       --canvas: #f3f5f7; --panel: #ffffff; --ink: #1d2733; --muted: #64748b;
@@ -1701,11 +1690,13 @@ def render_query_html(
 .bets-table {{ table-layout: fixed; }}
 .bets-table th, .bets-table td {{ padding: 8px 10px; font-size: 13px; }}
 .bets-table tbody tr:nth-child(even) td {{ background: #f8fafc; }}
-.bets-table .match-cell {{ white-space: normal; }}
+.bets-table .issue-cell {{ width: 6%; white-space: nowrap; }}
+.bets-table .match-cell {{ width: 32%; white-space: normal; }}
+.bets-table .score-cell {{ width: 8%; white-space: nowrap; font-weight: 600; }}
+.bets-table .match-cell strong {{ display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 .bets-table .profit-cell {{ font-variant-numeric: tabular-nums; font-weight: 600; }}
 .bets-table .rec-cell {{ font-size: 12px; color: #475569; }}
-.bets-table .bet-actions {{ white-space: nowrap; }}
-.bets-table .bet-actions button, .bet-existing-actions button {{ margin-right: 4px; padding: 4px 7px; background: #fff; color: var(--ink); border-color: var(--line); font-size: 12px; }}
+.bet-existing-actions button {{ margin-right: 4px; padding: 4px 7px; background: #fff; color: var(--ink); border-color: var(--line); font-size: 12px; }}
 .bets-empty {{ padding: 16px; color: var(--muted); }}
 .bets-disclaimer {{ margin: 10px 0 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--red-soft); color: var(--red); font-size: 12px; font-weight: 600; }}
 #bet-dialog {{ width: min(640px, calc(100vw - 24px)); max-height: calc(100vh - 24px); padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); box-shadow: 0 20px 60px rgba(15, 23, 42, .3); }}
@@ -1761,14 +1752,14 @@ def render_query_html(
     @media (max-width: 900px) {{
       .page {{ padding: 18px 10px 42px; }}
       .alert-table {{ min-width: 1080px; }}
-      .bets-table {{ min-width: 900px; }}
+      .bets-table {{ min-width: 820px; }}
       .bets-head {{ align-items: flex-start; }}
     }}
   </style>
 </head>
 <body>
   <div class="page">
-    <h1>足彩分析系统1.3.14</h1>
+    <h1>足彩分析系统1.3.15</h1>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}　上盘=让球方，下盘=受让方；上盘让球增加为升盘，减少为降盘。</div>
     {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
     {f'<div class="meta">{bet_chip}</div>' if bet_chip else ''}

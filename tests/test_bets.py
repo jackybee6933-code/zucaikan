@@ -258,6 +258,13 @@ class BetRenderTests(unittest.TestCase):
         self.assertIn("/bets.csv?issue=26145", serve_html)
         self.assertIn('id="bet-row-1"', serve_html)
         self.assertIn("跨期投注趋势", trend_html)
+        bets_section = serve_html[serve_html.index('<section class="bets-section"'):]
+        self.assertNotIn("<th>操作</th>", bets_section)
+        self.assertIn('class="match-cell"', bets_section)
+        self.assertIn('class="score-cell">完场比分</th>', bets_section)
+        self.assertIn('class="score-cell">未开赛</td>', bets_section)
+        self.assertIn(".bets-table .issue-cell { width: 6%;", serve_html)
+        self.assertIn(".bets-table .match-cell { width: 32%;", serve_html)
 
     def test_started_match_button_says_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
