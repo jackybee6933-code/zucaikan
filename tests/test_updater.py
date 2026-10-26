@@ -44,6 +44,36 @@ class UpdaterTests(unittest.TestCase):
             with self.assertRaisesRegex(updater.UpdateError, "检查网络或代理"):
                 updater._http_json("https://example.test/latest.json")
 
+    def test_manifest_retries_transient_timeout(self):
+        response = _Response(b'{"ok": true}')
+        error = urllib.error.URLError(TimeoutError("timed out"))
+        with mock.patch("urllib.request.urlopen", side_effect=[error, error, response]) as urlopen, \
+                mock.patch.object(updater.time, "sleep") as sleep:
+            self.assertEqual(updater._http_json("https://example.test/latest.json"), {"ok": True})
+        self.assertEqual(urlopen.call_count, 3)
+        self.assertEqual(sleep.call_args_list, [mock.call(1), mock.call(3)])
+
+    def test_check_update_falls_back_to_release_api_asset(self):
+        api_payload = {
+            "assets": [{
+                "name": "latest.json",
+                "browser_download_url": "https://api.example/latest.json",
+            }]
+        }
+        manifest = {
+            "version": "1.4",
+            "url": "https://example.test/package.zip",
+            "sha256": "a" * 64,
+        }
+        with mock.patch.object(
+            updater,
+            "_http_json",
+            side_effect=[updater.UpdateError("direct timeout"), api_payload, manifest],
+        ):
+            result = updater.check_update(current_version="1.3")
+        self.assertTrue(result["update_available"])
+        self.assertEqual(result["manifest_url"], "https://api.example/latest.json")
+
     def test_check_update_compares_versions(self):
         payload = {
             "version": "1.3",

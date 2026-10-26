@@ -22,8 +22,11 @@ else:
 DEFAULT_MANIFEST_URL = (
     "https://github.com/jackybee6933-code/zucaikan/releases/latest/download/latest.json"
 )
+RELEASE_API_URL = "https://api.github.com/repos/jackybee6933-code/zucaikan/releases/latest"
 UPDATE_CACHE_FILENAME = ".update_manifest.json"
 RELEASES_BASE_URL = "https://github.com/jackybee6933-code/zucaikan/releases/tag/v"
+MANIFEST_ATTEMPTS = 3
+MANIFEST_RETRY_DELAYS = (1, 3)
 DOWNLOAD_ATTEMPTS = 3
 DOWNLOAD_RETRY_DELAYS = (2, 5)
 APP_EXE_NAME = "football_analysis.exe"
@@ -41,18 +44,48 @@ def _manifest_url() -> str:
 
 def _http_json(url: str, *, timeout: float = 20.0) -> dict:
     request = urllib.request.Request(url, headers={"User-Agent": "football-analysis-updater"})
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.URLError as exc:
-        if isinstance(exc.reason, TimeoutError):
-            raise UpdateError("访问 GitHub 更新清单超时，请检查网络或代理（如 Clash）后重试") from exc
-        raise UpdateError(f"无法读取更新清单：{exc}") from exc
-    except Exception as exc:
-        raise UpdateError(f"无法读取更新清单：{exc}") from exc
-    if not isinstance(payload, dict):
-        raise UpdateError("更新清单格式无效")
-    return payload
+    last_error: Exception | None = None
+    for attempt in range(MANIFEST_ATTEMPTS):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise UpdateError("更新清单格式无效")
+            return payload
+        except urllib.error.HTTPError as exc:
+            last_error = exc
+            retryable = exc.code in {408, 429} or exc.code >= 500
+            message = f"HTTP {exc.code}"
+        except urllib.error.URLError as exc:
+            last_error = exc
+            retryable = True
+            if isinstance(exc.reason, TimeoutError) or "timed out" in str(exc.reason).lower():
+                message = "访问超时"
+            else:
+                message = str(exc)
+        except UpdateError:
+            raise
+        except Exception as exc:
+            last_error = exc
+            retryable = False
+            message = str(exc)
+        if not retryable or attempt + 1 >= MANIFEST_ATTEMPTS:
+            if message == "访问超时":
+                raise UpdateError(
+                    "访问 GitHub 更新清单超时，请检查网络或代理（如 Clash）后重试"
+                ) from last_error
+            raise UpdateError(f"无法读取更新清单：{message}") from last_error
+        time.sleep(MANIFEST_RETRY_DELAYS[attempt])
+    raise UpdateError("无法读取更新清单")
+
+
+def _release_manifest(data: dict) -> tuple[str, dict] | None:
+    for asset in data.get("assets") or []:
+        if str(asset.get("name") or "") == "latest.json":
+            url = str(asset.get("browser_download_url") or "").strip()
+            if url:
+                return url, _http_json(url)
+    return None
 
 
 def _cache_path() -> Path:
@@ -124,16 +157,38 @@ def _version_tuple(value: str) -> tuple[int, ...]:
 def check_update(manifest_url: str | None = None, *, current_version: str = __version__) -> dict:
     target = manifest_url or _manifest_url()
     started = time.monotonic()
-    data = _http_json(target)
+    data = None
+    resolved_manifest_url = target
+    last_error: UpdateError | None = None
+    candidates = [target]
+    if target == DEFAULT_MANIFEST_URL:
+        candidates.append(RELEASE_API_URL)
+    for candidate in candidates:
+        try:
+            payload = _http_json(candidate)
+            if candidate == RELEASE_API_URL:
+                resolved = _release_manifest(payload)
+                if resolved is None:
+                    raise UpdateError("GitHub Releases API 未找到 latest.json")
+                resolved_manifest_url, data = resolved
+            else:
+                data = payload
+                resolved_manifest_url = candidate
+            break
+        except UpdateError as exc:
+            last_error = exc
+            continue
+    if data is None:
+        raise last_error or UpdateError("无法读取更新清单，请检查网络后重试")
     checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     info = _validated_info(data, current_version=current_version)
     info.update({
         "cached": False,
         "checked_at": checked_at,
-        "manifest_url": target,
+        "manifest_url": resolved_manifest_url,
         "elapsed_ms": max(0, round((time.monotonic() - started) * 1000)),
     })
-    _save_cache(data, manifest_url=target, checked_at=checked_at)
+    _save_cache(data, manifest_url=resolved_manifest_url, checked_at=checked_at)
     return info
 
 
