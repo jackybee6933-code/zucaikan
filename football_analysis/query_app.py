@@ -1098,7 +1098,7 @@ def serve_query(
         print(f"无法监听 {host}:{port}，请检查端口是否被占用或更换端口。错误: {exc}")
         return
     url = f"http://{host}:{port}/"
-    print(f"足彩分析系统1.3.15 已启动：{url}")
+    print(f"足彩分析系统1.3.16 已启动：{url}")
     print(f"数据库：{db_path}")
     print("按 Ctrl+C 停止服务。")
     if open_browser:

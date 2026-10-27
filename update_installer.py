@@ -114,7 +114,16 @@ def main() -> int:
                 json.dumps({"at": time.time(), "exe": target.name}),
                 encoding="utf-8",
             )
-            subprocess.Popen([str(target)], cwd=str(target.parent))
+            restart_flags = (
+                getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+                if sys.platform == "win32"
+                else 0
+            )
+            subprocess.Popen(
+                [str(target)],
+                cwd=str(target.parent),
+                creationflags=restart_flags,
+            )
         return 0
     except Exception as exc:  # noqa: BLE001
         print(f"update failed: {exc}", file=sys.stderr)

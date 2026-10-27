@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 import urllib.error
@@ -241,6 +242,29 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual((root / "updater.exe").read_bytes(), b"new updater")
             self.assertEqual(
                 (root / "tools" / "scrape_odds_pages.py").read_bytes(), b"new scraper"
+            )
+
+    def test_installer_restarts_app_in_new_windows_console(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            archive = root / "package.zip"
+            target = root / updater.APP_EXE_NAME
+            target.write_bytes(b"old")
+            with zipfile.ZipFile(archive, "w") as zf:
+                zf.writestr(updater.APP_EXE_NAME, b"new")
+            with mock.patch("sys.platform", "win32"), \
+                    mock.patch("subprocess.Popen") as popen, \
+                    mock.patch("sys.argv", [
+                        "update_installer.py", "--archive", str(archive),
+                        "--target", str(target), "--restart",
+                    ]):
+                import update_installer
+
+                result = update_installer.main()
+            self.assertEqual(result, 0)
+            self.assertEqual(
+                popen.call_args.kwargs["creationflags"],
+                subprocess.CREATE_NEW_CONSOLE,
             )
 
 
