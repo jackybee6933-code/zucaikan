@@ -17,7 +17,7 @@ from unittest import mock
 
 import updater
 from football_analysis import __version__
-from football_analysis.query_app import serve_query
+from football_analysis.query_app import QueryHTTPServer, serve_query
 from football_analysis.store import save_issue_movements
 
 ISSUE = "26135"
@@ -80,6 +80,10 @@ def _wait_idle(base: str, path: str = "/review-status", timeout: float = 30) -> 
 
 
 class QueryServerTests(unittest.TestCase):
+    def test_server_does_not_wait_for_request_threads_on_close(self):
+        self.assertTrue(QueryHTTPServer.daemon_threads)
+        self.assertFalse(QueryHTTPServer.block_on_close)
+
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
@@ -121,7 +125,7 @@ class QueryServerTests(unittest.TestCase):
     def test_root_serves_query_page(self):
         status, body = _get(self.base + "/")
         self.assertEqual(status, 200)
-        self.assertIn("足彩分析系统1.3.16", body)
+        self.assertIn("足彩分析系统1.3.17", body)
         self.assertIn(">更新比分</button>", body)
         self.assertIn("data-freshness", body)
         self.assertIn("选择期号后查看", body)
@@ -133,7 +137,7 @@ class QueryServerTests(unittest.TestCase):
         """do_GET 没有 404 兜底，未知路径按单页应用方式回落到查询页。"""
         status, body = _get(self.base + "/nope")
         self.assertEqual(status, 200)
-        self.assertIn("足彩分析系统1.3.16", body)
+        self.assertIn("足彩分析系统1.3.17", body)
 
     def test_root_defaults_to_latest_issue_when_default_issue_given(self):
         """根页（无 query 参数）+ default_issue：只列当前期比赛、下拉框预选；?issue=（空）走全部期号分支。"""

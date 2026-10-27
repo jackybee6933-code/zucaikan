@@ -45,6 +45,13 @@ import importlib.util
 from pathlib import Path as _QPath
 
 
+class QueryHTTPServer(ThreadingHTTPServer):
+    """让 Ctrl+C 退出时不等待浏览器轮询线程。"""
+
+    daemon_threads = True
+    block_on_close = False
+
+
 def _load_updater():
     """加载 updater 模块。
 
@@ -1093,12 +1100,12 @@ def serve_query(
 
     try:
         port = _pick_port(port)
-        server = ThreadingHTTPServer((host, port), Handler)
+        server = QueryHTTPServer((host, port), Handler)
     except OSError as exc:
         print(f"无法监听 {host}:{port}，请检查端口是否被占用或更换端口。错误: {exc}")
         return
     url = f"http://{host}:{port}/"
-    print(f"足彩分析系统1.3.16 已启动：{url}")
+    print(f"足彩分析系统1.3.17 已启动：{url}")
     print(f"数据库：{db_path}")
     print("按 Ctrl+C 停止服务。")
     if open_browser:
