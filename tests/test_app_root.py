@@ -10,6 +10,12 @@ from football_analysis import main
 class AppRootTests(unittest.TestCase):
     """_app_root 决定 exe 的 cache/data 挂哪儿；一旦退化成 cwd 会静默写错库。"""
 
+    def test_enable_ctrl_c_restores_windows_handler(self):
+        with mock.patch.object(main.sys, "platform", "win32"), \
+             mock.patch("ctypes.windll") as windll:
+            main._enable_ctrl_c()
+        windll.kernel32.SetConsoleCtrlHandler.assert_called_once_with(None, False)
+
     def test_uses_exe_dir_when_frozen(self):
         with tempfile.TemporaryDirectory() as tmp:
             exe = Path(tmp) / "app" / "tool.exe"

@@ -37,6 +37,18 @@ _ODDS_CACHE_RE = re.compile(r"^odds_pages_(\d+)\.json$")
 _ODDS_META_RE = re.compile(r"^odds_pages_(\d+)\.meta\.json$")
 
 
+def _enable_ctrl_c() -> None:
+    """恢复 Windows 新进程组默认的 Ctrl+C 处理。"""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
+    except (AttributeError, OSError):
+        return
+
+
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
@@ -1069,6 +1081,7 @@ def _run_query(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    _enable_ctrl_c()
     parser = build_parser()
     raw = list(argv) if argv is not None else sys.argv[1:]
     if not raw:
