@@ -66,11 +66,10 @@ class UpdaterTests(unittest.TestCase):
             "url": "https://example.test/package.zip",
             "sha256": "a" * 64,
         }
-        with mock.patch.object(
-            updater,
-            "_http_json",
-            side_effect=[updater.UpdateError("direct timeout"), api_payload, manifest],
-        ):
+        env = mock.patch.dict(os.environ, {"FA_UPDATE_MANIFEST_URL": updater.DEFAULT_MANIFEST_URL})
+        with mock.patch.object(updater, "_http_json",
+                               side_effect=[updater.UpdateError("direct timeout"), api_payload, manifest]), \
+                mock.patch.object(updater, "_save_cache"), env:
             result = updater.check_update(current_version="1.3")
         self.assertTrue(result["update_available"])
         self.assertEqual(result["manifest_url"], "https://api.example/latest.json")

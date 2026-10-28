@@ -112,6 +112,49 @@ class ResumeMainTests(unittest.TestCase):
             self.assertNotIn("daxiao", metadata)
             self.assertFalse(mod.partial_path(cache, "26144").exists())
 
+    def test_empty_shuju_stops_remaining_pages(self):
+        mod = _scraper()
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            fetched = []
+
+            def fake_fetch(page, url, wait, **kwargs):
+                fetched.append(url)
+                return {"status": "empty", "text": ""}
+
+            page = mock.MagicMock()
+            with mock.patch.object(
+                mod,
+                "collect_sfc_matches",
+                return_value=(
+                    [{"fixture_id": "111"}, {"fixture_id": "222"}, {"fixture_id": "333"}],
+                    "26144",
+                ),
+            ), mock.patch.object(mod, "acquire", return_value=page), mock.patch.object(
+                mod, "fetch_page", side_effect=fake_fetch
+            ), mock.patch.object(mod.time, "sleep"):
+                code = mod.main(
+                    [
+                        "--issue",
+                        "26144",
+                        "--cache-dir",
+                        str(cache),
+                        "--kinds",
+                        "shuju",
+                        "--delay",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(fetched, ["https://odds.500.com/fenxi/shuju-111.shtml"])
+            saved = json.loads((cache / "odds_pages_26144.json").read_text(encoding="utf-8"))
+            self.assertEqual(set(saved), {"111|shuju"})
+            metadata = json.loads(
+                (cache / "odds_pages_26144.meta.json").read_text(encoding="utf-8")
+            )
+            self.assertIn("shuju", metadata)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -233,10 +233,10 @@ class EnrichTests(unittest.TestCase):
         items = [_analysis(match_no="1"), _analysis(match_no="2")]
         reader = _StubReader()
         count = llm.enrich_team_reads(items, reader=reader, page_texts=["资料一"], pace=0)
-        self.assertEqual(count, 2)
+        self.assertEqual(count, 1)
         self.assertEqual(items[0]["team_read"]["tendency"], "客队赢盘")
-        self.assertEqual(reader.calls[0], ("1", "资料一"))
-        self.assertEqual(reader.calls[1], ("2", ""))
+        self.assertNotIn("team_read", items[1])
+        self.assertEqual(reader.calls, [("1", "资料一")])
 
 
 class ReaderTests(unittest.TestCase):

@@ -636,6 +636,9 @@ def enrich_team_reads(
         page_text = ""
         if page_texts and index < len(page_texts):
             page_text = str(page_texts[index] or "")
+        if not page_text.strip():
+            _report("llm", index + 1, len(analyses))
+            continue
         result = reader.read(item, page_text)
         if result:
             item["team_read"] = normalize_team_read(result)

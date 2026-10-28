@@ -215,7 +215,15 @@ def save_partial(path: Path, result: dict[str, dict]) -> None:
     os.replace(tmp, path)
 
 
-def save_kind_metadata(cache_dir: Path, issue: str, fids: list[str], active_kinds: list[str], result: dict[str, dict]) -> None:
+def save_kind_metadata(
+    cache_dir: Path,
+    issue: str,
+    fids: list[str],
+    active_kinds: list[str],
+    result: dict[str, dict],
+    *,
+    completed_kinds: set[str] | None = None,
+) -> None:
     """Record completion time per page kind so different buttons do not share freshness."""
     path = cache_dir / PAGES_META_FILENAME.format(issue=issue)
     metadata: dict[str, float] = {}
@@ -234,7 +242,7 @@ def save_kind_metadata(cache_dir: Path, issue: str, fids: list[str], active_kind
             and result[f"{fid}|{kind}"].get("status") in (STATUS_OK, STATUS_EMPTY)
             for fid in fids
         )
-        if complete:
+        if complete or kind in (completed_kinds or set()):
             metadata[kind] = now
     if not metadata:
         return
@@ -402,11 +410,14 @@ def main(argv: list[str] | None = None) -> int:
             return 4
 
     deadline = time.time() + args.max_seconds
+    stop_empty_shuju = False
     try:
         for fid in fids:
             for kind in active_kinds:
                 key = f"{fid}|{kind}"
                 if key in result:
+                    continue
+                if kind == "shuju" and stop_empty_shuju:
                     continue
                 page_no = done + 1
                 if time.time() > deadline:
@@ -454,6 +465,9 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     log(f"  [{done:>2}/{total}] {kind}-{fid}: {len(payload.get('rows') or [])} 家{note}")
                 _write_progress(cache_dir, issue, phase="scrape", total=total, done=done, failed=failed, last=f"{kind}-{fid}")
+                if kind == "shuju" and payload.get("status") == STATUS_EMPTY:
+                    stop_empty_shuju = True
+                    log("    [!] 首个 shuju 页面为空，跳过剩余球队资料页。")
                 time.sleep(args.delay * random.uniform(0.6, 1.4))
     finally:
         # 只关自己开的那一个标签页；用户的浏览器和其余标签一律不碰
@@ -472,7 +486,14 @@ def main(argv: list[str] | None = None) -> int:
         except (json.JSONDecodeError, OSError):
             pass  # 旧产物损坏则只用新数据
     out.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
-    save_kind_metadata(cache_dir, issue, fids, active_kinds, result)
+    save_kind_metadata(
+        cache_dir,
+        issue,
+        fids,
+        active_kinds,
+        result,
+        completed_kinds={"shuju"} if stop_empty_shuju else None,
+    )
     partial.unlink(missing_ok=True)
     ok = sum(1 for page in result.values() if page.get("status") == STATUS_OK)
     empty = sum(1 for page in result.values() if page.get("status") == STATUS_EMPTY)
