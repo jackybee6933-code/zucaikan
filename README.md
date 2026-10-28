@@ -99,6 +99,14 @@ python -m PyInstaller --noconfirm "足球更新器.spec"
 
 完整包（exe + 更新器 + data/cache/reports）用 `python make_package.py` 生成到 `dist/足彩分析工具_完整包_<日期>.zip`。
 
+独立安装包使用 Inno Setup 生成，安装时可自选目录；安装包只替换程序文件，不删除已有
+`data/`、`cache/`、`reports/`：
+
+```powershell
+choco install innosetup
+.\tools\build_installer.ps1
+```
+
 ## 自动升级（GitHub Releases）
 
 发布源是 [jackybee6933-code/zucaikan](https://github.com/jackybee6933-code/zucaikan) 的 Releases：打 `v*` tag 推送后，
@@ -106,7 +114,7 @@ python -m PyInstaller --noconfirm "足球更新器.spec"
 `updater.exe`，把「主程序 + 更新器」合成 `dist/football_analysis_full.zip`，连同
 `dist/latest.json`（版本 / 下载地址 / SHA-256）一起发布为 Release 资产。
 Release 资产统一用 ASCII 文件名（`football_analysis.exe` / `updater.exe` /
-`football_analysis_full.zip` / `latest.json`），压缩包内仍保留中文 exe 名；
+`football_analysis_full.zip` / `football_analysis_setup.exe` / `latest.json`），压缩包内仍保留中文 exe 名；
 Windows runner 上中文资产名会被 GitHub Actions 处理成 `default.exe` 之类，必须避免。
 
 查询页「设置」窗口里有「软件升级」区块：
