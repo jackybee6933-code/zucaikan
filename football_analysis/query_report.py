@@ -752,6 +752,15 @@ _FETCH_BLOCK = \
       const updateProgressLabel = document.getElementById("update-progress-label");
       let updateInfo = null;
       let updatePollTimer = null;
+      function formatVersionLabel(value) {
+        return "v" + String(value || "").trim().replace(/^v+/i, "");
+      }
+      function formatKilobytes(value) {
+        return (Number(value || 0) / 1024).toLocaleString(undefined, {
+          minimumFractionDigits: 1,
+          maximumFractionDigits: 1,
+        }) + " KB";
+      }
       function stopUpdatePolling() {
         if (updatePollTimer) clearTimeout(updatePollTimer);
         updatePollTimer = null;
@@ -769,12 +778,12 @@ _FETCH_BLOCK = \
               updateProgress.value = pct;
               updateProgress.setAttribute("value", pct);
               updateProgressLabel.textContent =
-                `${pct}%　${state.downloaded.toLocaleString()} / ${state.total.toLocaleString()} 字节`;
-              updateStatus.textContent = `正在下载 v${targetVersion}...`;
+                `${pct}%　${formatKilobytes(state.downloaded)} / ${formatKilobytes(state.total)}`;
+              updateStatus.textContent = `正在下载 ${targetVersion}...`;
             } else if (state.phase === "download") {
               updateProgress.removeAttribute("value");
               updateProgressLabel.textContent = "正在下载...";
-              updateStatus.textContent = `正在下载 v${targetVersion}...`;
+              updateStatus.textContent = `正在下载 ${targetVersion}...`;
             } else if (state.phase === "verify") {
               updateProgress.value = 100;
               updateProgress.setAttribute("value", "100");
@@ -842,13 +851,15 @@ _FETCH_BLOCK = \
           }
           updateInfo = data;
           const offline = Boolean(data.cached);
+          const currentVersion = formatVersionLabel(data.current_version);
+          const latestVersion = formatVersionLabel(data.latest_version);
           updateStatus.textContent = offline
             ? `GitHub 暂不可达，以下为缓存清单（${data.checked_at || "时间未知"}），仅供查看。`
             : data.update_available
-              ? `发现新版本 v${data.latest_version}`
-              : `当前已是最新版本 v${data.current_version}`;
+              ? `发现新版本 ${latestVersion}`
+              : `当前已是最新版本 ${currentVersion}`;
           updateVersions.textContent =
-            `当前版本：v${data.current_version}　最新版本：v${data.latest_version}`;
+            `当前版本：${currentVersion}　最新版本：${latestVersion}`;
           updateNotes.textContent = data.notes ? "更新说明：" + data.notes : "暂无更新说明";
           updateDiagnostics.textContent =
             `清单：${data.manifest_url || "未知"}；检查耗时 ${formatElapsedSeconds(data.elapsed_ms)}` +
@@ -857,7 +868,7 @@ _FETCH_BLOCK = \
           updateRelease.href = releaseUrl.indexOf("https://github.com/jackybee6933-code/zucaikan/releases/") === 0
             ? releaseUrl
             : "https://github.com/jackybee6933-code/zucaikan/releases";
-          updateRelease.textContent = `打开 v${data.latest_version} 发布页`;
+          updateRelease.textContent = `打开 ${latestVersion} 发布页`;
           updateDetails.hidden = false;
           updateInstall.disabled = !data.update_available || offline;
         } catch (e) {
@@ -873,7 +884,7 @@ _FETCH_BLOCK = \
       updateCheck.addEventListener("click", checkForUpdate);
       updateInstall.addEventListener("click", async function () {
         if (!updateInfo?.update_available) return;
-        const targetVersion = `v${updateInfo.latest_version}`;
+        const targetVersion = formatVersionLabel(updateInfo.latest_version);
         if (!window.confirm(`将下载并安装 ${targetVersion}，校验通过后会关闭并重启程序。是否继续？`)) return;
         this.disabled = true;
         updateProgressWrap.hidden = false;
@@ -1558,7 +1569,7 @@ def render_query_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>足彩分析系统1.3.20</title>
+  <title>足彩分析系统1.3.21</title>
   <style>
     :root {{
       --canvas: #f3f5f7; --panel: #ffffff; --ink: #1d2733; --muted: #64748b;
@@ -1759,7 +1770,7 @@ def render_query_html(
 </head>
 <body>
   <div class="page">
-    <h1>足彩分析系统1.3.20</h1>
+    <h1>足彩分析系统1.3.21</h1>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}</div>
     {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
     {f'<div class="meta">{bet_chip}</div>' if bet_chip else ''}
