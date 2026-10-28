@@ -78,17 +78,81 @@ def _install_support_files(zf: zipfile.ZipFile, root: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--archive", required=True)
-    parser.add_argument("--target", required=True)
+    parser.add_argument("--archive", required=False)
+    parser.add_argument("--target", required=False)
+    parser.add_argument("--installer", required=False)
     parser.add_argument("--restart", action="store_true")
     parser.add_argument("--kill-pid", type=int, default=0)
     parser.add_argument("--wait-seconds", type=int, default=600)
     args = parser.parse_args()
-    archive = Path(args.archive).resolve()
-    target = Path(args.target).resolve()
+    if args.installer:
+        return _run_installer(Path(args.installer).resolve(), args.kill_pid, args.restart)
+    if not args.archive or not args.target:
+        parser.error("either --installer or both --archive and --target are required")
+    return _install_zip(
+        Path(args.archive).resolve(),
+        Path(args.target).resolve(),
+        args.kill_pid,
+        args.wait_seconds,
+        args.restart,
+    )
+
+
+def _run_installer(installer: Path, kill_pid: int, restart: bool) -> int:
+    root = installer.parent
+    target = root / "football_analysis.exe"
     try:
-        _stop_running_app(args.kill_pid)
-        deadline = time.time() + max(args.wait_seconds, 0)
+        _stop_running_app(kill_pid)
+        deadline = time.time() + 120
+        while not _target_unlocked(target) and time.time() < deadline:
+            time.sleep(1)
+        if not _target_unlocked(target):
+            raise TimeoutError("main app still running, cannot replace")
+        process = subprocess.Popen(
+            [
+                str(installer),
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART",
+                "/NOCANCEL",
+                f"/DIR={root}",
+            ],
+            cwd=str(root),
+        )
+        if process.wait(timeout=600) != 0:
+            raise OSError("installer exited unsuccessfully")
+        if restart:
+            marker = root / ".fa_update_restart"
+            marker.write_text(
+                json.dumps({"at": time.time(), "exe": "football_analysis.exe"}),
+                encoding="utf-8",
+            )
+            restart_flags = (
+                getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+                if sys.platform == "win32"
+                else 0
+            )
+            subprocess.Popen(
+                [str(target)],
+                cwd=str(root),
+                creationflags=restart_flags,
+            )
+        return 0
+    except Exception as exc:  # noqa: BLE001
+        print(f"update failed: {exc}", file=sys.stderr)
+        return 1
+
+
+def _install_zip(
+    archive: Path,
+    target: Path,
+    kill_pid: int,
+    wait_seconds: int,
+    restart: bool,
+) -> int:
+    try:
+        _stop_running_app(kill_pid)
+        deadline = time.time() + max(wait_seconds, 0)
         while not _target_unlocked(target) and time.time() < deadline:
             time.sleep(1)
         with zipfile.ZipFile(archive) as zf:
@@ -108,7 +172,7 @@ def main() -> int:
         staged.rename(target)
         backup.unlink(missing_ok=True)
         archive.unlink(missing_ok=True)
-        if args.restart:
+        if restart:
             marker = target.parent / ".fa_update_restart"
             marker.write_text(
                 json.dumps({"at": time.time(), "exe": target.name}),

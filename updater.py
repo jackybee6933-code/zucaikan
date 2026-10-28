@@ -32,6 +32,8 @@ DOWNLOAD_RETRY_DELAYS = (2, 5)
 APP_EXE_NAME = "football_analysis.exe"
 UPDATER_EXE_NAME = "updater.exe"
 LEGACY_UPDATER_EXE_NAME = "足球更新器.exe"
+INSTALLER_NAME = "football_analysis_setup.exe"
+ARCHIVE_NAME = "football_analysis_full.zip"
 
 
 class UpdateError(RuntimeError):
@@ -99,18 +101,27 @@ def _release_url(version: str, data: dict) -> str:
 
 def _validated_info(data: dict, *, current_version: str) -> dict:
     version = str(data.get("version", "")).strip()
-    url = str(data.get("url", "")).strip()
-    sha256 = str(data.get("sha256", "")).strip().lower()
-    if not version or not url or len(sha256) != 64:
-        raise UpdateError("更新清单缺少 version/url/sha256")
+    installer_url = str(data.get("installer_url") or data.get("url") or "").strip()
+    installer_sha256 = str(
+        data.get("installer_sha256") or data.get("sha256") or ""
+    ).strip().lower()
+    archive_url = str(data.get("archive_url") or "").strip()
+    archive_sha256 = str(data.get("archive_sha256") or "").strip().lower()
+    has_installer = bool(installer_url) and len(installer_sha256) == 64
+    has_archive = bool(archive_url) and len(archive_sha256) == 64
+    if not version or (not has_installer and not has_archive):
+        raise UpdateError("更新清单缺少安装包或升级包校验信息")
     latest = _version_tuple(version)
     current = _version_tuple(current_version)
     return {
         "current_version": current_version,
         "latest_version": version,
         "update_available": latest > current,
-        "url": url,
-        "sha256": sha256,
+        "url": installer_url,
+        "package_type": "inno-setup" if has_installer else "zip",
+        "sha256": installer_sha256,
+        "archive_url": archive_url,
+        "archive_sha256": archive_sha256,
         "notes": str(data.get("notes", "")),
         "release_url": _release_url(version, data),
     }
@@ -200,14 +211,37 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def download_package(info: dict, *, progress=None, phase=None) -> Path:
-    url = str(info.get("url", ""))
-    expected = str(info.get("sha256", "")).lower()
-    if not url or len(expected) != 64:
+def download_package(info: dict, *, progress=None, phase=None) -> tuple[Path, str]:
+    primary_url = str(info.get("url", ""))
+    primary_sha = str(info.get("sha256", "")).lower()
+    primary_type = "inno-setup" if primary_url.lower().endswith(".exe") else "zip"
+    candidates = [
+        (primary_type, primary_url, primary_sha),
+        ("zip", str(info.get("archive_url", "")), str(info.get("archive_sha256", ""))),
+    ]
+    candidates = [item for item in candidates if item[1] and len(item[2]) == 64]
+    if not candidates:
         raise UpdateError("更新信息无效")
+
+    last_error: Exception | None = None
+    for package_type, url, expected in candidates:
+        result = _download_candidate(url, expected, progress=progress, phase=phase)
+        if result[0] is not None:
+            return result[0], package_type
+        last_error = result[1]
+    raise UpdateError(f"下载升级包失败：{last_error}")
+
+
+def _download_candidate(
+    url: str,
+    expected: str,
+    *,
+    progress=None,
+    phase=None,
+) -> tuple[Path | None, Exception | None]:
     temp_dir = Path(tempfile.mkdtemp(prefix="fa_update_"))
-    target = temp_dir / "package.zip"
-    last_error = None
+    target = temp_dir / ("package.exe" if url.lower().endswith(".exe") else "package.zip")
+    last_error: Exception | None = None
     for attempt in range(DOWNLOAD_ATTEMPTS):
         request = urllib.request.Request(url, headers={"User-Agent": "football-analysis-updater"})
         try:
@@ -231,25 +265,42 @@ def download_package(info: dict, *, progress=None, phase=None) -> Path:
                 raise UpdateError("升级包 SHA-256 校验失败")
             if phase:
                 phase("ready")
-            return target
+            return target, None
         except Exception as exc:
             last_error = exc
             target.unlink(missing_ok=True)
             if attempt + 1 < DOWNLOAD_ATTEMPTS:
                 time.sleep(DOWNLOAD_RETRY_DELAYS[attempt])
     shutil.rmtree(temp_dir, ignore_errors=True)
-    if isinstance(last_error, UpdateError):
-        raise UpdateError(f"{last_error}（已尝试 {DOWNLOAD_ATTEMPTS} 次）") from last_error
-    raise UpdateError(
-        f"下载升级包失败（已尝试 {DOWNLOAD_ATTEMPTS} 次）：{last_error}"
-    ) from last_error
+    return None, last_error
 
 
-def install_downloaded(archive: Path, *, wait_seconds: int = 10) -> dict:
+def install_downloaded(
+    archive: Path,
+    *,
+    wait_seconds: int = 10,
+    package_type: str = "zip",
+) -> dict:
     root = app_root()
     target = root / APP_EXE_NAME
     if not target.is_file():
         raise UpdateError(f"未找到主程序：{target}")
+    if str(archive.suffix).lower() == ".exe" or str(package_type).lower() == "inno-setup":
+        installer_exe = root / "updater.exe"
+        marker = root / ".fa_update_restart"
+        marker.unlink(missing_ok=True)
+        process = subprocess.Popen(
+            [
+                str(installer_exe),
+                "--installer", str(archive),
+                "--target", str(target),
+                "--kill-pid", str(os.getpid()),
+                "--restart",
+            ],
+            cwd=str(root),
+            creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+        )
+        return {"updater_pid": process.pid, "wait_seconds": wait_seconds}
     updater = next(
         (root / name for name in (UPDATER_EXE_NAME, LEGACY_UPDATER_EXE_NAME)
          if (root / name).is_file()),

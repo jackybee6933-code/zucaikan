@@ -125,11 +125,12 @@ class UpdaterTests(unittest.TestCase):
             progress = []
             phases = []
             with mock.patch("urllib.request.urlopen", return_value=_Response(b"package")):
-                result = updater.download_package(
+                result, package_type = updater.download_package(
                     info,
                     progress=lambda downloaded, total: progress.append((downloaded, total)),
                     phase=phases.append,
                 )
+            self.assertEqual(package_type, "zip")
             self.assertEqual(result.read_bytes(), b"package")
             self.assertEqual(progress, [(7, 7)])
             self.assertEqual(phases, ["verify", "ready"])
@@ -143,7 +144,7 @@ class UpdaterTests(unittest.TestCase):
         responses = [urllib.error.URLError("temporary"), _Response(data)]
         with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen, \
                 mock.patch.object(updater.time, "sleep") as sleep:
-            result = updater.download_package(info)
+            result, _ = updater.download_package(info)
         self.assertEqual(result.read_bytes(), data)
         self.assertEqual(urlopen.call_count, 2)
         sleep.assert_called_once_with(2)
@@ -157,7 +158,7 @@ class UpdaterTests(unittest.TestCase):
         responses = [_Response(b"pack", content_length=7), _Response(data)]
         with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen, \
                 mock.patch.object(updater.time, "sleep"):
-            result = updater.download_package(info)
+            result, _ = updater.download_package(info)
         self.assertEqual(result.read_bytes(), data)
         self.assertEqual(urlopen.call_count, 2)
 
@@ -170,9 +171,30 @@ class UpdaterTests(unittest.TestCase):
         responses = [_Response(b"broken!"), _Response(data)]
         with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen, \
                 mock.patch.object(updater.time, "sleep"):
-            result = updater.download_package(info)
+            result, _ = updater.download_package(info)
         self.assertEqual(result.read_bytes(), data)
         self.assertEqual(urlopen.call_count, 2)
+
+    def test_download_package_prefers_installer_and_falls_back_to_zip(self):
+        data = b"zipdata"
+        info = {
+            "url": "https://example.test/setup.exe",
+            "sha256": "0" * 64,
+            "archive_url": "https://example.test/archive.zip",
+            "archive_sha256": hashlib.sha256(data).hexdigest(),
+        }
+        responses = [
+            urllib.error.URLError("installer blocked"),
+            urllib.error.URLError("installer blocked"),
+            urllib.error.URLError("installer blocked"),
+            _Response(data),
+        ]
+        with mock.patch("urllib.request.urlopen", side_effect=responses), \
+                mock.patch.object(updater.time, "sleep") as sleep:
+            result, package_type = updater.download_package(info)
+        self.assertEqual(package_type, "zip")
+        self.assertEqual(result.read_bytes(), data)
+        self.assertEqual(sleep.call_args_list, [mock.call(2), mock.call(5)])
 
     def test_download_package_cleans_temp_dir_after_final_failure(self):
         temp_dir = Path(tempfile.mkdtemp(prefix="test_fa_update_"))
@@ -181,7 +203,7 @@ class UpdaterTests(unittest.TestCase):
             with mock.patch.object(updater.tempfile, "mkdtemp", return_value=str(temp_dir)), \
                     mock.patch("urllib.request.urlopen", side_effect=OSError("offline")) as urlopen, \
                     mock.patch.object(updater.time, "sleep"):
-                with self.assertRaisesRegex(updater.UpdateError, "已尝试 3 次"):
+                with self.assertRaisesRegex(updater.UpdateError, "下载升级包失败"):
                     updater.download_package(info)
             self.assertEqual(urlopen.call_count, 3)
             self.assertFalse(temp_dir.exists())

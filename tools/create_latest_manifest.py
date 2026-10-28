@@ -12,27 +12,28 @@ def main() -> None:
     version = os.environ.get("VERSION", "").lstrip("v")
     if not version:
         raise SystemExit("VERSION is required")
-    package = DIST / PACKAGE_NAME
-    digest = hashlib.sha256(package.read_bytes()).hexdigest()
     notes_path = Path(__file__).resolve().parents[1] / "docs" / "releases" / f"v{version}.md"
     notes = os.environ.get("RELEASE_NOTES", "").strip()
     if not notes and notes_path.is_file():
         notes = notes_path.read_text(encoding="utf-8").strip()
+    base = (
+        "https://github.com/jackybee6933-code/zucaikan/releases/download/"
+        f"v{version}"
+    )
     manifest = {
         "version": version,
-        "url": f"https://github.com/jackybee6933-code/zucaikan/releases/download/v{version}/{PACKAGE_NAME}",
-        "sha256": digest,
         "release_url": f"https://github.com/jackybee6933-code/zucaikan/releases/tag/v{version}",
         "notes": notes,
     }
     installer = DIST / INSTALLER_NAME
     if installer.is_file():
-        manifest["installer_url"] = (
-            f"https://github.com/jackybee6933-code/zucaikan/releases/download/"
-            f"v{version}/{INSTALLER_NAME}"
-        )
+        manifest["installer_url"] = f"{base}/{INSTALLER_NAME}"
         manifest["installer_sha256"] = hashlib.sha256(installer.read_bytes()).hexdigest()
         manifest["installer_package_type"] = "inno-setup"
+    package = DIST / PACKAGE_NAME
+    if package.is_file():
+        manifest["archive_url"] = f"{base}/{PACKAGE_NAME}"
+        manifest["archive_sha256"] = hashlib.sha256(package.read_bytes()).hexdigest()
     (DIST / "latest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

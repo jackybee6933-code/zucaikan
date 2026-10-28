@@ -584,12 +584,14 @@ def serve_query(
                 with update_lock:
                     update_state["phase"] = value
 
-            archive = _updater.download_package(
+            archive, package_type = _updater.download_package(
                 info, progress=_progress, phase=_phase
             )
             with update_lock:
                 update_state["phase"] = "installing"
-            result = _updater.install_downloaded(archive)
+            result = _updater.install_downloaded(
+                archive, package_type=package_type
+            )
             with update_lock:
                 update_state.update(
                     running=False,
@@ -1105,7 +1107,7 @@ def serve_query(
         print(f"无法监听 {host}:{port}，请检查端口是否被占用或更换端口。错误: {exc}")
         return
     url = f"http://{host}:{port}/"
-    print(f"足彩分析系统1.3.21 已启动：{url}")
+    print(f"足彩分析系统1.3.22 已启动：{url}")
     print(f"数据库：{db_path}")
     print("按 Ctrl+C 停止服务。")
     if open_browser:
