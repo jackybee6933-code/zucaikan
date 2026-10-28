@@ -63,8 +63,8 @@ class UpdaterTests(unittest.TestCase):
         }
         manifest = {
             "version": "1.4",
-            "url": "https://example.test/package.zip",
-            "sha256": "a" * 64,
+            "installer_url": "https://example.test/setup.exe",
+            "installer_sha256": "a" * 64,
         }
         env = mock.patch.dict(os.environ, {"FA_UPDATE_MANIFEST_URL": updater.DEFAULT_MANIFEST_URL})
         with mock.patch.object(updater, "_http_json",
@@ -77,8 +77,8 @@ class UpdaterTests(unittest.TestCase):
     def test_check_update_compares_versions(self):
         payload = {
             "version": "1.3",
-            "url": "https://example.test/package.zip",
-            "sha256": "a" * 64,
+            "installer_url": "https://example.test/setup.exe",
+            "installer_sha256": "a" * 64,
             "notes": "new",
         }
         with mock.patch.object(updater, "_http_json", return_value=payload):
@@ -92,8 +92,8 @@ class UpdaterTests(unittest.TestCase):
     def test_check_update_reports_diagnostics_and_caches_manifest(self):
         payload = {
             "version": "1.4",
-            "url": "https://example.test/package.zip",
-            "sha256": "b" * 64,
+            "installer_url": "https://example.test/setup.exe",
+            "installer_sha256": "b" * 64,
             "notes": "Fixes",
         }
         with tempfile.TemporaryDirectory() as tmp, \
@@ -116,12 +116,22 @@ class UpdaterTests(unittest.TestCase):
             with self.assertRaises(updater.UpdateError):
                 updater.check_update(current_version="1.2")
 
+    def test_check_update_rejects_zip_only_manifest(self):
+        payload = {
+            "version": "1.4",
+            "archive_url": "https://example.test/archive.zip",
+            "archive_sha256": "a" * 64,
+        }
+        with mock.patch.object(updater, "_http_json", return_value=payload):
+            with self.assertRaises(updater.UpdateError):
+                updater.check_update(current_version="1.2")
+
     def test_download_package_checks_sha256(self):
         with tempfile.TemporaryDirectory() as tmp:
-            source = Path(tmp) / "package.zip"
+            source = Path(tmp) / "setup.exe"
             source.write_bytes(b"package")
             digest = hashlib.sha256(source.read_bytes()).hexdigest()
-            info = {"url": "https://example.test/package.zip", "sha256": digest}
+            info = {"url": "https://example.test/setup.exe", "sha256": digest}
             progress = []
             phases = []
             with mock.patch("urllib.request.urlopen", return_value=_Response(b"package")):
@@ -130,7 +140,7 @@ class UpdaterTests(unittest.TestCase):
                     progress=lambda downloaded, total: progress.append((downloaded, total)),
                     phase=phases.append,
                 )
-            self.assertEqual(package_type, "zip")
+            self.assertEqual(package_type, "inno-setup")
             self.assertEqual(result.read_bytes(), b"package")
             self.assertEqual(progress, [(7, 7)])
             self.assertEqual(phases, ["verify", "ready"])
@@ -138,7 +148,7 @@ class UpdaterTests(unittest.TestCase):
     def test_download_package_retries_after_connection_error(self):
         data = b"package"
         info = {
-            "url": "https://example.test/package.zip",
+            "url": "https://example.test/setup.exe",
             "sha256": hashlib.sha256(data).hexdigest(),
         }
         responses = [urllib.error.URLError("temporary"), _Response(data)]
@@ -152,7 +162,7 @@ class UpdaterTests(unittest.TestCase):
     def test_download_package_retries_truncated_response(self):
         data = b"package"
         info = {
-            "url": "https://example.test/package.zip",
+            "url": "https://example.test/setup.exe",
             "sha256": hashlib.sha256(data).hexdigest(),
         }
         responses = [_Response(b"pack", content_length=7), _Response(data)]
@@ -165,7 +175,7 @@ class UpdaterTests(unittest.TestCase):
     def test_download_package_retries_hash_mismatch(self):
         data = b"package"
         info = {
-            "url": "https://example.test/package.zip",
+            "url": "https://example.test/setup.exe",
             "sha256": hashlib.sha256(data).hexdigest(),
         }
         responses = [_Response(b"broken!"), _Response(data)]
@@ -175,8 +185,8 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(result.read_bytes(), data)
         self.assertEqual(urlopen.call_count, 2)
 
-    def test_download_package_prefers_installer_and_falls_back_to_zip(self):
-        data = b"zipdata"
+    def test_download_package_does_not_fall_back_to_zip(self):
+        data = b"installer"
         info = {
             "url": "https://example.test/setup.exe",
             "sha256": "0" * 64,
@@ -187,18 +197,16 @@ class UpdaterTests(unittest.TestCase):
             urllib.error.URLError("installer blocked"),
             urllib.error.URLError("installer blocked"),
             urllib.error.URLError("installer blocked"),
-            _Response(data),
         ]
         with mock.patch("urllib.request.urlopen", side_effect=responses), \
                 mock.patch.object(updater.time, "sleep") as sleep:
-            result, package_type = updater.download_package(info)
-        self.assertEqual(package_type, "zip")
-        self.assertEqual(result.read_bytes(), data)
+            with self.assertRaises(updater.UpdateError):
+                updater.download_package(info)
         self.assertEqual(sleep.call_args_list, [mock.call(2), mock.call(5)])
 
     def test_download_package_cleans_temp_dir_after_final_failure(self):
         temp_dir = Path(tempfile.mkdtemp(prefix="test_fa_update_"))
-        info = {"url": "https://example.test/package.zip", "sha256": "a" * 64}
+        info = {"url": "https://example.test/setup.exe", "sha256": "a" * 64}
         try:
             with mock.patch.object(updater.tempfile, "mkdtemp", return_value=str(temp_dir)), \
                     mock.patch("urllib.request.urlopen", side_effect=OSError("offline")) as urlopen, \

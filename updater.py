@@ -101,15 +101,15 @@ def _release_url(version: str, data: dict) -> str:
 
 def _validated_info(data: dict, *, current_version: str) -> dict:
     version = str(data.get("version", "")).strip()
-    installer_url = str(data.get("installer_url") or data.get("url") or "").strip()
+    installer_url = str(data.get("installer_url") or "").strip()
     installer_sha256 = str(
         data.get("installer_sha256") or data.get("sha256") or ""
     ).strip().lower()
-    archive_url = str(data.get("archive_url") or "").strip()
-    archive_sha256 = str(data.get("archive_sha256") or "").strip().lower()
-    has_installer = bool(installer_url) and len(installer_sha256) == 64
-    has_archive = bool(archive_url) and len(archive_sha256) == 64
-    if not version or (not has_installer and not has_archive):
+    has_installer = (
+        installer_url.lower().endswith(".exe")
+        and len(installer_sha256) == 64
+    )
+    if not version or not has_installer:
         raise UpdateError("更新清单缺少安装包或升级包校验信息")
     latest = _version_tuple(version)
     current = _version_tuple(current_version)
@@ -118,10 +118,8 @@ def _validated_info(data: dict, *, current_version: str) -> dict:
         "latest_version": version,
         "update_available": latest > current,
         "url": installer_url,
-        "package_type": "inno-setup" if has_installer else "zip",
+        "package_type": "inno-setup",
         "sha256": installer_sha256,
-        "archive_url": archive_url,
-        "archive_sha256": archive_sha256,
         "notes": str(data.get("notes", "")),
         "release_url": _release_url(version, data),
     }
@@ -214,12 +212,11 @@ def _sha256(path: Path) -> str:
 def download_package(info: dict, *, progress=None, phase=None) -> tuple[Path, str]:
     primary_url = str(info.get("url", ""))
     primary_sha = str(info.get("sha256", "")).lower()
-    primary_type = "inno-setup" if primary_url.lower().endswith(".exe") else "zip"
-    candidates = [
-        (primary_type, primary_url, primary_sha),
-        ("zip", str(info.get("archive_url", "")), str(info.get("archive_sha256", ""))),
-    ]
-    candidates = [item for item in candidates if item[1] and len(item[2]) == 64]
+    candidates = (
+        [("inno-setup", primary_url, primary_sha)]
+        if primary_url.lower().endswith(".exe") and len(primary_sha) == 64
+        else []
+    )
     if not candidates:
         raise UpdateError("更新信息无效")
 
