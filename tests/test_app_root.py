@@ -12,8 +12,13 @@ class AppRootTests(unittest.TestCase):
 
     def test_enable_ctrl_c_restores_windows_handler(self):
         with mock.patch.object(main.sys, "platform", "win32"), \
-             mock.patch("ctypes.windll") as windll:
+             mock.patch.object(main.sys, "frozen", True, create=True), \
+             mock.patch.dict("os.environ", {main._UPDATE_RELAUNCH_ENV: "1"}), \
+             mock.patch("builtins.open", mock.mock_open()), \
+             mock.patch.object(main.ctypes, "windll", create=True) as windll:
             main._enable_ctrl_c()
+        windll.kernel32.FreeConsole.assert_called_once_with()
+        windll.kernel32.AllocConsole.assert_called_once_with()
         windll.kernel32.SetConsoleCtrlHandler.assert_called_once_with(None, False)
 
     def test_uses_exe_dir_when_frozen(self):
@@ -139,6 +144,18 @@ class DefaultFlowTests(unittest.TestCase):
                 [("latest", ""), ("scores", "26146"), ("analyze", "26146")],
             )
             self.assertEqual(captured["args"].issue, "26146")
+
+    def test_update_relaunch_enters_query_without_running_analysis(self):
+        with mock.patch.object(main.sys, "frozen", True, create=True), \
+                mock.patch.object(main, "_enable_ctrl_c"), \
+                mock.patch.dict("os.environ", {main._UPDATE_RELAUNCH_ENV: "1"}), \
+                mock.patch.object(main, "_run_query", return_value=0) as run_query, \
+                mock.patch.object(main, "_run_analyze_then_serve") as run_analyze:
+            result = main.main([])
+        self.assertEqual(result, 0)
+        self.assertEqual(run_query.call_args.args[0].command, "query")
+        self.assertTrue(run_query.call_args.args[0].serve)
+        run_analyze.assert_not_called()
 
     def test_previous_score_refresh_skips_issue_without_matches(self):
         with tempfile.TemporaryDirectory() as tmp:

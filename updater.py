@@ -31,6 +31,7 @@ DOWNLOAD_ATTEMPTS = 3
 DOWNLOAD_RETRY_DELAYS = (2, 5)
 APP_EXE_NAME = "football_analysis.exe"
 UPDATER_EXE_NAME = "updater.exe"
+UPDATE_RELAUNCH_ENV = "FA_UPDATE_RELAUNCH"
 LEGACY_UPDATER_EXE_NAME = "足球更新器.exe"
 INSTALLER_NAME = "football_analysis_setup.exe"
 ARCHIVE_NAME = "football_analysis_full.zip"
@@ -293,6 +294,7 @@ def install_downloaded(
                 "--target", str(target),
                 "--kill-pid", str(os.getpid()),
                 "--restart",
+                "--relaunch-env", UPDATE_RELAUNCH_ENV,
             ],
             cwd=str(root),
             creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
@@ -312,6 +314,7 @@ def install_downloaded(
             "--target", str(target),
             "--kill-pid", str(os.getpid()),
             "--restart",
+            "--relaunch-env", UPDATE_RELAUNCH_ENV,
         ],
         cwd=str(root),
         creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),

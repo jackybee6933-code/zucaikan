@@ -84,6 +84,7 @@ def main() -> int:
     parser.add_argument("--restart", action="store_true")
     parser.add_argument("--kill-pid", type=int, default=0)
     parser.add_argument("--wait-seconds", type=int, default=600)
+    parser.add_argument("--relaunch-env", default="")
     args = parser.parse_args()
     if args.installer:
         if not args.target:
@@ -93,6 +94,7 @@ def main() -> int:
             Path(args.target).resolve(),
             args.kill_pid,
             args.restart,
+            args.relaunch_env,
         )
     if not args.archive or not args.target:
         parser.error("either --installer or both --archive and --target are required")
@@ -102,6 +104,7 @@ def main() -> int:
         args.kill_pid,
         args.wait_seconds,
         args.restart,
+        args.relaunch_env,
     )
 
 
@@ -110,6 +113,7 @@ def _run_installer(
     target: Path,
     kill_pid: int,
     restart: bool,
+    relaunch_env: str = "",
 ) -> int:
     root = target.parent
     try:
@@ -126,6 +130,8 @@ def _run_installer(
                 "/SUPPRESSMSGBOXES",
                 "/NORESTART",
                 "/NOCANCEL",
+                "/NOICONS",
+                "/SP-",
                 f"/DIR={root}",
             ],
             cwd=str(root),
@@ -138,10 +144,7 @@ def _run_installer(
                 json.dumps({"at": time.time(), "exe": "football_analysis.exe"}),
                 encoding="utf-8",
             )
-            subprocess.Popen(
-                [str(target)],
-                cwd=str(root),
-            )
+            _relaunch_app(target, root, relaunch_env)
         return 0
     except Exception as exc:  # noqa: BLE001
         print(f"update failed: {exc}", file=sys.stderr)
@@ -154,6 +157,7 @@ def _install_zip(
     kill_pid: int,
     wait_seconds: int,
     restart: bool,
+    relaunch_env: str = "",
 ) -> int:
     try:
         _stop_running_app(kill_pid)
@@ -183,14 +187,28 @@ def _install_zip(
                 json.dumps({"at": time.time(), "exe": target.name}),
                 encoding="utf-8",
             )
-            subprocess.Popen(
-                [str(target)],
-                cwd=str(target.parent),
-            )
+            _relaunch_app(target, target.parent, relaunch_env)
         return 0
     except Exception as exc:  # noqa: BLE001
         print(f"update failed: {exc}", file=sys.stderr)
         return 1
+
+
+def _relaunch_app(target: Path, root: Path, env_name: str = "") -> None:
+    env = os.environ.copy()
+    if env_name:
+        env[env_name] = "1"
+    subprocess.Popen(
+        [str(target)],
+        cwd=str(root),
+        env=env,
+        creationflags=(
+            getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+            if sys.platform == "win32"
+            else 0
+        ),
+        close_fds=True,
+    )
 
 
 if __name__ == "__main__":

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
+import os
 import re
 import sys
 import time
@@ -35,20 +37,22 @@ DEFAULT_QUERY_PORT = 8765
 PARTIAL_CACHE_TTL_HOURS = 6.0
 _ODDS_CACHE_RE = re.compile(r"^odds_pages_(\d+)\.json$")
 _ODDS_META_RE = re.compile(r"^odds_pages_(\d+)\.meta\.json$")
+_UPDATE_RELAUNCH_ENV = "FA_UPDATE_RELAUNCH"
 
 
 def _enable_ctrl_c() -> None:
-    """恢复 Windows 新进程组默认的 Ctrl+C 处理。"""
-    if sys.platform != "win32":
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
         return
-    try:
-        import ctypes
-
-        ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
-    except (AttributeError, OSError):
+    if not os.environ.pop(_UPDATE_RELAUNCH_ENV, None):
         return
-
-
+    kernel32 = ctypes.windll.kernel32
+    kernel32.FreeConsole()
+    if not kernel32.AllocConsole():
+        raise OSError("Could not allocate a console for the restarted application.")
+    sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
+    sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
+    sys.stderr = sys.stdout
+    kernel32.SetConsoleCtrlHandler(None, False)
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
@@ -1084,6 +1088,8 @@ def main(argv: list[str] | None = None) -> int:
     _enable_ctrl_c()
     parser = build_parser()
     raw = list(argv) if argv is not None else sys.argv[1:]
+    if not raw and getattr(sys, "frozen", False) and os.environ.get(_UPDATE_RELAUNCH_ENV):
+        return _run_query(parser.parse_args(["query", "--serve"]))
     if not raw:
         return _run_analyze_then_serve(parser)
     if raw[0] not in {
