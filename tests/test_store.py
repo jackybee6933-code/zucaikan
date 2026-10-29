@@ -2,6 +2,7 @@
 import unittest
 from pathlib import Path
 
+from football_analysis import __version__
 from football_analysis.browser_report import render_browser_html
 from football_analysis.query_report import render_query_html
 from football_analysis.store import latest_captured_at, list_issues, list_leagues, query_movements, save_issue_movements, update_match_scores
@@ -103,7 +104,8 @@ class MovementStoreTests(unittest.TestCase):
             self.assertEqual(len(all_rows), 4)
             html = render_query_html(latest, issues=issues, issue="26121", db_path=str(db))
             self.assertIn("巴萨 vs 费耶诺德", html)
-            self.assertIn("足彩分析系统1.3.27", html)
+            self.assertIn(f"足彩分析系统{__version__}", html)
+            self.assertNotIn("足彩分析系统1.3.27", html)
             self.assertIn("降盘", html)
             self.assertNotIn("退盘", html)
             self.assertIn("倾向", html)
