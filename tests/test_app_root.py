@@ -10,16 +10,16 @@ from football_analysis import main
 class AppRootTests(unittest.TestCase):
     """_app_root 决定 exe 的 cache/data 挂哪儿；一旦退化成 cwd 会静默写错库。"""
 
-    def test_enable_ctrl_c_restores_windows_handler(self):
+    def test_prepare_update_console_reopens_standard_streams(self):
         with mock.patch.object(main.sys, "platform", "win32"), \
              mock.patch.object(main.sys, "frozen", True, create=True), \
-             mock.patch.dict("os.environ", {main._UPDATE_RELAUNCH_ENV: "1"}), \
-             mock.patch("builtins.open", mock.mock_open()), \
+             mock.patch("builtins.open", mock.mock_open()) as open_file, \
              mock.patch.object(main.ctypes, "windll", create=True) as windll:
-            main._enable_ctrl_c()
+            main._prepare_update_console()
         windll.kernel32.FreeConsole.assert_called_once_with()
         windll.kernel32.AllocConsole.assert_called_once_with()
         windll.kernel32.SetConsoleCtrlHandler.assert_called_once_with(None, False)
+        self.assertEqual(open_file.call_count, 2)
 
     def test_uses_exe_dir_when_frozen(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -40,6 +40,46 @@ class AppRootTests(unittest.TestCase):
             root.mkdir()
             with mock.patch.object(main, "_app_root", return_value=root):
                 self.assertEqual(main._default_cache_dir(), root / "cache")
+
+    def test_finalizes_staged_updater_after_old_updater_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "app"
+            root.mkdir()
+            pending = root / "updater.new.exe"
+            target = root / "updater.exe"
+            pending.write_bytes(b"new updater")
+            target.write_bytes(b"old updater")
+            with mock.patch.object(main.sys, "frozen", True, create=True), \
+                 mock.patch.object(main, "_app_root", return_value=root):
+                main._finalize_updater_update()
+            self.assertFalse(pending.exists())
+            self.assertEqual(target.read_bytes(), b"new updater")
+
+    def test_staged_updater_retries_while_old_process_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "app"
+            root.mkdir()
+            pending = root / "updater.new.exe"
+            target = root / "updater.exe"
+            pending.write_bytes(b"new updater")
+            target.write_bytes(b"old updater")
+            real_replace = main.os.replace
+            calls = 0
+
+            def replace(source, destination):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise PermissionError("updater still running")
+                return real_replace(source, destination)
+
+            with mock.patch.object(main.sys, "frozen", True, create=True), \
+                 mock.patch.object(main, "_app_root", return_value=root), \
+                 mock.patch.object(main.os, "replace", side_effect=replace), \
+                 mock.patch.object(main.time, "sleep"):
+                main._finalize_updater_update()
+            self.assertEqual(calls, 2)
+            self.assertEqual(target.read_bytes(), b"new updater")
 
 
 class DefaultFlowTests(unittest.TestCase):
@@ -147,7 +187,6 @@ class DefaultFlowTests(unittest.TestCase):
 
     def test_update_relaunch_enters_query_without_running_analysis(self):
         with mock.patch.object(main.sys, "frozen", True, create=True), \
-                mock.patch.object(main, "_enable_ctrl_c"), \
                 mock.patch.dict("os.environ", {main._UPDATE_RELAUNCH_ENV: "1"}), \
                 mock.patch.object(main, "_run_query", return_value=0) as run_query, \
                 mock.patch.object(main, "_run_analyze_then_serve") as run_analyze:
@@ -156,6 +195,24 @@ class DefaultFlowTests(unittest.TestCase):
         self.assertEqual(run_query.call_args.args[0].command, "query")
         self.assertTrue(run_query.call_args.args[0].serve)
         run_analyze.assert_not_called()
+
+    def test_old_updater_marker_reallocates_console_and_enters_query(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / ".fa_update_restart"
+            marker.write_text("{}", encoding="utf-8")
+            with mock.patch.object(main.sys, "frozen", True, create=True), \
+                    mock.patch.object(main, "_app_root", return_value=root), \
+                    mock.patch.object(main, "_finalize_updater_update"), \
+                    mock.patch.dict("os.environ", {}, clear=True), \
+                    mock.patch.object(main, "_prepare_update_console") as prepare, \
+                    mock.patch.object(main, "_run_query", return_value=0) as run_query:
+                result = main.main([])
+            self.assertEqual(result, 0)
+            self.assertFalse(marker.exists())
+            prepare.assert_called_once_with()
+            self.assertEqual(run_query.call_args.args[0].command, "query")
+            self.assertTrue(run_query.call_args.args[0].serve)
 
     def test_previous_score_refresh_skips_issue_without_matches(self):
         with tempfile.TemporaryDirectory() as tmp:

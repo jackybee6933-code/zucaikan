@@ -132,16 +132,26 @@ def _run_installer(
                 "/NOCANCEL",
                 "/NOICONS",
                 "/SP-",
+                "/CLOSEAPPLICATIONS",
+                "/FORCECLOSEAPPLICATIONS",
                 f"/DIR={root}",
+                f"/LOG={installer.parent / 'install.log'}",
             ],
             cwd=str(root),
         )
-        if process.wait(timeout=600) != 0:
+        try:
+            exit_code = process.wait(timeout=180)
+        except subprocess.TimeoutExpired as exc:
+            process.kill()
+            raise TimeoutError("installer timed out") from exc
+        if exit_code != 0:
             raise OSError("installer exited unsuccessfully")
+        if not target.is_file():
+            raise FileNotFoundError(f"installed main app missing: {target}")
         if restart:
             marker = root / ".fa_update_restart"
             marker.write_text(
-                json.dumps({"at": time.time(), "exe": "football_analysis.exe"}),
+                json.dumps({"at": time.time(), "exe": target.name}),
                 encoding="utf-8",
             )
             _relaunch_app(target, root, relaunch_env)

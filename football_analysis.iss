@@ -29,7 +29,8 @@ Name: "chinesesimp"; MessagesFile: "installer\ChineseSimplified.isl"
 
 [Files]
 Source: "dist\football_analysis.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "dist\updater.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\updater.exe"; DestDir: "{app}"; DestName: "updater.new.exe"; Flags: ignoreversion; Check: FileExists(ExpandConstant('{app}\updater.exe'))
+Source: "dist\updater.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: not FileExists(ExpandConstant('{app}\updater.exe'))
 Source: "tools\scrape_odds_pages.py"; DestDir: "{app}\tools"; Flags: ignoreversion
 
 [Dirs]

@@ -24,6 +24,7 @@ from .bets import (
     summarize_bets,
     update_bet,
 )
+from . import __version__
 from .backup import build_backup_bytes, restore_backup_bytes
 from .http import Fetcher
 from .llm import test_endpoint
@@ -1107,7 +1108,7 @@ def serve_query(
         print(f"无法监听 {host}:{port}，请检查端口是否被占用或更换端口。错误: {exc}")
         return
     url = f"http://{host}:{port}/"
-    print(f"足彩分析系统1.3.22 已启动：{url}")
+    print(f"足彩分析系统{__version__} 已启动：{url}")
     print(f"数据库：{db_path}")
     print("按 Ctrl+C 停止服务。")
     if open_browser:

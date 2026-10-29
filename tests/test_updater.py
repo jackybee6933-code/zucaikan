@@ -221,16 +221,23 @@ class UpdaterTests(unittest.TestCase):
 
     def test_install_downloaded_passes_current_pid_to_installer(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp) / "installed"
+            download = Path(tmp) / "download"
+            root.mkdir()
+            download.mkdir()
             (root / updater.APP_EXE_NAME).write_bytes(b"app")
             (root / updater.UPDATER_EXE_NAME).write_bytes(b"updater")
-            archive = root / "package.zip"
-            archive.write_bytes(b"zip")
+            archive = download / "package.exe"
+            archive.write_bytes(b"installer")
             with mock.patch.object(updater, "app_root", return_value=root), \
                     mock.patch("subprocess.Popen") as popen:
                 popen.return_value.pid = 4321
-                result = updater.install_downloaded(archive)
-        args = popen.call_args[0][0]
+                result = updater.install_downloaded(
+                    archive, package_type="inno-setup"
+                )
+                args = popen.call_args[0][0]
+                self.assertEqual(Path(args[0]).parent.resolve(), archive.parent.resolve())
+                self.assertTrue(Path(args[0]).is_file())
         self.assertIn("--kill-pid", args)
         self.assertEqual(args[args.index("--kill-pid") + 1], str(os.getpid()))
         self.assertIn("--restart", args)
@@ -243,16 +250,21 @@ class UpdaterTests(unittest.TestCase):
 
     def test_install_downloaded_accepts_legacy_updater_name(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp) / "installed"
+            download = Path(tmp) / "download"
+            root.mkdir()
+            download.mkdir()
             (root / updater.APP_EXE_NAME).write_bytes(b"app")
             (root / updater.LEGACY_UPDATER_EXE_NAME).write_bytes(b"legacy")
-            archive = root / "package.zip"
+            archive = download / "package.zip"
             archive.write_bytes(b"zip")
             with mock.patch.object(updater, "app_root", return_value=root), \
                     mock.patch("subprocess.Popen") as popen:
                 popen.return_value.pid = 4322
                 updater.install_downloaded(archive)
-        self.assertEqual(popen.call_args[0][0][0], str(root / updater.LEGACY_UPDATER_EXE_NAME))
+                helper = Path(popen.call_args[0][0][0])
+                self.assertEqual(helper.parent.resolve(), download.resolve())
+                self.assertEqual(helper.read_bytes(), b"legacy")
 
     def test_installer_archive_contains_target_exe(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -314,7 +326,7 @@ class UpdaterTests(unittest.TestCase):
             target.write_bytes(b"app")
             install_process = mock.Mock()
             install_process.wait.return_value = 0
-            with mock.patch("subprocess.Popen", side_effect=[install_process, mock.Mock()]) as popen, \
+            with mock.patch("subprocess.Popen", return_value=install_process) as popen, \
                     mock.patch("update_installer._target_unlocked", return_value=True), \
                     mock.patch("update_installer._stop_running_app"), \
                     mock.patch("sys.platform", "win32"), \
@@ -326,9 +338,14 @@ class UpdaterTests(unittest.TestCase):
 
                 result = update_installer.main()
             self.assertEqual(result, 0)
-            self.assertEqual(popen.call_count, 2)
             installer_args = popen.call_args_list[0].args[0]
-            self.assertEqual(Path(installer_args[-1][5:]).resolve(), root.resolve())
+            install_dir = next(
+                arg[5:] for arg in installer_args if arg.startswith("/DIR=")
+            )
+            self.assertEqual(Path(install_dir).resolve(), root.resolve())
+            self.assertIn("/FORCECLOSEAPPLICATIONS", installer_args)
+            self.assertTrue(any(arg.startswith("/LOG=") for arg in installer_args))
+            self.assertEqual(popen.call_count, 2)
             self.assertEqual(
                 Path(popen.call_args_list[1].args[0][0]).resolve(), target.resolve()
             )

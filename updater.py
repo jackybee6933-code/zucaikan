@@ -283,13 +283,23 @@ def install_downloaded(
     target = root / APP_EXE_NAME
     if not target.is_file():
         raise UpdateError(f"未找到主程序：{target}")
+    updater = next(
+        (root / name for name in (UPDATER_EXE_NAME, LEGACY_UPDATER_EXE_NAME)
+         if (root / name).is_file()),
+        None,
+    )
+    if updater is None:
+        raise UpdateError("更新器缺失，请手动安装新完整包")
+    # Restart Manager can terminate a running updater while it replaces target
+    # files. Run a temporary copy so the installation can finish and relaunch.
+    helper = archive.parent / "updater-helper.exe"
+    shutil.copy2(updater, helper)
     if str(archive.suffix).lower() == ".exe" or str(package_type).lower() == "inno-setup":
-        installer_exe = root / "updater.exe"
         marker = root / ".fa_update_restart"
         marker.unlink(missing_ok=True)
         process = subprocess.Popen(
             [
-                str(installer_exe),
+                str(helper),
                 "--installer", str(archive),
                 "--target", str(target),
                 "--kill-pid", str(os.getpid()),
@@ -300,16 +310,9 @@ def install_downloaded(
             creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
         )
         return {"updater_pid": process.pid, "wait_seconds": wait_seconds}
-    updater = next(
-        (root / name for name in (UPDATER_EXE_NAME, LEGACY_UPDATER_EXE_NAME)
-         if (root / name).is_file()),
-        None,
-    )
-    if updater is None:
-        raise UpdateError("完整包缺少 updater.exe，请手动解压新完整包")
     process = subprocess.Popen(
         [
-            str(updater),
+            str(helper),
             "--archive", str(archive),
             "--target", str(target),
             "--kill-pid", str(os.getpid()),

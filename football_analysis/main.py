@@ -40,10 +40,37 @@ _ODDS_META_RE = re.compile(r"^odds_pages_(\d+)\.meta\.json$")
 _UPDATE_RELAUNCH_ENV = "FA_UPDATE_RELAUNCH"
 
 
-def _enable_ctrl_c() -> None:
-    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+def _finalize_updater_update() -> None:
+    if not getattr(sys, "frozen", False):
         return
-    if not os.environ.pop(_UPDATE_RELAUNCH_ENV, None):
+    root = _app_root()
+    pending = root / "updater.new.exe"
+    if not pending.is_file():
+        return
+    target = root / "updater.exe"
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            os.replace(pending, target)
+            return
+        except OSError:
+            if time.monotonic() >= deadline:
+                return
+            time.sleep(0.25)
+
+
+def _consume_update_restart_marker() -> bool:
+    if not getattr(sys, "frozen", False):
+        return False
+    marker = _app_root() / ".fa_update_restart"
+    if not marker.is_file():
+        return False
+    marker.unlink(missing_ok=True)
+    return True
+
+
+def _prepare_update_console() -> None:
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
         return
     kernel32 = ctypes.windll.kernel32
     kernel32.FreeConsole()
@@ -53,6 +80,7 @@ def _enable_ctrl_c() -> None:
     sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
     sys.stderr = sys.stdout
     kernel32.SetConsoleCtrlHandler(None, False)
+
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
@@ -1085,11 +1113,15 @@ def _run_query(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    _enable_ctrl_c()
+    _finalize_updater_update()
     parser = build_parser()
     raw = list(argv) if argv is not None else sys.argv[1:]
-    if not raw and getattr(sys, "frozen", False) and os.environ.get(_UPDATE_RELAUNCH_ENV):
-        return _run_query(parser.parse_args(["query", "--serve"]))
+    if not raw and getattr(sys, "frozen", False):
+        if os.environ.get(_UPDATE_RELAUNCH_ENV):
+            return _run_query(parser.parse_args(["query", "--serve"]))
+        if _consume_update_restart_marker():
+            _prepare_update_console()
+            return _run_query(parser.parse_args(["query", "--serve"]))
     if not raw:
         return _run_analyze_then_serve(parser)
     if raw[0] not in {
