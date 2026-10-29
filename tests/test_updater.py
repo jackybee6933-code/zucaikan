@@ -295,8 +295,11 @@ class UpdaterTests(unittest.TestCase):
 
     def test_inno_installer_restarts_app_in_inherited_console(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            installer = root / "setup.exe"
+            root = Path(tmp) / "installed"
+            download_dir = Path(tmp) / "download"
+            root.mkdir()
+            download_dir.mkdir()
+            installer = download_dir / "setup.exe"
             installer.write_bytes(b"setup")
             target = root / updater.APP_EXE_NAME
             target.write_bytes(b"app")
@@ -307,13 +310,22 @@ class UpdaterTests(unittest.TestCase):
                     mock.patch("update_installer._stop_running_app"), \
                     mock.patch("sys.platform", "win32"), \
                     mock.patch("sys.argv", [
-                        "update_installer.py", "--installer", str(installer), "--restart",
+                        "update_installer.py", "--installer", str(installer),
+                        "--target", str(target), "--restart",
                     ]):
                 import update_installer
 
                 result = update_installer.main()
             self.assertEqual(result, 0)
             self.assertEqual(popen.call_count, 2)
+            installer_args = popen.call_args_list[0].args[0]
+            self.assertEqual(Path(installer_args[-1][5:]).resolve(), root.resolve())
+            self.assertEqual(
+                Path(popen.call_args_list[1].args[0][0]).resolve(), target.resolve()
+            )
+            self.assertEqual(
+                Path(popen.call_args_list[1].kwargs["cwd"]).resolve(), root.resolve()
+            )
             self.assertNotIn("creationflags", popen.call_args.kwargs)
 
 

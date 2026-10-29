@@ -86,7 +86,14 @@ def main() -> int:
     parser.add_argument("--wait-seconds", type=int, default=600)
     args = parser.parse_args()
     if args.installer:
-        return _run_installer(Path(args.installer).resolve(), args.kill_pid, args.restart)
+        if not args.target:
+            parser.error("--target is required with --installer")
+        return _run_installer(
+            Path(args.installer).resolve(),
+            Path(args.target).resolve(),
+            args.kill_pid,
+            args.restart,
+        )
     if not args.archive or not args.target:
         parser.error("either --installer or both --archive and --target are required")
     return _install_zip(
@@ -98,9 +105,13 @@ def main() -> int:
     )
 
 
-def _run_installer(installer: Path, kill_pid: int, restart: bool) -> int:
-    root = installer.parent
-    target = root / "football_analysis.exe"
+def _run_installer(
+    installer: Path,
+    target: Path,
+    kill_pid: int,
+    restart: bool,
+) -> int:
+    root = target.parent
     try:
         _stop_running_app(kill_pid)
         deadline = time.time() + 120
