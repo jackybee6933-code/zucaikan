@@ -212,11 +212,6 @@ def _relaunch_app(target: Path, root: Path, env_name: str = "") -> None:
         [str(target)],
         cwd=str(root),
         env=env,
-        creationflags=(
-            getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-            if sys.platform == "win32"
-            else 0
-        ),
         close_fds=True,
     )
 

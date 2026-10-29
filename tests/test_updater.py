@@ -295,7 +295,7 @@ class UpdaterTests(unittest.TestCase):
                 (root / "tools" / "scrape_odds_pages.py").read_bytes(), b"new scraper"
             )
 
-    def test_installer_restarts_app_in_new_console(self):
+    def test_installer_restarts_app_in_inherited_console(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             archive = root / "package.zip"
@@ -313,13 +313,10 @@ class UpdaterTests(unittest.TestCase):
 
                 result = update_installer.main()
             self.assertEqual(result, 0)
-            self.assertEqual(
-                popen.call_args.kwargs["creationflags"],
-                subprocess.CREATE_NEW_CONSOLE,
-            )
+            self.assertNotIn("creationflags", popen.call_args.kwargs)
             self.assertTrue(popen.call_args.kwargs["close_fds"])
 
-    def test_inno_installer_restarts_app_in_new_console(self):
+    def test_inno_installer_restarts_app_in_inherited_console(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "installed"
             download_dir = Path(tmp) / "download"
@@ -357,10 +354,7 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual(
                 Path(popen.call_args_list[1].kwargs["cwd"]).resolve(), root.resolve()
             )
-            self.assertEqual(
-                popen.call_args_list[1].kwargs["creationflags"],
-                subprocess.CREATE_NEW_CONSOLE,
-            )
+            self.assertNotIn("creationflags", popen.call_args_list[1].kwargs)
             self.assertTrue(popen.call_args_list[1].kwargs["close_fds"])
 
 

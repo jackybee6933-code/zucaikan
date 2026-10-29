@@ -1117,9 +1117,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     raw = list(argv) if argv is not None else sys.argv[1:]
     if not raw and getattr(sys, "frozen", False):
-        if os.environ.get(_UPDATE_RELAUNCH_ENV):
-            return _run_query(parser.parse_args(["query", "--serve"]))
-        if _consume_update_restart_marker():
+        env_requested = bool(os.environ.get(_UPDATE_RELAUNCH_ENV))
+        marker_requested = _consume_update_restart_marker()
+        if env_requested or marker_requested:
             _prepare_update_console()
             return _run_query(parser.parse_args(["query", "--serve"]))
     if not raw:

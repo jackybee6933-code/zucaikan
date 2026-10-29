@@ -186,12 +186,21 @@ class DefaultFlowTests(unittest.TestCase):
             self.assertEqual(captured["args"].issue, "26146")
 
     def test_update_relaunch_enters_query_without_running_analysis(self):
-        with mock.patch.object(main.sys, "frozen", True, create=True), \
-                mock.patch.dict("os.environ", {main._UPDATE_RELAUNCH_ENV: "1"}), \
-                mock.patch.object(main, "_run_query", return_value=0) as run_query, \
-                mock.patch.object(main, "_run_analyze_then_serve") as run_analyze:
-            result = main.main([])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / ".fa_update_restart"
+            marker.write_text("{}", encoding="utf-8")
+            with mock.patch.object(main.sys, "frozen", True, create=True), \
+                    mock.patch.object(main, "_app_root", return_value=root), \
+                    mock.patch.object(main, "_finalize_updater_update"), \
+                    mock.patch.dict("os.environ", {main._UPDATE_RELAUNCH_ENV: "1"}), \
+                    mock.patch.object(main, "_prepare_update_console") as prepare, \
+                    mock.patch.object(main, "_run_query", return_value=0) as run_query, \
+                    mock.patch.object(main, "_run_analyze_then_serve") as run_analyze:
+                result = main.main([])
         self.assertEqual(result, 0)
+        self.assertFalse(marker.exists())
+        prepare.assert_called_once_with()
         self.assertEqual(run_query.call_args.args[0].command, "query")
         self.assertTrue(run_query.call_args.args[0].serve)
         run_analyze.assert_not_called()
