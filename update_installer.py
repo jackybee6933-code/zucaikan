@@ -127,15 +127,9 @@ def _run_installer(installer: Path, kill_pid: int, restart: bool) -> int:
                 json.dumps({"at": time.time(), "exe": "football_analysis.exe"}),
                 encoding="utf-8",
             )
-            restart_flags = (
-                getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-                if sys.platform == "win32"
-                else 0
-            )
             subprocess.Popen(
                 [str(target)],
                 cwd=str(root),
-                creationflags=restart_flags,
             )
         return 0
     except Exception as exc:  # noqa: BLE001
@@ -178,15 +172,9 @@ def _install_zip(
                 json.dumps({"at": time.time(), "exe": target.name}),
                 encoding="utf-8",
             )
-            restart_flags = (
-                getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-                if sys.platform == "win32"
-                else 0
-            )
             subprocess.Popen(
                 [str(target)],
                 cwd=str(target.parent),
-                creationflags=restart_flags,
             )
         return 0
     except Exception as exc:  # noqa: BLE001

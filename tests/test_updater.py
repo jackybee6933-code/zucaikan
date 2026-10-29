@@ -273,7 +273,7 @@ class UpdaterTests(unittest.TestCase):
                 (root / "tools" / "scrape_odds_pages.py").read_bytes(), b"new scraper"
             )
 
-    def test_installer_restarts_app_in_new_windows_console(self):
+    def test_installer_restarts_app_in_inherited_console(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             archive = root / "package.zip"
@@ -291,10 +291,30 @@ class UpdaterTests(unittest.TestCase):
 
                 result = update_installer.main()
             self.assertEqual(result, 0)
-            self.assertEqual(
-                popen.call_args.kwargs["creationflags"],
-                subprocess.CREATE_NEW_CONSOLE,
-            )
+            self.assertNotIn("creationflags", popen.call_args.kwargs)
+
+    def test_inno_installer_restarts_app_in_inherited_console(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            installer = root / "setup.exe"
+            installer.write_bytes(b"setup")
+            target = root / updater.APP_EXE_NAME
+            target.write_bytes(b"app")
+            install_process = mock.Mock()
+            install_process.wait.return_value = 0
+            with mock.patch("subprocess.Popen", side_effect=[install_process, mock.Mock()]) as popen, \
+                    mock.patch("update_installer._target_unlocked", return_value=True), \
+                    mock.patch("update_installer._stop_running_app"), \
+                    mock.patch("sys.platform", "win32"), \
+                    mock.patch("sys.argv", [
+                        "update_installer.py", "--installer", str(installer), "--restart",
+                    ]):
+                import update_installer
+
+                result = update_installer.main()
+            self.assertEqual(result, 0)
+            self.assertEqual(popen.call_count, 2)
+            self.assertNotIn("creationflags", popen.call_args.kwargs)
 
 
 if __name__ == "__main__":

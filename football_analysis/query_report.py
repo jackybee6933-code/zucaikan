@@ -1569,7 +1569,7 @@ def render_query_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>足彩分析系统1.3.24</title>
+  <title>足彩分析系统1.3.25</title>
   <style>
     :root {{
       --canvas: #f3f5f7; --panel: #ffffff; --ink: #1d2733; --muted: #64748b;
@@ -1770,7 +1770,7 @@ def render_query_html(
 </head>
 <body>
   <div class="page">
-    <h1>足彩分析系统1.3.24</h1>
+    <h1>足彩分析系统1.3.25</h1>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}</div>
     {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
     {f'<div class="meta">{bet_chip}</div>' if bet_chip else ''}
