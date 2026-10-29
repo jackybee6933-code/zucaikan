@@ -755,11 +755,11 @@ _FETCH_BLOCK = \
       function formatVersionLabel(value) {
         return "v" + String(value || "").trim().replace(/^v+/i, "");
       }
-      function formatKilobytes(value) {
-        return (Number(value || 0) / 1024).toLocaleString(undefined, {
+      function formatMegabytes(value) {
+        return (Number(value || 0) / 1024 / 1024).toLocaleString(undefined, {
           minimumFractionDigits: 1,
           maximumFractionDigits: 1,
-        }) + " KB";
+        }) + " MB";
       }
       function stopUpdatePolling() {
         if (updatePollTimer) clearTimeout(updatePollTimer);
@@ -778,7 +778,7 @@ _FETCH_BLOCK = \
               updateProgress.value = pct;
               updateProgress.setAttribute("value", pct);
               updateProgressLabel.textContent =
-                `${pct}%　${formatKilobytes(state.downloaded)} / ${formatKilobytes(state.total)}`;
+                `${pct}%　${formatMegabytes(state.downloaded)} / ${formatMegabytes(state.total)}`;
               updateStatus.textContent = `正在下载 ${targetVersion}...`;
             } else if (state.phase === "download") {
               updateProgress.removeAttribute("value");
