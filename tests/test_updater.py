@@ -11,6 +11,8 @@ from unittest import mock
 
 import importlib.util
 
+from football_analysis import __version__ as app_version
+
 _SPEC = importlib.util.spec_from_file_location(
     "project_updater", Path(__file__).parents[1] / "updater.py"
 )
@@ -39,6 +41,9 @@ class _Response:
 
 
 class UpdaterTests(unittest.TestCase):
+    def test_updater_uses_application_version(self):
+        self.assertEqual(updater.__version__, app_version)
+
     def test_manifest_timeout_has_network_guidance(self):
         error = urllib.error.URLError(TimeoutError("timed out"))
         with mock.patch("urllib.request.urlopen", side_effect=error):

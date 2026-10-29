@@ -17,7 +17,7 @@ from pathlib import Path
 if __package__:
     from . import __version__
 else:
-    __version__ = "1.3.21"
+    from football_analysis import __version__
 
 DEFAULT_MANIFEST_URL = (
     "https://github.com/jackybee6933-code/zucaikan/releases/latest/download/latest.json"
