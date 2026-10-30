@@ -218,7 +218,7 @@ def _split_html(row: dict, uid: str) -> str:
 
 
 def _lean_cell(row: dict) -> str:
-    """倾向列：模型读球队资料的亚盘赢盘倾向 + 大小球倾向（主行/次行）+ 盘口异动的 lean（末行）。"""
+    """AI分析列：球队资料的亚盘赢盘倾向 + 大小球倾向（主行/次行）。"""
     parts: list[str] = []
     try:
         read = json.loads(str(row.get("team_read") or "") or "{}")
@@ -227,14 +227,23 @@ def _lean_cell(row: dict) -> str:
     if isinstance(read, dict):
         read = normalize_team_read(read)
     tendency = str(read.get("tendency") or "").strip()
+    factors = read.get("factors") or []
+    if isinstance(factors, str):
+        factors = [factors]
+    if not isinstance(factors, list):
+        factors = []
+    factors = [str(factor).strip() for factor in factors if str(factor).strip()]
     if tendency:
         try:
             confidence = float(read.get("confidence") or 0.0)
         except (TypeError, ValueError):
             confidence = 0.0
         conf = f" {confidence * 100:.0f}%" if confidence > 0 else ""
-        parts.append(f'<div class="model-lean">模型 {_esc(tendency)}{_esc(conf)}</div>')
         reason = str(read.get("reason") or "").strip()
+        tooltip_parts = [reason] + factors
+        tooltip = html.escape("；".join(part for part in tooltip_parts if part), quote=True)
+        title = f' title="{tooltip}"' if tooltip else ""
+        parts.append(f'<div class="model-lean"{title}>{_esc(tendency)}{_esc(conf)}</div>')
         if reason:
             parts.append(
                 f'<div class="model-reason" title="{_esc(reason)}">{_esc(reason)}</div>'
@@ -246,25 +255,12 @@ def _lean_cell(row: dict) -> str:
         over_confidence = 0.0
     if over_tendency and over_confidence > 0:
         over_conf = f" {over_confidence * 100:.0f}%" if over_confidence > 0 else ""
-        parts.append(f'<div class="model-lean">模型 {over_tendency}{over_conf}</div>')
+        parts.append(f'<div class="model-lean">{over_tendency}{over_conf}</div>')
         over_reason = str(read.get("over_reason") or "").strip()
         if over_reason:
             parts.append(
                 f'<div class="model-reason" title="{_esc(over_reason)}">{_esc(over_reason)}</div>'
             )
-    lean = str(row.get("lean") or "").split("（")[0].strip()
-    if lean:
-        # 老库的 lean 直接存了球队名（如「博德闪耀」），新库才存「主队」「客队」，
-        # 后者才需要括注对应队名，前者本身已经是名字，避免叠成「博德闪耀（博德闪耀）」。
-        home = str(row.get("home_team") or "").strip()
-        away = str(row.get("away_team") or "").strip()
-        if lean.startswith("主"):
-            note = f"{lean}（{home}）"
-        elif lean.startswith("客"):
-            note = f"{lean}（{away}）"
-        else:
-            note = lean
-        parts.append(f'<div class="lean-note">盘口 {_esc(note)}</div>')
     return "".join(parts) or "—"
 
 
@@ -1630,7 +1626,6 @@ def render_query_html(
       margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }}
-    .lean-note {{ margin-top: 2px; font-weight: 600; font-size: 12px; color: #1d4ed8; }}
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}
     .alert-table {{ table-layout: fixed; }}
     .alert-table .issue-cell {{ width: 6%; white-space: nowrap; }}
@@ -1879,7 +1874,7 @@ def render_query_html(
       <table class="alert-table">
         <thead>
           <tr>
-            <th class="issue-cell">期号</th><th class="match-cell">比赛</th><th class="score-cell">比分</th><th class="type-cell">类型</th><th class="line-change">盘口变化</th><th class="lean-cell">倾向</th><th class="total-cell">大小球</th><th class="bet-cell">操作</th>
+            <th class="issue-cell">期号</th><th class="match-cell">比赛</th><th class="score-cell">比分</th><th class="type-cell">类型</th><th class="line-change">盘口变化</th><th class="lean-cell">AI分析</th><th class="total-cell">大小球</th><th class="bet-cell">操作</th>
           </tr>
         </thead>
         <tbody>

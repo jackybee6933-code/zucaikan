@@ -14,6 +14,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from tools.archive_release import archive_current_release
 
 # (文件, 旧串模板, 新串模板)：模板里 {old}=旧版本、{v}=新版本
 VERSION_EDITS = [
@@ -109,6 +112,11 @@ def main() -> int:
         return 2
 
     old = current_version()
+    try:
+        archive_current_release(root=ROOT)
+    except Exception as exc:
+        print(f"release archive failed; fix it before retrying: {exc}")
+        return 1
     print(f"当前 {old} -> 目标 {new}")
     apply_edits(new, old)
     bad = residual_check(new)

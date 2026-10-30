@@ -259,7 +259,7 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
         issue=actual_issue,
     )
     if not count:
-        return f"{actual_issue}：AI 分析全部失败（已读 {needed_pages}/{len(fixture_ids)} 场数据页），倾向未更新"
+        return f"{actual_issue}：AI 分析全部失败（已读 {needed_pages}/{len(fixture_ids)} 场数据页），AI分析结果未更新"
     # When fixture_ids came from the artifact (not the DB), analyses[i] may not
     # correspond 1:1 with fixture_ids[i] by index — but team_read is still
     # keyed by match_no, which is what update_team_reads writes.  The count
@@ -272,7 +272,7 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     updated = update_team_reads(target_db, actual_issue, team_reads)
     return (
         f"{actual_issue}：AI 分析完成 {count}/{len(analyses)} 场"
-        f"（读 {needed_pages} 场数据页、更新 {updated} 行），刷新页面查看「倾向」"
+        f"（读 {needed_pages} 场数据页、更新 {updated} 行），刷新页面查看「AI分析」"
     )
 
 

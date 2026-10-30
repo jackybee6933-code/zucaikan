@@ -108,7 +108,7 @@ class MovementStoreTests(unittest.TestCase):
             self.assertNotIn("足彩分析系统1.3.27", html)
             self.assertIn("降盘", html)
             self.assertNotIn("退盘", html)
-            self.assertIn("倾向", html)
+            self.assertIn("AI分析", html)
 
 
 class DetailTotalDisplayTests(unittest.TestCase):
@@ -174,7 +174,8 @@ class BrowserReportTests(unittest.TestCase):
         self.assertNotIn("data-alert-filter=\"退盘\"", html)
         self.assertNotIn("退盘", html)
         self.assertIn("上盘=让球方", html)
-        self.assertIn(">倾向<", html)
+        self.assertNotIn("<th>倾向</th>", html)
+        self.assertNotIn('class="movement-tag', html)
         self.assertIn("那不勒斯 vs 阿森纳", html)
         self.assertIn("row.hidden = !visible", html)
 

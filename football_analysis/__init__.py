@@ -1,3 +1,3 @@
 """Football analysis MVP package."""
 
-__version__ = "1.3.35"
+__version__ = "1.3.36"

@@ -73,8 +73,8 @@ RATECHECK_JS = (
     " return %s.some(m => t.indexOf(m) >= 0); }" % json.dumps(list(RATE_LIMIT_MARKS))
 )
 
-# 数据分析页：按最近的小标题给表格分组，只留分析用的块（积分排名/交战历史/近期战绩/
-# 未来赛事/平均数据），丢掉登录框、彩票列表、预计阵容这些噪音。
+# 数据分析页：按最近的小标题给表格分组，保留积分排名/交战历史/近期战绩/
+# 阵容与伤停/预计阵容/未来赛事/平均数据，丢掉登录框和彩票列表。
 SHUJU_JS = r"""() => {
   const HEADS = 'h1,h2,h3,h4,.tit,.sub_title,.teamTitle,.lstit,.maintitle';
   const heads = Array.from(document.querySelectorAll(HEADS));
@@ -88,7 +88,7 @@ SHUJU_JS = r"""() => {
     }
     return best;
   };
-  const SKIP_LABEL = ['用户登录', '免费注册', '忘记密码', '500彩票', '预计阵容'];
+  const SKIP_LABEL = ['用户登录', '免费注册', '忘记密码', '500彩票'];
   const out = [];
   document.querySelectorAll('table').forEach((t) => {
     const rows = Array.from(t.querySelectorAll('tr'));

@@ -107,6 +107,9 @@ class PromptTests(unittest.TestCase):
         self.assertIn("受半球", prompt)              # 即时盘
         self.assertIn("客胜 40%", prompt)
         self.assertIn("500 数据分析页资料", prompt)
+        self.assertIn("阵容情况", prompt)
+        self.assertIn("首发/后备比例", prompt)
+        self.assertIn("盘口异动", prompt)
         self.assertIn("莱切1:2博洛尼亚", prompt)
         self.assertIn("主队赢盘", prompt)            # 输出口径写在结尾
         self.assertIn("大球", prompt)               # 大小球方向也写进输出口径
@@ -147,6 +150,15 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(parsed["over_tendency"], "大球")
         self.assertAlmostEqual(parsed["over_confidence"], 0.55)
         self.assertEqual(parsed["over_reason"], "双方近期大球率高")
+
+    def test_parses_and_limits_factors(self):
+        parsed = llm.parse_team_read(json.dumps({
+            "tendency": "观望",
+            "confidence": 0.5,
+            "reason": "阵容信息不足",
+            "factors": ["伤停：主力中卫缺阵", "伤停：主力中卫缺阵", "阵容：首发比例未提供"] + ["多余"] * 8,
+        }, ensure_ascii=False))
+        self.assertEqual(parsed["factors"], ["伤停：主力中卫缺阵", "阵容：首发比例未提供", "多余"])
 
     def test_invalid_over_tendency_falls_back_to_观望(self):
         body = json.dumps(
@@ -336,8 +348,9 @@ class StoreAndReportTests(unittest.TestCase):
             "confidence": 0.45,
             "reason": "x",
         })))
-        self.assertIn("模型 \u4e3b\u961f\u8d62\u76d8 55%", rendered)
-        self.assertNotIn("模型 \u5ba2\u961f\u8d62\u76d8 45%", rendered)
+        self.assertIn("\u4e3b\u961f\u8d62\u76d8 55%", rendered)
+        self.assertNotIn("\u6a21\u578b ", rendered)
+        self.assertNotIn("\u5ba2\u961f\u8d62\u76d8 45%", rendered)
 
     def test_legacy_low_confidence_over_direction_is_reversed_on_render(self):
         rendered = _lean_cell(_analysis(team_read=json.dumps({
@@ -347,8 +360,9 @@ class StoreAndReportTests(unittest.TestCase):
             "over_confidence": 0.45,
             "over_reason": "x",
         })))
-        self.assertIn("模型 \u5927\u7403 55%", rendered)
-        self.assertNotIn("模型 \u5c0f\u7403 45%", rendered)
+        self.assertIn("\u5927\u7403 55%", rendered)
+        self.assertNotIn("\u6a21\u578b ", rendered)
+        self.assertNotIn("\u5c0f\u7403 45%", rendered)
 
     def test_team_read_round_trip_and_rendering(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -358,6 +372,7 @@ class StoreAndReportTests(unittest.TestCase):
                 "tendency": "主队赢盘",
                 "confidence": 0.55,
                 "reason": "主场赢盘率高于客队",
+                "factors": ["伤停：客队主力中卫缺阵", "盘口：主让半球升到一球"],
             }
             save_issue_movements(db, [item], "26140")
             rows = query_movements(db, issue="26140")
@@ -365,9 +380,13 @@ class StoreAndReportTests(unittest.TestCase):
             html = render_query_html(
                 rows, issues=list_issues(db), issue="26140", db_path=str(db)
             )
-            self.assertIn("模型 主队赢盘 55%", html)
+            self.assertIn("主队赢盘 55%", html)
+            self.assertNotIn("模型 主队赢盘", html)
+            self.assertIn(">AI分析<", html)
+            self.assertIn("伤停：客队主力中卫缺阵", html)
+            self.assertIn("盘口：主让半球升到一球", html)
             self.assertIn("主场赢盘率高于客队", html)
-            self.assertIn("盘口 客队（博洛尼亚）", html)
+            self.assertNotIn("盘口 客队（博洛尼亚）", html)
 
     def test_over_tendency_without_confidence_is_hidden(self):
         row = _analysis(
@@ -383,7 +402,7 @@ class StoreAndReportTests(unittest.TestCase):
             )
         )
         rendered = _lean_cell(row)
-        self.assertNotIn("模型 大球", rendered)
+        self.assertNotIn("大球", rendered)
         self.assertNotIn("大小球资料不足", rendered)
 
     def test_migration_adds_team_read_column(self):

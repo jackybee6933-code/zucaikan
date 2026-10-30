@@ -46,14 +46,8 @@ def _two_way_decision(
     home_market_prob: float,
     home_model_prob: float,
 ) -> tuple[str, float, str, float]:
-    # 注意：主推档在当前数据下不可达。水位天然接近平衡，
-    # market_prob 实测只在 0.51~0.60 之间，而 0.85 的权重压在这个几乎常数的
-    # 量上 —— 24 期 / 328 场实测 confidence 上限 0.589，margin 上限 0.178。
-    # 不要为了“修主推”而调低这里的阈值：超过轻仓的分档只有 7 场和 5 场，
-    # 命中率分别是 71% 和 40%，都是噪声；真调低会把项目最高置信标签
-    # 贴在噪声的子集上。真正携带信号的是 margin，margin>=0.10 比低于其约好 7.7 个百分点，
-    # 而轻仓档已经用了这个门槛。
-    blended_home = 0.85 * home_market_prob + 0.15 * home_model_prob
+    # 市场水位概率与模型覆盖概率各占 50%。
+    blended_home = 0.5 * home_market_prob + 0.5 * home_model_prob
     final_side = "home" if blended_home >= 0.5 else "away"
     final_prob = max(blended_home, 1.0 - blended_home)
     margin = abs(blended_home - 0.5) * 2.0

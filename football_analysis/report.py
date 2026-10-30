@@ -127,7 +127,7 @@ def render_markdown(analyses: list[dict], issue: str, source_url: str) -> str:
     lines.append(f"> 数据来源：{source_url}、竞彩列表、500 odds.xml、liansai 球队页、Titan 历史交锋")
     lines.append(f"> 生成时间：{datetime.now():%Y-%m-%d %H:%M:%S}")
     lines.append("")
-    lines.append("模型说明：独立泊松预期进球模型按近期往绩估算主客进球分布，再以 12%-16% 的独立模型权重与 84%-88% 的市场先验融合；市场概率优先来自 `gl avg`，缺失时用欧赔反推。报告仅供研究，不构成投注建议。")
+    lines.append("模型说明：独立泊松预期进球模型按近期往绩估算主客进球分布；基础胜平负概率仍按历史覆盖度以 12%-16% 模型权重与 84%-88% 市场先验融合，亚盘/大小球最终推荐再按 50% 市场水位概率 + 50% 模型覆盖概率融合。市场概率优先来自 `gl avg`，缺失时用欧赔反推。报告仅供研究，不构成投注建议。")
     lines.append("")
     lines.append("**整期推荐汇总**")
     lines.append("")

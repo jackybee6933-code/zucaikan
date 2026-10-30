@@ -380,11 +380,15 @@ def normalize_team_read(payload: dict) -> dict:
 TEAM_READ_SYSTEM_PROMPT = """你是一名足球盘口分析师，负责读完一场比赛的球队资料后，给出这场球的亚盘让球倾向。
 
 要求：
-- 只使用输入里给出的资料（近期战绩、主客场表现、赢盘率、大小球率、历史交锋、积分排名、盘口与概率）。
+- 只使用输入里给出的资料（近期战绩、主客场表现、赢盘率、大小球率、历史交锋、积分排名、阵容情况、缺阵原因、上一场出场评分、盘口与概率）。
+- 必须优先检查并在依据中体现：关键主力伤停/停赛、上一场首发与后备的构成和评分、是否存在明显轮换或全后备风险、以及初盘到即时盘的大幅变化。
+- 只有资料明确给出首发/后备标记或评分时，才能判断主力/后备比例；资料没有明确证据时必须写“阵容比例未提供”，不得凭球队名气猜测。
+- 如果强队明显轮换、主力缺阵或上一场几乎全后备，必须降低信心，并在依据中说明这可能导致强队输球；盘口大幅升降或水位反转只能作为风险/验证证据，不能单独决定方向。
 - 只能输出一个 JSON 对象，不要任何额外文字、不要代码块围栏，格式：
-  {"tendency": "主队赢盘", "confidence": 0.0, "reason": "一句话，40 字以内", "over_tendency": "大球", "over_confidence": 0.0, "over_reason": "一句话，40 字以内"}
+  {"tendency": "主队赢盘", "confidence": 0.0, "reason": "一句话，40 字以内", "factors": ["伤停：...", "阵容：...", "盘口：..."], "over_tendency": "大球", "over_confidence": 0.0, "over_reason": "一句话，40 字以内"}
 - tendency 只能取三个值之一：主队赢盘、客队赢盘、观望。
 - 资料不足、双方势均力敌或无法判断时，tendency 必须是「观望」。
+- factors 必须是 0~6 条可核对的短依据；没有对应资料就不要补写，单条不超过 60 字。
 - over_tendency 判断总进球数更可能落在大小盘线上方还是下方，只能取三个值之一：大球、小球、观望。
 - 大小盘数据缺失、双方大小球率都没有、或无法判断时，over_tendency 必须是「观望」。
 - 不要编造伤停、转会、内幕等资料里没有的信息，也不要预测比分。"""
@@ -435,6 +439,15 @@ def build_team_read_prompt(analysis: dict, page_text: str = "") -> str:
     if asian.get("available"):
         lines.append(f"亚盘初盘：{_asian_line_text(asian.get('initial'))}")
         lines.append(f"亚盘即时盘：{_asian_line_text(asian.get('current'))}")
+        movement_kind = str(asian.get("kind") or "").strip()
+        movement_level = str(asian.get("level") or "").strip()
+        movement_note = str(asian.get("note") or "").strip()
+        if movement_kind or movement_level:
+            lines.append(
+                f"盘口异动：{movement_kind or '无明显类型'}，级别{movement_level or '未知'}"
+            )
+        if movement_note:
+            lines.append(f"盘口异动说明：{movement_note}")
         if asian.get("lean"):
             lines.append(f"盘口异动倾向：{asian['lean']}赢盘")
     else:
@@ -456,13 +469,15 @@ def build_team_read_prompt(analysis: dict, page_text: str = "") -> str:
     lines.append(_team_form_line("客队近况", history.get("away")))
     lines.extend(_history_detail(history))
     if page_text:
-        lines.append("500 数据分析页资料（原样摘录，含积分排名/交战历史/近期战绩/未来赛事/平均数据）：")
-        lines.append(page_text[:6000])
+        lines.append("500 数据分析页资料（原样摘录，重点检查积分排名/交战历史/近期战绩/阵容情况/缺阵原因/上一场首发与后备/出场评分/未来赛事/平均数据）：")
+        lines.append(page_text[:9000])
     else:
         lines.append("500 数据分析页资料：未抓到")
     lines.append(
         "\n请判断两件事：(1) 主队还是客队更可能赢下亚盘让球（主队赢盘 / 客队赢盘 / 观望）；"
         "(2) 总进球数更可能落在大小盘线上方还是下方（大球 / 小球 / 观望）。"
+        "先核对伤停和阵容完整度，再核对上一场首发/后备比例与评分，最后结合盘口异动；"
+        "把能核对的伤停、阵容风险、盘口变化分别写入 factors。"
         "只用上面给出的资料，资料不足就给观望。只输出 JSON，不要解释。"
     )
     return "\n".join(lines)
@@ -506,10 +521,22 @@ def parse_team_read(text: str) -> dict | None:
         over_confidence = 0.0
     over_confidence = min(1.0, max(0.0, over_confidence))
     over_reason = re.sub(r"\s+", " ", str(data.get("over_reason") or "")).strip()[:80]
+    raw_factors = data.get("factors") or []
+    if isinstance(raw_factors, str):
+        raw_factors = [raw_factors]
+    factors: list[str] = []
+    if isinstance(raw_factors, list):
+        for factor in raw_factors:
+            text = re.sub(r"\s+", " ", str(factor or "")).strip()[:60]
+            if text and text not in factors:
+                factors.append(text)
+            if len(factors) >= 6:
+                break
     return normalize_team_read({
         "tendency": tendency,
         "confidence": confidence,
         "reason": reason,
+        "factors": factors,
         "over_tendency": over_tendency,
         "over_confidence": over_confidence,
         "over_reason": over_reason,

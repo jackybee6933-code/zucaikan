@@ -223,34 +223,6 @@ def _movement_delta(item: dict) -> str:
     return " ".join(pieces)
 
 
-def _asian_suggestion(item: dict) -> str:
-    rec = ((item.get("odds_analysis") or {}).get("asian_handicap") or {})
-    if not rec.get("available"):
-        return ""
-    return str(rec.get("recommended_side") or rec.get("final_direction") or "").strip()
-
-
-def _movement_lean(item: dict) -> str:
-    asian = (item.get("odds_movement") or {}).get("asian") or {}
-    if asian.get("direction") and asian.get("lean"):
-        return str(asian["lean"])
-    return ""
-
-
-def _movement_tag(item: dict) -> tuple[str, str]:
-    lean = _movement_lean(item)
-    suggestion = _asian_suggestion(item)
-    if not lean or not suggestion:
-        return "", ""
-    same_side = (
-        ("主队" in lean and "主队" in suggestion)
-        or ("客队" in lean and "客队" in suggestion)
-        or ("赏走" in lean and "赏走" in suggestion)
-        or ("走盘" in lean and "走盘" in suggestion)
-    )
-    return ("共振", "sync") if same_side else ("分歧", "conflict")
-
-
 def _render_stats(
     analyses: list[dict],
     issue: str,
@@ -304,15 +276,8 @@ def _render_alert_rows(analyses: list[dict]) -> str:
         level = _movement_level(item)
         kind = _movement_kind(item)
         old, new = _movement_old_new(item)
-        lean = _movement_lean(item)
         total_old, total_new = _total_movement_old_new(item)
         delta_html = f'<div class="line-delta">{_esc(_movement_delta(item))}</div>' if _movement_delta(item) else ""
-        tag_label, tag_css = _movement_tag(item)
-        tag_html = (
-            f'<div class="movement-tag {tag_css}">{_esc(tag_label)}</div>'
-            if tag_label
-            else ""
-        )
         rows.append(
             f"""
             <tr data-alert="1" data-alert-kind="{_esc(kind)}">
@@ -331,10 +296,8 @@ def _render_alert_rows(analyses: list[dict]) -> str:
                 <div class="line-pair"><span class="k">即</span>{_esc(new)}</div>
                 {delta_html}
               </td>
-              <td class="lean-cell">{_esc(lean or "-")}</td>
               <td class="asian-rec">
                 <div>{_esc(_asian_rec_text(item))}</div>
-                {tag_html}
               </td>
               <td class="total-cell">
                 <div class="line-pair"><span class="k">初</span>{_esc(total_old)}</div>
@@ -348,7 +311,7 @@ def _render_alert_rows(analyses: list[dict]) -> str:
         if narration:
             rows.append(
                 f'<tr data-alert-kind="{_esc(kind)}" class="narration-row">'
-                f'<td colspan="8">'
+                f'<td colspan="7">'
                 f'<span class="narration-label">大模型解读 · 仅依据已采集数据</span>'
                 f"{_esc(narration)}"
                 f"</td></tr>"
@@ -450,7 +413,6 @@ def _render_body(analyses: list[dict], issue: str, source_url: str, generated_at
               <th>比分</th>
               <th>类型</th>
               <th>盘口变化</th>
-              <th>倾向</th>
               <th>亚盘建议</th>
               <th>大小球</th>
               <th>分析</th>
@@ -644,14 +606,10 @@ td { color: #2b3644; }
 .alert-table .match-cell strong { display: block; white-space: normal; }
 .alert-table .match-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
 .alert-table .kind-cell { width: 78px; }
-.alert-table .lean-cell { width: 18%; color: #334155; font-weight: 600; }
 .line-change { width: 30%; white-space: normal; }
 .line-pair { display: flex; gap: 6px; align-items: baseline; }
 .line-pair .k { flex: 0 0 1.2em; color: var(--muted); font-size: 12px; }
 .line-delta { margin-top: 5px; color: #475569; font-size: 12px; font-weight: 600; }
-.movement-tag { margin-top: 5px; }
-.movement-tag.sync { color: var(--green); }
-.movement-tag.conflict { color: var(--amber); }
 .alert-toolbar { margin: 0 16px 10px; }
 .alert-table .asian-rec { min-width: 0; white-space: normal; }
 .alert-table .score-cell { min-width: 56px; white-space: nowrap; font-weight: 600; }

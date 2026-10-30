@@ -34,7 +34,7 @@ class OddsAnalysisTests(unittest.TestCase):
         self.assertEqual(asian["market_side"], "主队赢盘")
         self.assertEqual(asian["model_side"], "主队赢盘")
         self.assertEqual(asian["recommended_side"], "主队赢盘")
-        self.assertEqual(asian["action"], "轻仓")
+        self.assertEqual(asian["action"], "主推")
         self.assertGreater(asian["ev_home"], 0.0)
 
     def test_total_side_uses_lower_water(self):
@@ -112,7 +112,7 @@ class OddsAnalysisTests(unittest.TestCase):
         europe = result["europe"]
         self.assertFalse(europe["available"])
         self.assertEqual(_rec_cell(europe, "主胜"), "无市场")
-        self.assertEqual(result["rank"], 1)
+        self.assertEqual(result["rank"], 2)
 
     def test_rank_orders_summary(self):
         market = {
@@ -154,7 +154,7 @@ class OddsAnalysisTests(unittest.TestCase):
         rows = recommendation_summary([item("02", "观望"), item("01", "主推")])
         self.assertEqual([row[1]["match_no"] for row in rows], ["01", "02"])
         self.assertEqual(rows[0][0], 3)
-        self.assertEqual(rows[1][0], 1)
+        self.assertEqual(rows[1][0], 2)
 
 
 
