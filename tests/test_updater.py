@@ -251,6 +251,10 @@ class UpdaterTests(unittest.TestCase):
             args[args.index("--relaunch-env") + 1],
             updater.UPDATE_RELAUNCH_ENV,
         )
+        self.assertEqual(
+            popen.call_args.kwargs["creationflags"],
+            updater.UPDATE_HELPER_FLAGS,
+        )
         self.assertEqual(result["updater_pid"], 4321)
 
     def test_install_downloaded_accepts_legacy_updater_name(self):
@@ -270,6 +274,10 @@ class UpdaterTests(unittest.TestCase):
                 helper = Path(popen.call_args[0][0][0])
                 self.assertEqual(helper.parent.resolve(), download.resolve())
                 self.assertEqual(helper.read_bytes(), b"legacy")
+                self.assertEqual(
+                    popen.call_args.kwargs["creationflags"],
+                    updater.UPDATE_HELPER_FLAGS,
+                )
 
     def test_installer_archive_contains_target_exe(self):
         with tempfile.TemporaryDirectory() as tmp:
