@@ -41,6 +41,34 @@ class _Response:
 
 
 class UpdaterTests(unittest.TestCase):
+    def test_stop_running_app_requests_ctrl_c_before_force_kill(self):
+        import update_installer
+
+        target = Path("football_analysis.exe")
+        with mock.patch.object(
+                update_installer, "_request_ctrl_c", return_value=True
+        ) as request, \
+                mock.patch.object(
+                    update_installer, "_target_unlocked", side_effect=[False, True]
+                ), \
+                mock.patch("subprocess.run") as run:
+            with mock.patch.object(update_installer.sys, "platform", "win32"):
+                update_installer._stop_running_app(123, target=target)
+        request.assert_called_once_with(123)
+        run.assert_not_called()
+
+    def test_stop_running_app_falls_back_to_force_kill(self):
+        import update_installer
+
+        target = Path("football_analysis.exe")
+        with mock.patch.object(update_installer, "_request_ctrl_c", return_value=False), \
+                mock.patch("subprocess.run") as run:
+            with mock.patch.object(update_installer.sys, "platform", "win32"):
+                update_installer._stop_running_app(123, target=target)
+        run.assert_called_once_with(
+            ["taskkill", "/PID", "123", "/F"], capture_output=True
+        )
+
     def test_updater_uses_application_version(self):
         self.assertEqual(updater.__version__, app_version)
 

@@ -40,12 +40,38 @@ def _target_unlocked(target: Path) -> bool:
         return False
 
 
-def _stop_running_app(pid: int) -> None:
-    """结束仍在运行的主程序，否则它的 exe 一直处于锁定状态无法替换。"""
+def _request_ctrl_c(pid: int) -> bool:
+    if sys.platform != "win32" or pid <= 0:
+        return False
+    kernel32 = ctypes.windll.kernel32
+    kernel32.SetConsoleCtrlHandler(None, True)
+    try:
+        if not kernel32.AttachConsole(pid):
+            return False
+        try:
+            sent = bool(kernel32.GenerateConsoleCtrlEvent(0, 0))
+            time.sleep(0.2)
+            return sent
+        finally:
+            kernel32.FreeConsole()
+    finally:
+        kernel32.SetConsoleCtrlHandler(None, False)
+
+
+def _stop_running_app(pid: int, *, target: Path | None = None) -> None:
+    """先给旧控制台发 Ctrl+C，超时后再强制结束主程序。"""
     if pid <= 0:
         return
     try:
         if sys.platform == "win32":
+            if _request_ctrl_c(pid):
+                deadline = time.time() + 10
+                while target is not None and time.time() < deadline:
+                    if _target_unlocked(target):
+                        return
+                    time.sleep(0.25)
+                if target is None or _target_unlocked(target):
+                    return
             subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
         else:
             os.kill(pid, 15)
@@ -118,7 +144,7 @@ def _run_installer(
 ) -> int:
     root = target.parent
     try:
-        _stop_running_app(kill_pid)
+        _stop_running_app(kill_pid, target=target)
         deadline = time.time() + 120
         while not _target_unlocked(target) and time.time() < deadline:
             time.sleep(1)
@@ -171,7 +197,7 @@ def _install_zip(
     relaunch_env: str = "",
 ) -> int:
     try:
-        _stop_running_app(kill_pid)
+        _stop_running_app(kill_pid, target=target)
         deadline = time.time() + max(wait_seconds, 0)
         while not _target_unlocked(target) and time.time() < deadline:
             time.sleep(1)
