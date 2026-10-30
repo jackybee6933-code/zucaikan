@@ -295,7 +295,9 @@ class UpdaterTests(unittest.TestCase):
                 (root / "tools" / "scrape_odds_pages.py").read_bytes(), b"new scraper"
             )
 
-    def test_installer_restarts_app_in_inherited_console(self):
+    def test_installer_restarts_app_in_new_console(self):
+        import update_installer
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             archive = root / "package.zip"
@@ -304,19 +306,29 @@ class UpdaterTests(unittest.TestCase):
             with zipfile.ZipFile(archive, "w") as zf:
                 zf.writestr(updater.APP_EXE_NAME, b"new")
             with mock.patch("sys.platform", "win32"), \
+                    mock.patch.object(
+                        update_installer.ctypes, "windll", create=True
+                    ) as windll, \
                     mock.patch("subprocess.Popen") as popen, \
                     mock.patch("sys.argv", [
                         "update_installer.py", "--archive", str(archive),
                         "--target", str(target), "--restart",
                     ]):
-                import update_installer
-
                 result = update_installer.main()
             self.assertEqual(result, 0)
-            self.assertNotIn("creationflags", popen.call_args.kwargs)
+            windll.kernel32.FreeConsole.assert_called_once_with()
+            self.assertEqual(
+                popen.call_args.kwargs["creationflags"],
+                getattr(__import__("subprocess"), "CREATE_NEW_CONSOLE", 0x10),
+            )
+            self.assertEqual(
+                popen.call_args.kwargs["env"]["FA_UPDATE_NEW_CONSOLE"], "1"
+            )
             self.assertTrue(popen.call_args.kwargs["close_fds"])
 
-    def test_inno_installer_restarts_app_in_inherited_console(self):
+    def test_inno_installer_restarts_app_in_new_console(self):
+        import update_installer
+
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "installed"
             download_dir = Path(tmp) / "download"
@@ -332,14 +344,16 @@ class UpdaterTests(unittest.TestCase):
                     mock.patch("update_installer._target_unlocked", return_value=True), \
                     mock.patch("update_installer._stop_running_app"), \
                     mock.patch("sys.platform", "win32"), \
+                    mock.patch.object(
+                        update_installer.ctypes, "windll", create=True
+                    ) as windll, \
                     mock.patch("sys.argv", [
                         "update_installer.py", "--installer", str(installer),
                         "--target", str(target), "--restart",
                     ]):
-                import update_installer
-
                 result = update_installer.main()
             self.assertEqual(result, 0)
+            windll.kernel32.FreeConsole.assert_called_once_with()
             installer_args = popen.call_args_list[0].args[0]
             install_dir = next(
                 arg[5:] for arg in installer_args if arg.startswith("/DIR=")
@@ -354,7 +368,13 @@ class UpdaterTests(unittest.TestCase):
             self.assertEqual(
                 Path(popen.call_args_list[1].kwargs["cwd"]).resolve(), root.resolve()
             )
-            self.assertNotIn("creationflags", popen.call_args_list[1].kwargs)
+            self.assertEqual(
+                popen.call_args_list[1].kwargs["creationflags"],
+                getattr(__import__("subprocess"), "CREATE_NEW_CONSOLE", 0x10),
+            )
+            self.assertEqual(
+                popen.call_args_list[1].kwargs["env"]["FA_UPDATE_NEW_CONSOLE"], "1"
+            )
             self.assertTrue(popen.call_args_list[1].kwargs["close_fds"])
 
 

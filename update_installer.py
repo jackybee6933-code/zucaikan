@@ -9,6 +9,7 @@ then swaps in the new exe from the archive and optionally restarts it.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import shutil
@@ -208,11 +209,17 @@ def _relaunch_app(target: Path, root: Path, env_name: str = "") -> None:
     env = os.environ.copy()
     if env_name:
         env[env_name] = "1"
+    options = {}
+    if sys.platform == "win32":
+        env["FA_UPDATE_NEW_CONSOLE"] = "1"
+        options["creationflags"] = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10)
+        ctypes.windll.kernel32.FreeConsole()
     subprocess.Popen(
         [str(target)],
         cwd=str(root),
         env=env,
         close_fds=True,
+        **options,
     )
 
 

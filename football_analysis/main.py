@@ -38,6 +38,7 @@ PARTIAL_CACHE_TTL_HOURS = 6.0
 _ODDS_CACHE_RE = re.compile(r"^odds_pages_(\d+)\.json$")
 _ODDS_META_RE = re.compile(r"^odds_pages_(\d+)\.meta\.json$")
 _UPDATE_RELAUNCH_ENV = "FA_UPDATE_RELAUNCH"
+_UPDATE_NEW_CONSOLE_ENV = "FA_UPDATE_NEW_CONSOLE"
 
 
 def _finalize_updater_update() -> None:
@@ -73,9 +74,10 @@ def _prepare_update_console() -> None:
     if sys.platform != "win32" or not getattr(sys, "frozen", False):
         return
     kernel32 = ctypes.windll.kernel32
-    kernel32.FreeConsole()
-    if not kernel32.AllocConsole():
-        raise OSError("Could not allocate a console for the restarted application.")
+    if not os.environ.get(_UPDATE_NEW_CONSOLE_ENV):
+        kernel32.FreeConsole()
+        if not kernel32.AllocConsole():
+            raise OSError("Could not allocate a console for the restarted application.")
     sys.stdin = open("CONIN$", "r", encoding="utf-8", errors="replace")
     sys.stdout = open("CONOUT$", "w", encoding="utf-8", errors="replace")
     sys.stderr = sys.stdout

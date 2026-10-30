@@ -13,11 +13,26 @@ class AppRootTests(unittest.TestCase):
     def test_prepare_update_console_reopens_standard_streams(self):
         with mock.patch.object(main.sys, "platform", "win32"), \
              mock.patch.object(main.sys, "frozen", True, create=True), \
+             mock.patch.dict("os.environ", {}, clear=True), \
              mock.patch("builtins.open", mock.mock_open()) as open_file, \
              mock.patch.object(main.ctypes, "windll", create=True) as windll:
             main._prepare_update_console()
         windll.kernel32.FreeConsole.assert_called_once_with()
         windll.kernel32.AllocConsole.assert_called_once_with()
+        windll.kernel32.SetConsoleCtrlHandler.assert_called_once_with(None, False)
+        self.assertEqual(open_file.call_count, 2)
+
+    def test_prepare_update_console_keeps_console_created_by_updater(self):
+        with mock.patch.object(main.sys, "platform", "win32"), \
+             mock.patch.object(main.sys, "frozen", True, create=True), \
+             mock.patch.dict(
+                 "os.environ", {main._UPDATE_NEW_CONSOLE_ENV: "1"}, clear=True
+             ), \
+             mock.patch("builtins.open", mock.mock_open()) as open_file, \
+             mock.patch.object(main.ctypes, "windll", create=True) as windll:
+            main._prepare_update_console()
+        windll.kernel32.FreeConsole.assert_not_called()
+        windll.kernel32.AllocConsole.assert_not_called()
         windll.kernel32.SetConsoleCtrlHandler.assert_called_once_with(None, False)
         self.assertEqual(open_file.call_count, 2)
 
