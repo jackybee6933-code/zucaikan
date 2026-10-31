@@ -2,6 +2,7 @@
 
 import html
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_from_bytes
@@ -23,6 +24,28 @@ from .llm import normalize_team_read
 
 def _esc(value: object) -> str:
     return html.escape("" if value is None else str(value), quote=False)
+
+
+def _recommendation_html(value: str) -> str:
+    value = re.sub(
+        r"\s*\(\s*W\s*=\s*胜\s*[、,，]\s*D\s*=\s*和\s*[、,，]\s*L\s*=\s*负\s*\)\s*",
+        " ",
+        value,
+        flags=re.IGNORECASE,
+    )
+    escaped = _esc(value.strip())
+    escaped = re.sub(
+        r"(?<![A-Za-z])W(?![A-Za-z])",
+        r'<span class="ai-tip-result-win">W</span>',
+        escaped,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(
+        r"(?<![A-Za-z])L(?![A-Za-z])",
+        r'<span class="ai-tip-result-loss">L</span>',
+        escaped,
+        flags=re.IGNORECASE,
+    )
 
 
 def _data_freshness(
@@ -252,7 +275,7 @@ def _lean_cell(row: dict) -> str:
                 is_recommendation = key_text in ("推介", "心水推荐")
                 section_class = " ai-tip-recommendation" if is_recommendation else ""
                 body = (
-                    f'<p class="ai-tip-recommendation-text"><strong>{_esc(value_text[:800])}</strong></p>'
+                    f'<p class="ai-tip-recommendation-text">{_recommendation_html(value_text[:800])}</p>'
                     if is_recommendation
                     else f"<p>{_esc(value_text[:800])}</p>"
                 )
@@ -1679,7 +1702,7 @@ def render_query_html(
       margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }}
-    #ai-pop {{ position: fixed; z-index: 45; width: min(640px, calc(100vw - 20px)); max-height: min(340px, calc(100vh - 20px)); overflow-y: auto; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; color: var(--ink); box-shadow: 0 10px 28px rgba(15, 23, 42, .2); font-size: 13px; font-weight: 400; line-height: 1.55; }}
+    #ai-pop {{ position: fixed; z-index: 45; width: min(640px, calc(100vw - 20px)); max-height: min(400px, calc(100vh - 20px)); overflow-y: auto; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; color: var(--ink); box-shadow: 0 10px 28px rgba(15, 23, 42, .2); font-size: 13px; font-weight: 400; line-height: 1.55; }}
     #ai-pop[hidden] {{ display: none; }}
     .ai-tip-title {{ margin-bottom: 8px; color: #334155; font-size: 13px; font-weight: 700; }}
     .ai-tip-section + .ai-tip-section {{ margin-top: 9px; padding-top: 8px; border-top: 1px solid #e2e8f0; }}
@@ -1689,6 +1712,8 @@ def render_query_html(
     .ai-tip-recommendation {{ margin-top: 0; padding: 10px 11px; border: 1px solid #bfdbfe; border-radius: 6px; background: #eff6ff; }}
     .ai-tip-recommendation h4 {{ margin-bottom: 5px; color: #1d4ed8; font-size: 12px; }}
     .ai-tip-recommendation-text {{ color: #0f172a; font-size: 14px; line-height: 1.45; }}
+    .ai-tip-result-win {{ color: #dc2626; font-weight: 700; }}
+    .ai-tip-result-loss {{ color: #16a34a; font-weight: 700; }}
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}
     .alert-table {{ table-layout: fixed; }}
     .alert-table .issue-cell {{ width: 6%; white-space: nowrap; }}
