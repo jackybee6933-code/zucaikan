@@ -2023,7 +2023,10 @@ def render_query_html(
         active.blur();
       }}
     }});
-    window.addEventListener('scroll', hide, true);
+    window.addEventListener('scroll', function (event) {{
+      if (event.target instanceof Element && pop.contains(event.target)) return;
+      hide();
+    }}, true);
     window.addEventListener('resize', hide);
   }})();
   </script>

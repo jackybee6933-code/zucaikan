@@ -438,6 +438,7 @@ class StoreAndReportTests(unittest.TestCase):
             self.assertIn('id="ai-pop" role="tooltip" hidden', html)
             self.assertIn('<h4>推介</h4><p>主队状态稳定</p>', html)
             self.assertIn("pop.addEventListener('mouseenter', cancelHide)", html)
+            self.assertIn("pop.contains(event.target)", html)
             self.assertNotIn("盘口 客队（博洛尼亚）", html)
 
     def test_source_references_render_in_structured_ai_tooltip(self):
