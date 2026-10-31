@@ -322,6 +322,32 @@ class ReaderTests(unittest.TestCase):
         self.assertTrue(post.call_args.args[0].startswith("http://backup/v1"))
         self.assertEqual(post.call_args.kwargs["json"]["model"], "m2")
 
+    def test_backup_endpoint_sticks_for_later_reads(self):
+        reader = llm.TeamReader(
+            base_url="http://primary/v1",
+            api_key="k1",
+            model="m1",
+            fallback=("http://backup/v1", "k2", "m2"),
+            retry_wait=0.01,
+            attempts=1,
+        )
+        first = self._response(
+            '{"tendency": "\\u5ba2\\u961f\\u8d62\\u76d8", "confidence": 0.4, "reason": "\\u5907\\u7528\\u7ed3\\u679c"}'
+        )
+        second = self._response(
+            '{"tendency": "\\u4e3b\\u961f\\u8d62\\u76d8", "confidence": 0.6, "reason": "\\u7ed3\\u679c"}'
+        )
+        with mock.patch.object(
+            llm.requests, "post", side_effect=[self._throttled(), first, second]
+        ) as post:
+            self.assertIsNotNone(reader.read(_analysis(match_no="1")))
+            self.assertIsNotNone(reader.read(_analysis(match_no="2")))
+        self.assertEqual(post.call_count, 3)
+        self.assertTrue(post.call_args_list[0].args[0].startswith("http://primary/v1"))
+        self.assertTrue(post.call_args_list[1].args[0].startswith("http://backup/v1"))
+        self.assertTrue(post.call_args_list[2].args[0].startswith("http://backup/v1"))
+        self.assertEqual(reader._active_endpoint, 1)
+
     def test_enabled_when_only_backup_is_configured(self):
         reader = llm.TeamReader(api_key="", fallback=("http://backup/v1", "k2", "m2"))
         self.assertTrue(reader.enabled)
@@ -339,6 +365,28 @@ class ShujuTextTests(unittest.TestCase):
         self.assertEqual(odds_pages.shuju_text(raw, "2"), "")
         self.assertEqual(odds_pages.shuju_text(raw, "3"), "")
         self.assertEqual(odds_pages.shuju_text(raw, "9"), "")
+
+    def test_references_are_separate_from_analysis_text(self):
+        raw = {
+            "1|shuju": {
+                "status": "ok",
+                "text": (
+                    "## 近期战绩\n主队 近10场 6胜\n"
+                    "## 推介\n主队赢盘\n"
+                    "## 对赛成绩\n主队 3胜1平\n"
+                    "## 分析\n主队近期状态较好"
+                ),
+            }
+        }
+        refs = odds_pages.shuju_references(raw, "1")
+        self.assertEqual(refs["推介"], "主队赢盘")
+        self.assertEqual(refs["对赛成绩"], "主队 3胜1平")
+        self.assertEqual(refs["分析"], "主队近期状态较好")
+        analysis = odds_pages.shuju_analysis_text(raw, "1")
+        self.assertIn("近期战绩", analysis)
+        self.assertNotIn("主队赢盘", analysis)
+        self.assertNotIn("主队 3胜1平", analysis)
+        self.assertNotIn("主队近期状态较好", analysis)
 
 
 class StoreAndReportTests(unittest.TestCase):
@@ -387,6 +435,21 @@ class StoreAndReportTests(unittest.TestCase):
             self.assertIn("盘口：主让半球升到一球", html)
             self.assertIn("主场赢盘率高于客队", html)
             self.assertNotIn("盘口 客队（博洛尼亚）", html)
+
+    def test_source_references_render_in_ai_tooltip(self):
+        rendered = _lean_cell(_analysis(team_read=json.dumps({
+            "tendency": "主队赢盘",
+            "confidence": 0.6,
+            "reason": "模型理由",
+            "source_references": {
+                "推介": "主队赢盘",
+                "对赛成绩": "主队 3胜1平",
+                "分析": "近期状态较好",
+            },
+        }, ensure_ascii=False)))
+        self.assertIn("推介：主队赢盘", rendered)
+        self.assertIn("对赛成绩：主队 3胜1平", rendered)
+        self.assertIn("分析：近期状态较好", rendered)
 
     def test_over_tendency_without_confidence_is_hidden(self):
         row = _analysis(

@@ -114,6 +114,47 @@ def shuju_text(raw: dict, fixture_id: str) -> str:
     return str(page.get("text") or "").strip()
 
 
+_REFERENCE_HEADINGS = ("推介", "心水推荐", "对赛成绩", "分析")
+
+
+def _shuju_sections(text: str) -> list[tuple[str, str]]:
+    """Split the scraper's ``## heading`` blocks without changing their text."""
+    matches = list(re.finditer(r"(?m)^##\s*(.*?)\s*$", str(text or "")))
+    sections: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = re.sub(r"\s+", " ", text[match.end():end]).strip()
+        if body:
+            sections.append((match.group(1).strip(), body))
+    return sections
+
+
+def shuju_references(raw: dict, fixture_id: str) -> dict[str, str]:
+    """Extract display-only 500-page references; these are never model input."""
+    found: dict[str, str] = {}
+    for heading, body in _shuju_sections(shuju_text(raw, fixture_id)):
+        matched = next((name for name in _REFERENCE_HEADINGS if name in heading), None)
+        if matched and matched not in found:
+            found[matched] = body[:800]
+    return found
+
+
+def shuju_analysis_text(raw: dict, fixture_id: str) -> str:
+    """Return 500 data text with display-only recommendation sections removed."""
+    text = shuju_text(raw, fixture_id)
+    if not text:
+        return ""
+    sections = _shuju_sections(text)
+    if not sections:
+        return text[:9000]
+    kept = [
+        f"## {heading}\n{body}"
+        for heading, body in sections
+        if not any(name in heading for name in _REFERENCE_HEADINGS)
+    ]
+    return "\n".join(kept)[:9000]
+
+
 def _pick_company(rows: list[list]) -> list | None:
     by_cid = {str(row[0]): row for row in rows}
     for cid in CID_PREFERENCE:

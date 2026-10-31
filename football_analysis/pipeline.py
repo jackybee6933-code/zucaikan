@@ -21,7 +21,8 @@ from .odds_pages import (
     page_failures,
     pages_age_hours,
     parse_odds_pages,
-    shuju_text,
+    shuju_analysis_text,
+    shuju_references,
 )
 from .sfc import ISSUE_URL, TRADE_URL, parse_sfc_html
 from .sfc import extract_match_score
@@ -235,9 +236,12 @@ def analyze_issue(
         from .llm import enrich_team_reads
 
         page_texts = [
-            shuju_text(pages_raw, str(row.get("fixture_id") or "")) for row in enriched
+            shuju_analysis_text(pages_raw, str(row.get("fixture_id") or "")) for row in enriched
         ]
-        enrich_team_reads(results, page_texts=page_texts)
+        references = [
+            shuju_references(pages_raw, str(row.get("fixture_id") or "")) for row in enriched
+        ]
+        enrich_team_reads(results, page_texts=page_texts, source_references=references)
     return results, actual_issue, ISSUE_URL.format(issue=actual_issue)
 
 def _attach_titan_h2h_schedules(rows: list[dict], issue: str, fetcher: Fetcher, *, max_workers: int) -> None:

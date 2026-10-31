@@ -161,7 +161,8 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
         PAGES_STALE_HOURS,
         load_odds_pages_raw,
         pages_kind_age_hours,
-        shuju_text,
+        shuju_analysis_text,
+        shuju_references,
     )
     from .store import (
         connect,
@@ -234,6 +235,7 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
         # analyses 与 fixture_ids 数量一致时按 index 对齐 page_texts；
         # 不一致时用 match_no 从 fixture_ids 里找对应 fid（若有的话）。
     page_texts: list[str] = []
+    references: list[dict[str, str]] = []
     for analysis in analyses:
         fid = str(analysis.get("fixture_id") or "")
         if not fid:
@@ -243,7 +245,8 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
             except ValueError:
                 idx = -1
             fid = fixture_ids[idx] if 0 <= idx < len(fixture_ids) else ""
-        page_texts.append(shuju_text(raw, fid))
+        page_texts.append(shuju_analysis_text(raw, fid))
+        references.append(shuju_references(raw, fid))
     needed_pages = sum(1 for t in page_texts if t)
     if needed_pages == 0:
         return f"{actual_issue}：500 数据分析页缺失或抓取失败，AI 无资料可读，请先确认单场页产物 cache/odds_pages_{actual_issue}.json 含 shuju 页"
@@ -251,13 +254,15 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     if not reader.enabled:
         return f"{actual_issue}：未配置 LLM_API_KEY（或主备均未配置），AI 分析不可用"
     progress_file = cache_dir / ".ai_scrape_progress"
-    count = enrich_team_reads(
-        analyses,
-        reader=reader,
-        page_texts=page_texts,
-        progress_path=progress_file,
-        issue=actual_issue,
-    )
+    enrich_kwargs = {
+        "reader": reader,
+        "page_texts": page_texts,
+        "progress_path": progress_file,
+        "issue": actual_issue,
+    }
+    if any(references):
+        enrich_kwargs["source_references"] = references
+    count = enrich_team_reads(analyses, **enrich_kwargs)
     if not count:
         return f"{actual_issue}：AI 分析全部失败（已读 {needed_pages}/{len(fixture_ids)} 场数据页），AI分析结果未更新"
     # When fixture_ids came from the artifact (not the DB), analyses[i] may not

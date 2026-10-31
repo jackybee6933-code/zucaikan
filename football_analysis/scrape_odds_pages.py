@@ -96,7 +96,7 @@ SHUJU_JS = r"""() => {
     const label = labelFor(t);
     if (SKIP_LABEL.some((s) => label.includes(s))) return;
     const body = rows.map((tr) => tr.textContent.replace(/\s+/g, '')).join('');
-    if (body.includes('用户名') || body.includes('验证码') || body.includes('心水推荐')) return;
+    if (body.includes('用户名') || body.includes('验证码')) return;
     out.push('## ' + (label || '表'));
     rows.slice(0, 14).forEach((tr) => {
       const line = Array.from(tr.children)
@@ -104,6 +104,19 @@ SHUJU_JS = r"""() => {
         .join(' | ');
       if (line.replace(/[|\s]/g, '')) out.push(line);
     });
+  });
+  const refMarks = ['推介', '心水推荐', '对赛成绩', '分析'];
+  const seenText = new Set(out);
+  document.querySelectorAll('p,li').forEach((el) => {
+    const label = labelFor(el);
+    if (!refMarks.some((mark) => label.includes(mark))) return;
+    const text = el.textContent.replace(/\s+/g, ' ').trim();
+    if (text.length < 4 || text.length > 800) return;
+    const line = '## ' + label + '\n' + text;
+    if (!seenText.has(line)) {
+      seenText.add(line);
+      out.push(line);
+    }
   });
   return out.join('\n').slice(0, 12000);
 }"""

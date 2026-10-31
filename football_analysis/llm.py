@@ -564,6 +564,8 @@ class TeamReader:
         if fallback is None:
             fallback = fallback_config()
         self.endpoints = [(self.base_url, self.api_key, self.model)]
+        # Keep the fallback sticky for the rest of one batch analysis.
+        self._active_endpoint = 0
         if fallback and fallback[1]:
             self.endpoints.append(tuple(fallback))
         self.timeout = timeout
@@ -585,12 +587,18 @@ class TeamReader:
             ],
             "temperature": 0.2,
         }
-        for index, (base_url, api_key, model) in enumerate(self.endpoints):
-            if index:
+        for index in range(self._active_endpoint, len(self.endpoints)):
+            base_url, api_key, model = self.endpoints[index]
+            if index != self._active_endpoint:
                 print(f"  主接入点没给出结果，改用备用接入点 {model}")
             result = self._read_endpoint(base_url, api_key, model, body)
             if result is not None:
+                if index != self._active_endpoint:
+                    self._active_endpoint = index
                 return result
+            if index == 0 and len(self.endpoints) > 1:
+                self._active_endpoint = 1
+                print("  primary endpoint failed; using fallback for the remaining matches")
         return None
 
     def _read_endpoint(self, base_url: str, api_key: str, model: str, body: dict) -> dict | None:
@@ -628,6 +636,7 @@ def enrich_team_reads(
     analyses: list[dict],
     reader: TeamReader | None = None,
     page_texts: list[str] | None = None,
+    source_references: list[dict[str, str]] | None = None,
     pace: float = 4.0,
     progress_path: Path | None = None,
     issue: str = "",
@@ -669,6 +678,17 @@ def enrich_team_reads(
         result = reader.read(item, page_text)
         if result:
             item["team_read"] = normalize_team_read(result)
+            references = (
+                source_references[index]
+                if source_references and index < len(source_references)
+                else {}
+            )
+            if isinstance(references, dict) and references:
+                item["team_read"]["source_references"] = {
+                    str(key): str(value)[:800]
+                    for key, value in references.items()
+                    if str(key).strip() and str(value).strip()
+                }
             count += 1
     _report("llm", len(analyses), len(analyses))
     print(f"  球队资料分析：{count}/{len(analyses)} 场已生成倾向")

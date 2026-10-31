@@ -241,6 +241,13 @@ def _lean_cell(row: dict) -> str:
         conf = f" {confidence * 100:.0f}%" if confidence > 0 else ""
         reason = str(read.get("reason") or "").strip()
         tooltip_parts = [reason] + factors
+        source_references = read.get("source_references") or {}
+        if isinstance(source_references, dict):
+            tooltip_parts.extend(
+                f"{str(key).strip()}：{str(value).strip()[:800]}"
+                for key, value in source_references.items()
+                if str(key).strip() and str(value).strip()
+            )
         tooltip = html.escape("；".join(part for part in tooltip_parts if part), quote=True)
         title = f' title="{tooltip}"' if tooltip else ""
         parts.append(f'<div class="model-lean"{title}>{_esc(tendency)}{_esc(conf)}</div>')
