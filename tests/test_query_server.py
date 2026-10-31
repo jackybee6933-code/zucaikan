@@ -318,10 +318,8 @@ class QueryServerTests(unittest.TestCase):
         self.assertIn('id="update-progress-wrap"', body)
         self.assertIn('id="update-progress"', body)
         self.assertIn("/update/install-status", body)
-        self.assertIn('id="update-verify"', body)
-        self.assertIn("/update/verify", body)
-        self.assertIn('id="update-download-test"', body)
-        self.assertIn("/update/download-test", body)
+        self.assertNotIn('id="update-verify"', body)
+        self.assertNotIn("/update/verify", body)
         self.assertIn("formatElapsedSeconds", body)
         self.assertIn("检查耗时 ${formatElapsedSeconds(data.elapsed_ms)}", body)
         self.assertIn('toFixed(2) + " 秒"', body)
@@ -492,43 +490,6 @@ class QueryServerTests(unittest.TestCase):
         self.assertEqual(state["phase"], "error")
         self.assertIn("SHA-256 校验失败", state["error"])
         self.assertEqual(state["result"], "")
-        fake.install_downloaded.assert_not_called()
-
-    def test_download_test_uses_normal_update_path_without_installing(self):
-        from football_analysis import query_app
-
-        entered = threading.Event()
-        release = threading.Event()
-        fake = mock.Mock()
-        fake.check_update.return_value = {
-            "update_available": False, "latest_version": __version__,
-        }
-
-        def download(info, *, progress, phase, **kwargs):
-            self.assertEqual(kwargs, {})
-            progress(100, 100)
-            entered.set()
-            release.wait(5)
-            phase("verify")
-            phase("ready")
-            package = Path(tempfile.mkdtemp()) / "package.exe"
-            package.write_bytes(b"installer")
-            return package, "inno-setup"
-
-        fake.download_package.side_effect = download
-        with mock.patch.object(query_app, "_UPDATER_LOADER", return_value=fake):
-            try:
-                status, _ = _post(self.base + "/update/download-test", {})
-                self.assertEqual(status, 202)
-                self.assertTrue(entered.wait(2))
-                _, body = _get(self.base + "/update/install-status")
-                self.assertTrue(json.loads(body)["download_test"])
-            finally:
-                release.set()
-                state = _wait_idle(self.base, "/update/install-status")
-        self.assertEqual(state["phase"], "complete")
-        self.assertIn("下载安装包测试通过", state["result"])
-        fake.check_update.assert_called_once_with()
         fake.install_downloaded.assert_not_called()
 
     def test_settings_endpoint_masks_api_keys_and_saves_endpoints(self):
