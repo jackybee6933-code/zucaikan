@@ -241,6 +241,29 @@ def _lean_cell(row: dict) -> str:
         conf = f" {confidence * 100:.0f}%" if confidence > 0 else ""
         reason = str(read.get("reason") or "").strip()
         tooltip_sections = []
+        source_references = read.get("source_references") or {}
+        reference_sections = []
+        if isinstance(source_references, dict):
+            for key, value in source_references.items():
+                key_text = str(key).strip()
+                value_text = str(value).strip()
+                if not key_text or not value_text:
+                    continue
+                is_recommendation = key_text in ("推介", "心水推荐")
+                section_class = " ai-tip-recommendation" if is_recommendation else ""
+                body = (
+                    f'<p class="ai-tip-recommendation-text"><strong>{_esc(value_text[:800])}</strong></p>'
+                    if is_recommendation
+                    else f"<p>{_esc(value_text[:800])}</p>"
+                )
+                reference_sections.append(
+                    f'<section class="ai-tip-section{section_class}"><h4>{_esc(key_text)}</h4>{body}</section>'
+                )
+        tooltip_sections.extend(
+            section
+            for section in reference_sections
+            if 'class="ai-tip-section ai-tip-recommendation"' in section
+        )
         if reason:
             tooltip_sections.append(
                 f'<section class="ai-tip-section"><h4>模型理由</h4><p>{_esc(reason)}</p></section>'
@@ -251,14 +274,11 @@ def _lean_cell(row: dict) -> str:
                 + "".join(f"<li>{_esc(factor)}</li>" for factor in factors)
                 + "</ul></section>"
             )
-        source_references = read.get("source_references") or {}
-        if isinstance(source_references, dict):
-            tooltip_sections.extend(
-                f'<section class="ai-tip-section"><h4>{_esc(str(key).strip())}</h4>'
-                f'<p>{_esc(str(value).strip()[:800])}</p></section>'
-                for key, value in source_references.items()
-                if str(key).strip() and str(value).strip()
-            )
+        tooltip_sections.extend(
+            section
+            for section in reference_sections
+            if section not in tooltip_sections
+        )
         tooltip = ""
         if tooltip_sections:
             tooltip = (
@@ -1666,6 +1686,9 @@ def render_query_html(
     .ai-tip-section h4 {{ margin: 0 0 3px; color: #475569; font-size: 11px; font-weight: 700; }}
     .ai-tip-section p {{ margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }}
     .ai-tip-section ul {{ margin: 3px 0 0; padding-left: 18px; }}
+    .ai-tip-recommendation {{ margin-top: 0; padding: 10px 11px; border: 1px solid #bfdbfe; border-radius: 6px; background: #eff6ff; }}
+    .ai-tip-recommendation h4 {{ margin-bottom: 5px; color: #1d4ed8; font-size: 12px; }}
+    .ai-tip-recommendation-text {{ color: #0f172a; font-size: 14px; line-height: 1.45; }}
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}
     .alert-table {{ table-layout: fixed; }}
     .alert-table .issue-cell {{ width: 6%; white-space: nowrap; }}

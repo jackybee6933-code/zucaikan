@@ -437,7 +437,11 @@ class StoreAndReportTests(unittest.TestCase):
             self.assertIn("主场赢盘率高于客队", html)
             self.assertIn('id="ai-pop" role="tooltip" hidden', html)
             self.assertIn("width: min(640px, calc(100vw - 20px))", html)
-            self.assertIn('<h4>推介</h4><p>主队状态稳定</p>', html)
+            self.assertIn(
+                '<h4>推介</h4><p class="ai-tip-recommendation-text"><strong>主队状态稳定</strong></p>',
+                html,
+            )
+            self.assertIn("ai-tip-recommendation", html)
             self.assertIn("pop.addEventListener('mouseenter', cancelHide)", html)
             self.assertIn("pop.contains(event.target)", html)
             self.assertNotIn("盘口 客队（博洛尼亚）", html)
@@ -457,7 +461,7 @@ class StoreAndReportTests(unittest.TestCase):
         self.assertIn('<template class="ai-tip-content">', rendered)
         self.assertIn('<div class="ai-tip-title">AI分析依据</div>', rendered)
         self.assertIn('<section class="ai-tip-section"><h4>模型理由</h4><p>模型理由</p></section>', rendered)
-        self.assertIn('<section class="ai-tip-section"><h4>推介</h4><p>主队赢盘</p></section>', rendered)
+        self.assertIn('<section class="ai-tip-section ai-tip-recommendation"><h4>推介</h4><p class="ai-tip-recommendation-text"><strong>主队赢盘</strong></p></section>', rendered)
         self.assertNotIn('title="', rendered)
         self.assertIn("对赛成绩", rendered)
         self.assertIn("主队 3胜1平", rendered)
