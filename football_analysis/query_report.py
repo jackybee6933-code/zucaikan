@@ -240,20 +240,44 @@ def _lean_cell(row: dict) -> str:
             confidence = 0.0
         conf = f" {confidence * 100:.0f}%" if confidence > 0 else ""
         reason = str(read.get("reason") or "").strip()
-        tooltip_parts = [reason] + factors
+        tooltip_sections = []
+        if reason:
+            tooltip_sections.append(
+                f'<section class="ai-tip-section"><h4>模型理由</h4><p>{_esc(reason)}</p></section>'
+            )
+        if factors:
+            tooltip_sections.append(
+                '<section class="ai-tip-section"><h4>重点因素</h4><ul>'
+                + "".join(f"<li>{_esc(factor)}</li>" for factor in factors)
+                + "</ul></section>"
+            )
         source_references = read.get("source_references") or {}
         if isinstance(source_references, dict):
-            tooltip_parts.extend(
-                f"{str(key).strip()}：{str(value).strip()[:800]}"
+            tooltip_sections.extend(
+                f'<section class="ai-tip-section"><h4>{_esc(str(key).strip())}</h4>'
+                f'<p>{_esc(str(value).strip()[:800])}</p></section>'
                 for key, value in source_references.items()
                 if str(key).strip() and str(value).strip()
             )
-        tooltip = html.escape("；".join(part for part in tooltip_parts if part), quote=True)
-        title = f' title="{tooltip}"' if tooltip else ""
-        parts.append(f'<div class="model-lean"{title}>{_esc(tendency)}{_esc(conf)}</div>')
+        tooltip = ""
+        if tooltip_sections:
+            tooltip = (
+                '<template class="ai-tip-content"><div class="ai-tip-title">AI分析依据</div>'
+                + "".join(tooltip_sections)
+                + "</template>"
+            )
+        tip_attrs = (
+            ' data-ai-tip tabindex="0" role="note" aria-describedby="ai-pop"'
+            f' aria-label="{html.escape(tendency + conf + "，AI分析依据", quote=True)}"'
+            if tooltip
+            else ""
+        )
+        parts.append(
+            f'<div class="model-lean"{tip_attrs}>{_esc(tendency)}{_esc(conf)}{tooltip}</div>'
+        )
         if reason:
             parts.append(
-                f'<div class="model-reason" title="{_esc(reason)}">{_esc(reason)}</div>'
+                f'<div class="model-reason">{_esc(reason)}</div>'
             )
     over_tendency = str(read.get("over_tendency") or "").strip()
     try:
@@ -1629,10 +1653,19 @@ def render_query_html(
     .line-delta {{ margin-top: 5px; color: #475569; font-size: 12px; font-weight: 600; }}
     .lean-cell {{ font-weight: 600; color: #334155; }}
     .model-lean {{ color: #0f172a; }}
+    .model-lean[data-ai-tip] {{ cursor: help; text-decoration: underline dotted #94a3b8; text-underline-offset: 3px; }}
+    .model-lean[data-ai-tip]:focus-visible {{ outline: 2px solid rgba(37, 99, 235, .35); outline-offset: 2px; border-radius: 2px; }}
     .model-reason {{
       margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }}
+    #ai-pop {{ position: fixed; z-index: 45; width: min(360px, calc(100vw - 20px)); max-height: min(340px, calc(100vh - 20px)); overflow-y: auto; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; color: var(--ink); box-shadow: 0 10px 28px rgba(15, 23, 42, .2); font-size: 13px; font-weight: 400; line-height: 1.55; }}
+    #ai-pop[hidden] {{ display: none; }}
+    .ai-tip-title {{ margin-bottom: 8px; color: #334155; font-size: 13px; font-weight: 700; }}
+    .ai-tip-section + .ai-tip-section {{ margin-top: 9px; padding-top: 8px; border-top: 1px solid #e2e8f0; }}
+    .ai-tip-section h4 {{ margin: 0 0 3px; color: #475569; font-size: 11px; font-weight: 700; }}
+    .ai-tip-section p {{ margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }}
+    .ai-tip-section ul {{ margin: 3px 0 0; padding-left: 18px; }}
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}
     .alert-table {{ table-layout: fixed; }}
     .alert-table .issue-cell {{ width: 6%; white-space: nowrap; }}
@@ -1893,6 +1926,7 @@ def render_query_html(
   </div>
   {bet_block}
   <div id="split-pop" hidden></div>
+  <div id="ai-pop" role="tooltip" hidden></div>
   <script>
   (function () {{
     var pop = document.getElementById('split-pop');
@@ -1917,6 +1951,80 @@ def render_query_html(
       el.addEventListener('mouseleave', function () {{ pop.hidden = true; }});
       el.addEventListener('blur', function () {{ pop.hidden = true; }});
     }});
+  }})();
+  (function () {{
+    var pop = document.getElementById('ai-pop');
+    if (!pop) return;
+    var active = null;
+    var hideTimer = null;
+    function cancelHide() {{
+      window.clearTimeout(hideTimer);
+      hideTimer = null;
+    }}
+    function hide() {{
+      cancelHide();
+      pop.hidden = true;
+      if (active) active.removeAttribute('data-ai-tap-open');
+      active = null;
+    }}
+    function scheduleHide() {{
+      cancelHide();
+      hideTimer = window.setTimeout(hide, 140);
+    }}
+    function show(el) {{
+      var tpl = el.querySelector('.ai-tip-content');
+      if (!tpl) return;
+      cancelHide();
+      active = el;
+      pop.innerHTML = tpl.innerHTML;
+      pop.hidden = false;
+      var r = el.getBoundingClientRect();
+      var left = Math.max(10, Math.min(r.left, window.innerWidth - pop.offsetWidth - 10));
+      var top = r.bottom + 7;
+      if (top + pop.offsetHeight > window.innerHeight - 10) {{
+        top = Math.max(10, r.top - pop.offsetHeight - 7);
+      }}
+      pop.style.left = left + 'px';
+      pop.style.top = top + 'px';
+    }}
+    document.querySelectorAll('[data-ai-tip]').forEach(function (el) {{
+      el.addEventListener('mouseenter', function () {{ show(el); }});
+      el.addEventListener('focus', function () {{ show(el); }});
+      el.addEventListener('mouseleave', scheduleHide);
+      el.addEventListener('blur', scheduleHide);
+      el.addEventListener('pointerdown', function (event) {{
+        if (event.pointerType !== 'touch') return;
+        if (active === el && el.hasAttribute('data-ai-tap-open')) hide();
+        else {{
+          show(el);
+          el.setAttribute('data-ai-tap-open', '');
+        }}
+        el.setAttribute('data-ai-pointer-handled', '');
+      }});
+      el.addEventListener('click', function () {{
+        if (el.hasAttribute('data-ai-pointer-handled')) {{
+          el.removeAttribute('data-ai-pointer-handled');
+          return;
+        }}
+        if (window.matchMedia('(hover: none)').matches) {{
+          if (active === el && el.hasAttribute('data-ai-tap-open')) hide();
+          else {{
+            show(el);
+            el.setAttribute('data-ai-tap-open', '');
+          }}
+        }}
+      }});
+    }});
+    pop.addEventListener('mouseenter', cancelHide);
+    pop.addEventListener('mouseleave', scheduleHide);
+    document.addEventListener('keydown', function (event) {{
+      if (event.key === 'Escape' && active) {{
+        hide();
+        active.blur();
+      }}
+    }});
+    window.addEventListener('scroll', hide, true);
+    window.addEventListener('resize', hide);
   }})();
   </script>
 </body>

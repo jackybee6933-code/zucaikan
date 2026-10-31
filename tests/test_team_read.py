@@ -421,6 +421,7 @@ class StoreAndReportTests(unittest.TestCase):
                 "confidence": 0.55,
                 "reason": "主场赢盘率高于客队",
                 "factors": ["伤停：客队主力中卫缺阵", "盘口：主让半球升到一球"],
+                "source_references": {"推介": "主队状态稳定"},
             }
             save_issue_movements(db, [item], "26140")
             rows = query_movements(db, issue="26140")
@@ -434,9 +435,12 @@ class StoreAndReportTests(unittest.TestCase):
             self.assertIn("伤停：客队主力中卫缺阵", html)
             self.assertIn("盘口：主让半球升到一球", html)
             self.assertIn("主场赢盘率高于客队", html)
+            self.assertIn('id="ai-pop" role="tooltip" hidden', html)
+            self.assertIn('<h4>推介</h4><p>主队状态稳定</p>', html)
+            self.assertIn("pop.addEventListener('mouseenter', cancelHide)", html)
             self.assertNotIn("盘口 客队（博洛尼亚）", html)
 
-    def test_source_references_render_in_ai_tooltip(self):
+    def test_source_references_render_in_structured_ai_tooltip(self):
         rendered = _lean_cell(_analysis(team_read=json.dumps({
             "tendency": "主队赢盘",
             "confidence": 0.6,
@@ -447,9 +451,16 @@ class StoreAndReportTests(unittest.TestCase):
                 "分析": "近期状态较好",
             },
         }, ensure_ascii=False)))
-        self.assertIn("推介：主队赢盘", rendered)
-        self.assertIn("对赛成绩：主队 3胜1平", rendered)
-        self.assertIn("分析：近期状态较好", rendered)
+        self.assertIn('data-ai-tip tabindex="0"', rendered)
+        self.assertIn('<template class="ai-tip-content">', rendered)
+        self.assertIn('<div class="ai-tip-title">AI分析依据</div>', rendered)
+        self.assertIn('<section class="ai-tip-section"><h4>模型理由</h4><p>模型理由</p></section>', rendered)
+        self.assertIn('<section class="ai-tip-section"><h4>推介</h4><p>主队赢盘</p></section>', rendered)
+        self.assertNotIn('title="', rendered)
+        self.assertIn("对赛成绩", rendered)
+        self.assertIn("主队 3胜1平", rendered)
+        self.assertIn("分析", rendered)
+        self.assertIn("近期状态较好", rendered)
 
     def test_over_tendency_without_confidence_is_hidden(self):
         row = _analysis(
