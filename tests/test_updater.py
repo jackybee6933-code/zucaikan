@@ -19,6 +19,14 @@ _SPEC = importlib.util.spec_from_file_location(
 updater = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(updater)
 
+INSTALLER_URL = (
+    "https://github.com/jackybee6933-code/zucaikan/releases/download/v1.4/"
+    "football_analysis_setup.exe"
+)
+INSTALLER_API_URL = (
+    "https://api.github.com/repos/jackybee6933-code/zucaikan/releases/assets/123"
+)
+
 
 class _Response:
     def __init__(self, data: bytes, *, content_length: int | None = None):
@@ -88,10 +96,12 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(sleep.call_args_list, [mock.call(1), mock.call(3)])
 
     def test_check_update_falls_back_to_release_api_asset(self):
+        manifest_api_url = INSTALLER_API_URL.removesuffix("123") + "124"
         api_payload = {
             "assets": [{
                 "name": "latest.json",
-                "browser_download_url": "https://api.example/latest.json",
+                "url": manifest_api_url,
+                "browser_download_url": updater.DEFAULT_MANIFEST_URL,
             }]
         }
         manifest = {
@@ -101,11 +111,26 @@ class UpdaterTests(unittest.TestCase):
         }
         env = mock.patch.dict(os.environ, {"FA_UPDATE_MANIFEST_URL": updater.DEFAULT_MANIFEST_URL})
         with mock.patch.object(updater, "_http_json",
-                               side_effect=[updater.UpdateError("direct timeout"), api_payload, manifest]), \
+                               side_effect=[updater.UpdateError("direct timeout"), api_payload, manifest]) as read, \
                 mock.patch.object(updater, "_save_cache"), env:
             result = updater.check_update(current_version="1.3")
         self.assertTrue(result["update_available"])
-        self.assertEqual(result["manifest_url"], "https://api.example/latest.json")
+        self.assertEqual(result["manifest_url"], manifest_api_url)
+        self.assertEqual(read.call_args_list, [
+            mock.call(updater.DEFAULT_MANIFEST_URL),
+            mock.call(updater.RELEASE_API_URL),
+            mock.call(manifest_api_url, accept="application/octet-stream"),
+        ])
+
+    def test_manifest_asset_request_uses_octet_stream_without_token(self):
+        with mock.patch("urllib.request.urlopen", return_value=_Response(b'{"version": "1.4"}')) as urlopen:
+            result = updater._http_json(
+                INSTALLER_API_URL, accept="application/octet-stream"
+            )
+        self.assertEqual(result["version"], "1.4")
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.get_header("Accept"), "application/octet-stream")
+        self.assertIsNone(request.get_header("Authorization"))
 
     def test_check_update_compares_versions(self):
         payload = {
@@ -217,6 +242,108 @@ class UpdaterTests(unittest.TestCase):
             result, _ = updater.download_package(info)
         self.assertEqual(result.read_bytes(), data)
         self.assertEqual(urlopen.call_count, 2)
+
+    def test_download_package_falls_back_to_same_release_api_installer(self):
+        data = b"installer"
+        info = {"url": INSTALLER_URL, "sha256": hashlib.sha256(data).hexdigest()}
+        release = {
+            "assets": [{
+                "name": "football_analysis_setup.exe",
+                "browser_download_url": INSTALLER_URL,
+                "url": INSTALLER_API_URL,
+            }]
+        }
+        responses = [
+            urllib.error.URLError("github.com blocked"),
+            urllib.error.URLError("github.com blocked"),
+            urllib.error.URLError("github.com blocked"),
+            _Response(json.dumps(release).encode()),
+            _Response(data),
+        ]
+        with mock.patch("urllib.request.urlopen", side_effect=responses) as urlopen, \
+                mock.patch.object(updater.time, "sleep"):
+            result, package_type = updater.download_package(info)
+        try:
+            self.assertEqual(result.read_bytes(), data)
+            self.assertEqual(result.suffix, ".exe")
+            self.assertEqual(package_type, "inno-setup")
+            requests = [call.args[0] for call in urlopen.call_args_list]
+            self.assertEqual([request.full_url for request in requests], [
+                INSTALLER_URL, INSTALLER_URL, INSTALLER_URL,
+                updater.RELEASE_API_URL.removesuffix("/latest") + "/tags/v1.4",
+                INSTALLER_API_URL,
+            ])
+            self.assertEqual(requests[-1].get_header("Accept"), "application/octet-stream")
+            self.assertTrue(all(request.get_header("Authorization") is None for request in requests))
+        finally:
+            result.unlink()
+            result.parent.rmdir()
+
+    def test_successful_direct_installer_download_skips_api_lookup(self):
+        data = b"installer"
+        info = {"url": INSTALLER_URL, "sha256": hashlib.sha256(data).hexdigest()}
+        with mock.patch("urllib.request.urlopen", return_value=_Response(data)), \
+                mock.patch.object(updater, "_http_json") as read:
+            result, _ = updater.download_package(info)
+        try:
+            read.assert_not_called()
+        finally:
+            result.unlink()
+            result.parent.rmdir()
+
+    def test_api_installer_hash_failure_is_rejected_and_cleaned(self):
+        info = {"url": INSTALLER_URL, "sha256": "0" * 64}
+        release = {
+            "assets": [{
+                "browser_download_url": INSTALLER_URL,
+                "url": INSTALLER_API_URL,
+            }]
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            direct_dir = Path(tmp) / "direct"
+            api_dir = Path(tmp) / "api"
+            direct_dir.mkdir()
+            api_dir.mkdir()
+            responses = (
+                [urllib.error.URLError("blocked")] * 3
+                + [_Response(b"broken") for _ in range(3)]
+            )
+            with mock.patch("urllib.request.urlopen", side_effect=responses), \
+                    mock.patch.object(updater, "_http_json", return_value=release), \
+                    mock.patch.object(updater.time, "sleep"), \
+                    mock.patch.object(updater.tempfile, "mkdtemp",
+                                      side_effect=[str(direct_dir), str(api_dir)]):
+                with self.assertRaisesRegex(updater.UpdateError, "SHA-256"):
+                    updater.download_package(info)
+            self.assertFalse(direct_dir.exists())
+            self.assertFalse(api_dir.exists())
+
+    def test_api_fallback_rejects_other_version_or_missing_installer(self):
+        info = {"url": INSTALLER_URL, "sha256": "a" * 64}
+        for assets in ([], [{
+            "name": "football_analysis_setup.exe",
+            "browser_download_url": INSTALLER_URL.replace("/v1.4/", "/v1.5/"),
+            "url": INSTALLER_API_URL,
+        }], [{
+            "name": "football_analysis_setup.exe",
+            "browser_download_url": INSTALLER_URL,
+        }]):
+            with self.subTest(assets=assets), \
+                    mock.patch.object(updater, "_download_candidate",
+                                      return_value=(None, OSError("blocked"))) as download, \
+                    mock.patch.object(updater, "_http_json", return_value={"assets": assets}):
+                with self.assertRaises(updater.UpdateError):
+                    updater.download_package(info)
+            download.assert_called_once()
+
+    def test_api_metadata_failure_reports_update_error(self):
+        info = {"url": INSTALLER_URL, "sha256": "a" * 64}
+        with mock.patch.object(updater, "_download_candidate",
+                               return_value=(None, OSError("blocked"))), \
+                mock.patch.object(updater, "_http_json",
+                                  side_effect=updater.UpdateError("HTTP 403")):
+            with self.assertRaisesRegex(updater.UpdateError, "HTTP 403"):
+                updater.download_package(info)
 
     def test_download_package_does_not_fall_back_to_zip(self):
         data = b"installer"

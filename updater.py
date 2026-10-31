@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,8 +50,12 @@ def _manifest_url() -> str:
     return os.environ.get("FA_UPDATE_MANIFEST_URL", DEFAULT_MANIFEST_URL)
 
 
-def _http_json(url: str, *, timeout: float = 20.0) -> dict:
-    request = urllib.request.Request(url, headers={"User-Agent": "football-analysis-updater"})
+def _http_json(
+    url: str, *, timeout: float = 20.0, accept: str = "application/json"
+) -> dict:
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "football-analysis-updater", "Accept": accept}
+    )
     last_error: Exception | None = None
     for attempt in range(MANIFEST_ATTEMPTS):
         try:
@@ -89,10 +94,28 @@ def _http_json(url: str, *, timeout: float = 20.0) -> dict:
 def _release_manifest(data: dict) -> tuple[str, dict] | None:
     for asset in data.get("assets") or []:
         if str(asset.get("name") or "") == "latest.json":
-            url = str(asset.get("browser_download_url") or "").strip()
+            url = str(asset.get("url") or asset.get("browser_download_url") or "").strip()
             if url:
-                return url, _http_json(url)
+                return url, _http_json(url, accept="application/octet-stream")
     return None
+
+
+def _installer_api_url(url: str) -> str:
+    prefix = RELEASES_BASE_URL.rsplit("/tag/", 1)[0] + "/download/"
+    if not url.startswith(prefix):
+        return ""
+    tag, separator, name = url[len(prefix):].partition("/")
+    if not tag or not separator or not name:
+        return ""
+    tag = urllib.parse.quote(urllib.parse.unquote(tag), safe="")
+    # Resolve the original release, even if a newer version appeared meanwhile.
+    release = _http_json(f"{RELEASE_API_URL.rsplit('/', 1)[0]}/tags/{tag}")
+    for asset in release.get("assets") or []:
+        if str(asset.get("browser_download_url") or "").strip() == url:
+            api_url = str(asset.get("url") or "").strip()
+            if api_url:
+                return api_url
+    raise UpdateError("GitHub Releases API 未找到该版本安装包")
 
 
 def _cache_path() -> Path:
@@ -217,20 +240,26 @@ def _sha256(path: Path) -> str:
 def download_package(info: dict, *, progress=None, phase=None) -> tuple[Path, str]:
     primary_url = str(info.get("url", ""))
     primary_sha = str(info.get("sha256", "")).lower()
-    candidates = (
-        [("inno-setup", primary_url, primary_sha)]
-        if primary_url.lower().endswith(".exe") and len(primary_sha) == 64
-        else []
-    )
-    if not candidates:
+    if not primary_url.lower().endswith(".exe") or len(primary_sha) != 64:
         raise UpdateError("更新信息无效")
 
-    last_error: Exception | None = None
-    for package_type, url, expected in candidates:
-        result = _download_candidate(url, expected, progress=progress, phase=phase)
-        if result[0] is not None:
-            return result[0], package_type
-        last_error = result[1]
+    target, last_error = _download_candidate(
+        primary_url, primary_sha, progress=progress, phase=phase
+    )
+    if target is not None:
+        return target, "inno-setup"
+    try:
+        api_url = _installer_api_url(primary_url)
+        if api_url:
+            target, api_error = _download_candidate(
+                api_url, primary_sha, progress=progress, phase=phase,
+                accept="application/octet-stream",
+            )
+            if target is not None:
+                return target, "inno-setup"
+            raise UpdateError(str(api_error))
+    except UpdateError as exc:
+        last_error = UpdateError(f"{last_error}；API 下载失败：{exc}")
     raise UpdateError(f"下载升级包失败：{last_error}")
 
 
@@ -240,12 +269,17 @@ def _download_candidate(
     *,
     progress=None,
     phase=None,
+    accept: str | None = None,
 ) -> tuple[Path | None, Exception | None]:
     temp_dir = Path(tempfile.mkdtemp(prefix="fa_update_"))
-    target = temp_dir / ("package.exe" if url.lower().endswith(".exe") else "package.zip")
+    # Asset API URLs end in a numeric ID, but still contain an Inno installer.
+    target = temp_dir / "package.exe"
     last_error: Exception | None = None
     for attempt in range(DOWNLOAD_ATTEMPTS):
-        request = urllib.request.Request(url, headers={"User-Agent": "football-analysis-updater"})
+        headers = {"User-Agent": "football-analysis-updater"}
+        if accept:
+            headers["Accept"] = accept
+        request = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=30) as resp, target.open("wb") as out:
                 total = int(resp.headers.get("Content-Length") or 0)
