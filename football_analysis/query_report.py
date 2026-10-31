@@ -26,26 +26,35 @@ def _esc(value: object) -> str:
     return html.escape("" if value is None else str(value), quote=False)
 
 
-def _recommendation_html(value: str) -> str:
-    value = re.sub(
-        r"\s*\(\s*W\s*=\s*胜\s*[、,，]\s*D\s*=\s*和\s*[、,，]\s*L\s*=\s*负\s*\)\s*",
-        " ",
-        value,
-        flags=re.IGNORECASE,
-    )
+def _result_markers_html(value: str, *, strip_legend: bool = False) -> str:
+    if strip_legend:
+        value = re.sub(
+            r"\s*\(\s*W\s*=\s*胜\s*[、,，]\s*D\s*=\s*和\s*[、,，]\s*L\s*=\s*负\s*\)\s*",
+            " ",
+            value,
+            flags=re.IGNORECASE,
+        )
+        value = re.sub(r"\s*\|\s*", "\n", value)
+        value = re.sub(r"\s*(推介\s*[-—:：])", r"\n\1", value)
+    if "对赛成绩" in value:
+        value = re.sub(
+            r"((?:\d+\s*胜\s*\d+\s*和\s*\d+\s*负))\s*",
+            r"\1\n",
+            value,
+            count=1,
+        )
+    value = re.sub(r"\*\*([WL])\*\*", r"\1", value, flags=re.IGNORECASE)
     escaped = _esc(value.strip())
-    escaped = re.sub(
-        r"(?<![A-Za-z])W(?![A-Za-z])",
-        r'<span class="ai-tip-result-win">W</span>',
-        escaped,
-        flags=re.IGNORECASE,
-    )
-    return re.sub(
-        r"(?<![A-Za-z])L(?![A-Za-z])",
-        r'<span class="ai-tip-result-loss">L</span>',
-        escaped,
-        flags=re.IGNORECASE,
-    )
+
+    def color_results(match: re.Match) -> str:
+        return "".join(
+            f'<span class="ai-tip-result-{"win" if char.upper() == "W" else "loss"}">{char}</span>'
+            if char.upper() in ("W", "L")
+            else char
+            for char in match.group()
+        )
+
+    return re.sub(r"(?<![A-Za-z])[WDL]+(?![A-Za-z])", color_results, escaped, flags=re.IGNORECASE)
 
 
 def _data_freshness(
@@ -275,9 +284,9 @@ def _lean_cell(row: dict) -> str:
                 is_recommendation = key_text in ("推介", "心水推荐")
                 section_class = " ai-tip-recommendation" if is_recommendation else ""
                 body = (
-                    f'<p class="ai-tip-recommendation-text">{_recommendation_html(value_text[:800])}</p>'
+                    f'<p class="ai-tip-recommendation-text">{_result_markers_html(value_text[:800], strip_legend=True)}</p>'
                     if is_recommendation
-                    else f"<p>{_esc(value_text[:800])}</p>"
+                    else f"<p>{_result_markers_html(value_text[:800])}</p>"
                 )
                 reference_sections.append(
                     f'<section class="ai-tip-section{section_class}"><h4>{_esc(key_text)}</h4>{body}</section>'
@@ -1706,12 +1715,12 @@ def render_query_html(
     #ai-pop[hidden] {{ display: none; }}
     .ai-tip-title {{ margin-bottom: 8px; color: #334155; font-size: 13px; font-weight: 700; }}
     .ai-tip-section + .ai-tip-section {{ margin-top: 9px; padding-top: 8px; border-top: 1px solid #e2e8f0; }}
-    .ai-tip-section h4 {{ margin: 0 0 3px; color: #475569; font-size: 11px; font-weight: 700; }}
+    .ai-tip-section h4 {{ margin: 0 0 3px; color: #475569; font-size: 13px; font-weight: 700; }}
     .ai-tip-section p {{ margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }}
     .ai-tip-section ul {{ margin: 3px 0 0; padding-left: 18px; }}
     .ai-tip-recommendation {{ margin-top: 0; padding: 10px 11px; border: 1px solid #bfdbfe; border-radius: 6px; background: #eff6ff; }}
-    .ai-tip-recommendation h4 {{ margin-bottom: 5px; color: #1d4ed8; font-size: 12px; }}
-    .ai-tip-recommendation-text {{ color: #0f172a; font-size: 14px; line-height: 1.45; }}
+    .ai-tip-recommendation h4 {{ margin-bottom: 5px; color: #1d4ed8; font-size: 13px; }}
+    .ai-tip-recommendation-text {{ color: #0f172a; font-size: 13px; line-height: 1.45; }}
     .ai-tip-result-win {{ color: #dc2626; font-weight: 700; }}
     .ai-tip-result-loss {{ color: #16a34a; font-weight: 700; }}
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}

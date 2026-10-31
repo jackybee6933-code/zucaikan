@@ -488,6 +488,72 @@ class StoreAndReportTests(unittest.TestCase):
         self.assertNotIn("D=和", rendered)
         self.assertNotIn("<strong>", rendered)
 
+    def test_result_sequences_are_colored_in_all_tooltip_sections(self):
+        rendered = _lean_cell(_analysis(team_read=json.dumps({
+            "tendency": "涓婚槦璧㈢洏",
+            "confidence": 0.6,
+            "source_references": {
+                "Recent form": "DLLLDL",
+                "Road record": "WDWWL1/**W**",
+            },
+        }, ensure_ascii=False)))
+        self.assertIn(
+            '<h4>Recent form</h4><p>D'
+            '<span class="ai-tip-result-loss">L</span>'
+            '<span class="ai-tip-result-loss">L</span>'
+            '<span class="ai-tip-result-loss">L</span>D'
+            '<span class="ai-tip-result-loss">L</span></p>',
+            rendered,
+        )
+        self.assertIn(
+            '<h4>Road record</h4><p>'
+            '<span class="ai-tip-result-win">W</span>D'
+            '<span class="ai-tip-result-win">W</span>'
+            '<span class="ai-tip-result-win">W</span>'
+            '<span class="ai-tip-result-loss">L</span>1/'
+            '<span class="ai-tip-result-win">W</span></p>',
+            rendered,
+        )
+        self.assertNotIn("**", rendered)
+
+    def test_recommendation_analysis_starts_after_head_to_head_record(self):
+        rendered = _lean_cell(_analysis(team_read=json.dumps({
+            "tendency": "涓婚槦璧㈢洏",
+            "confidence": 0.6,
+            "source_references": {
+                "心水推荐": "推介 - Roma 对赛成绩 - Roma 2胜1和0负 Analysis text",
+            },
+        }, ensure_ascii=False)))
+        self.assertIn(
+            '<p class="ai-tip-recommendation-text">推介 - Roma 对赛成绩 - '
+            'Roma 2胜1和0负\nAnalysis text</p>',
+            rendered,
+        )
+
+    def test_recommendation_records_render_on_separate_lines(self):
+        rendered = _lean_cell(_analysis(team_read=json.dumps({
+            "tendency": "涓婚槦璧㈢洏",
+            "confidence": 0.6,
+            "source_references": {
+                "心水推荐": (
+                    "Roma (主) | 近况走势 - WLDLWW | 盘路赢输 - WL1/LLLW | "
+                    "Man U | 近况走势 - DLDDLL | 盘路赢输 - 1/WLLLLL | "
+                    "推介 - Roma 对赛成绩 - Roma 2胜1和0负 分析正文"
+                ),
+            },
+        }, ensure_ascii=False)))
+        self.assertIn("Roma (主)\n近况走势 - ", rendered)
+        self.assertIn("</span>\n盘路赢输 - ", rendered)
+        self.assertIn("\nMan U\n近况走势 - ", rendered)
+        self.assertIn("\n推介 - Roma", rendered)
+        self.assertIn("2胜1和0负\n分析正文", rendered)
+
+    def test_ai_tooltip_uses_one_font_size(self):
+        rendered = render_query_html([], issues=[], issue="", leagues=[])
+        self.assertIn(".ai-tip-section h4 { margin: 0 0 3px; color: #475569; font-size: 13px;", rendered)
+        self.assertIn(".ai-tip-recommendation h4 { margin-bottom: 5px; color: #1d4ed8; font-size: 13px;", rendered)
+        self.assertIn(".ai-tip-recommendation-text { color: #0f172a; font-size: 13px;", rendered)
+
     def test_over_tendency_without_confidence_is_hidden(self):
         row = _analysis(
             team_read=json.dumps(
