@@ -5,7 +5,7 @@ from pathlib import Path
 from football_analysis import __version__
 from football_analysis.browser_report import render_browser_html
 from football_analysis.query_report import render_query_html
-from football_analysis.store import latest_captured_at, list_issues, list_leagues, query_movements, save_issue_movements, update_match_scores
+from football_analysis.store import latest_captured_at, list_issues, list_leagues, list_team_name_aliases, query_movements, save_issue_movements, update_match_scores, upsert_team_name_aliases
 from football_analysis.store import rebuild_analyses_from_db
 
 
@@ -51,6 +51,34 @@ def _item(match_no: str, home: str, away: str, *, attention: bool, level: str, r
 
 
 class MovementStoreTests(unittest.TestCase):
+    def test_team_name_aliases_change_display_without_mutating_source_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            rows = [
+                _item("1", "布伦特", "勒沃库森", attention=False, level="稳定", reason=""),
+            ]
+            save_issue_movements(db, rows, "26154", "https://trade.500.com/sfc/")
+            upsert_team_name_aliases(
+                db,
+                {"布伦特": "宾福特", "勒沃库森": "利华古逊"},
+            )
+
+            queried = query_movements(db, issue="26154")
+            html = render_query_html(
+                queried,
+                issues=list_issues(db),
+                issue="26154",
+                db_path=str(db),
+            )
+
+            self.assertEqual(queried[0]["home_team"], "布伦特")
+            self.assertIn("宾福特 vs 利华古逊", html)
+            self.assertNotIn("布伦特 vs 勒沃库森", html)
+            self.assertEqual(
+                list_team_name_aliases(db),
+                {"布伦特": "宾福特", "勒沃库森": "利华古逊"},
+            )
+
     def test_kind_filter_returns_only_matching_movement(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "test.sqlite"

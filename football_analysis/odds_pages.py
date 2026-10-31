@@ -114,16 +114,25 @@ def shuju_text(raw: dict, fixture_id: str) -> str:
     return str(page.get("text") or "").strip()
 
 
-_REFERENCE_HEADINGS = ("推介", "心水推荐", "对赛成绩", "分析")
+_H2H_HEADINGS = ("对赛成绩", "对战历史", "交战历史")
+_REFERENCE_HEADINGS = ("推介", "心水推荐", *_H2H_HEADINGS, "分析")
 
 
-def _shuju_sections(text: str) -> list[tuple[str, str]]:
+def _shuju_sections(text: str, *, preserve_lines: bool = False) -> list[tuple[str, str]]:
     """Split the scraper's ``## heading`` blocks without changing their text."""
     matches = list(re.finditer(r"(?m)^##\s*(.*?)\s*$", str(text or "")))
     sections: list[tuple[str, str]] = []
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
-        body = re.sub(r"\s+", " ", text[match.end():end]).strip()
+        raw_body = text[match.end():end]
+        if preserve_lines:
+            body = "\n".join(
+                re.sub(r"\s+", " ", line).strip()
+                for line in raw_body.splitlines()
+                if line.strip()
+            )
+        else:
+            body = re.sub(r"\s+", " ", raw_body).strip()
         if body:
             sections.append((match.group(1).strip(), body))
     return sections
@@ -132,9 +141,11 @@ def _shuju_sections(text: str) -> list[tuple[str, str]]:
 def shuju_references(raw: dict, fixture_id: str) -> dict[str, str]:
     """Extract display-only 500-page references; these are never model input."""
     found: dict[str, str] = {}
-    for heading, body in _shuju_sections(shuju_text(raw, fixture_id)):
+    for heading, body in _shuju_sections(shuju_text(raw, fixture_id), preserve_lines=True):
         matched = next((name for name in _REFERENCE_HEADINGS if name in heading), None)
         if matched and matched not in found:
+            if matched not in _H2H_HEADINGS:
+                body = re.sub(r"\s+", " ", body).strip()
             found[matched] = body[:800]
     return found
 

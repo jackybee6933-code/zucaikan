@@ -26,6 +26,27 @@ def _item() -> dict:
     }
 
 
+class VerificationScraperMessageTests(unittest.TestCase):
+    def test_verification_exit_has_actionable_message(self):
+        from football_analysis import scrape_odds_pages
+
+        with mock.patch.object(
+            scrape_odds_pages,
+            "main",
+            return_value=scrape_odds_pages.EXIT_VERIFICATION_REQUIRED,
+        ):
+            message = query_app._run_odds_scraper(
+                "26144",
+                Path("cache"),
+                "http://127.0.0.1:9222",
+                delay=0,
+            )
+
+        self.assertIn("EdgeOne 人工验证", message)
+        self.assertIn("整批抓取已暂停", message)
+        self.assertIn("手动完成验证后重试", message)
+
+
 def _artifact(
     cache_dir: Path,
     issue: str,

@@ -388,6 +388,41 @@ class ShujuTextTests(unittest.TestCase):
         self.assertNotIn("主队 3胜1平", analysis)
         self.assertNotIn("主队近期状态较好", analysis)
 
+    def test_references_capture_fixture_specific_h2h_heading(self):
+        raw = {
+            "1|shuju": {
+                "status": "ok",
+                "text": (
+                    "## Home VS Away 对战历史\n"
+                    "2026-04-13 Home 2-0 Away\n"
+                    "## Home VS Away 预计阵容\n"
+                    "阵容内容"
+                ),
+            }
+        }
+
+        refs = odds_pages.shuju_references(raw, "1")
+        analysis = odds_pages.shuju_analysis_text(raw, "1")
+
+        self.assertEqual(refs["对战历史"], "2026-04-13 Home 2-0 Away")
+        self.assertNotIn("2-0", analysis)
+
+    def test_only_h2h_references_preserve_table_rows(self):
+        raw = {
+            "1|shuju": {
+                "status": "ok",
+                "text": (
+                    "## 对战历史\n表头\n比赛一\n比赛二\n"
+                    "## 推介\n推介正文第一行\n推介正文第二行"
+                ),
+            }
+        }
+
+        refs = odds_pages.shuju_references(raw, "1")
+
+        self.assertEqual(refs["对战历史"], "表头\n比赛一\n比赛二")
+        self.assertEqual(refs["推介"], "推介正文第一行 推介正文第二行")
+
 
 class StoreAndReportTests(unittest.TestCase):
     def test_legacy_low_confidence_direction_is_reversed_on_render(self):
@@ -437,9 +472,10 @@ class StoreAndReportTests(unittest.TestCase):
             self.assertIn("主场赢盘率高于客队", html)
             self.assertIn('id="ai-pop" role="tooltip" hidden', html)
             self.assertIn("width: min(640px, calc(100vw - 20px))", html)
-            self.assertIn("max-height: min(400px, calc(100vh - 20px))", html)
+            self.assertIn("max-height: min(480px, calc(100vh - 20px))", html)
+            self.assertIn("background: rgba(255, 255, 255, .85)", html)
             self.assertIn(
-                '<h4>推介</h4><p class="ai-tip-recommendation-text">主队状态稳定</p>',
+                '<h4>推介</h4><div class="ai-tip-recommendation-text"><p>主队状态稳定</p></div>',
                 html,
             )
             self.assertIn("ai-tip-recommendation", html)
@@ -462,10 +498,13 @@ class StoreAndReportTests(unittest.TestCase):
         self.assertIn('<template class="ai-tip-content">', rendered)
         self.assertIn('<div class="ai-tip-title">AI分析依据</div>', rendered)
         self.assertIn('<section class="ai-tip-section"><h4>模型理由</h4><p>模型理由</p></section>', rendered)
-        self.assertIn('<section class="ai-tip-section ai-tip-recommendation"><h4>推介</h4><p class="ai-tip-recommendation-text">主队赢盘</p></section>', rendered)
+        self.assertIn('<section class="ai-tip-section ai-tip-recommendation"><h4>推介</h4><div class="ai-tip-recommendation-text"><p>主队赢盘</p></div></section>', rendered)
         self.assertNotIn('title="', rendered)
         self.assertIn("对赛成绩", rendered)
-        self.assertIn("主队 3胜1平", rendered)
+        self.assertIn(
+            '主队 3<span class="ai-tip-result-win">胜</span>1平',
+            rendered,
+        )
         self.assertIn("分析", rendered)
         self.assertIn("近期状态较好", rendered)
 
@@ -478,10 +517,10 @@ class StoreAndReportTests(unittest.TestCase):
             },
         }, ensure_ascii=False)))
         self.assertIn(
-            '<p class="ai-tip-recommendation-text">近况 '
+            '<div class="ai-tip-recommendation-text"><p>近况 '
             '<span class="ai-tip-result-win">W</span> '
             '<span class="ai-tip-result-win">W</span> '
-            '<span class="ai-tip-result-loss">L</span></p>',
+            '<span class="ai-tip-result-loss">L</span></p></div>',
             rendered,
         )
         self.assertNotIn("W=胜", rendered)
@@ -525,8 +564,11 @@ class StoreAndReportTests(unittest.TestCase):
             },
         }, ensure_ascii=False)))
         self.assertIn(
-            '<p class="ai-tip-recommendation-text">推介 - Roma 对赛成绩 - '
-            'Roma 2胜1和0负\nAnalysis text</p>',
+            '<div class="ai-tip-recommendation-text">'
+            '<div class="ai-tip-recommendation-pick"><div>推介 - Roma</div>'
+            '<div>对赛成绩 - Roma 2<span class="ai-tip-result-win">胜</span>'
+            '1和0<span class="ai-tip-result-loss">负</span></div></div>'
+            '<p class="ai-tip-recommendation-analysis">Analysis text</p></div>',
             rendered,
         )
 
@@ -542,17 +584,65 @@ class StoreAndReportTests(unittest.TestCase):
                 ),
             },
         }, ensure_ascii=False)))
-        self.assertIn("Roma (主)\n近况走势 - ", rendered)
-        self.assertIn("</span>\n盘路赢输 - ", rendered)
-        self.assertIn("\nMan U\n近况走势 - ", rendered)
-        self.assertIn("\n推介 - Roma", rendered)
-        self.assertIn("2胜1和0负\n分析正文", rendered)
+        self.assertNotIn("<h4>心水推荐</h4>", rendered)
+        self.assertIn(
+            '<div class="ai-tip-recommendation-grid"><div>Roma (主)</div>'
+            '<div>近况走势 - ',
+            rendered,
+        )
+        self.assertIn('</span></div><div>盘路赢输 - ', rendered)
+        self.assertIn('</div><div>Man U</div><div>近况走势 - ', rendered)
+        self.assertIn(
+            '<div class="ai-tip-recommendation-pick"><div>推介 - Roma</div>'
+            '<div>对赛成绩 - Roma 2<span class="ai-tip-result-win">胜</span>1和0<span class="ai-tip-result-loss">负</span></div>',
+            rendered,
+        )
+        self.assertIn(
+            '<p class="ai-tip-recommendation-analysis">分析正文</p>',
+            rendered,
+        )
+
+    def test_recommendation_records_render_as_rows_without_pipe_separators(self):
+        rendered = _lean_cell(_analysis(team_read=json.dumps({
+            "tendency": "涓婚槦璧㈢洏",
+            "confidence": 0.6,
+            "source_references": {
+                "心水推荐": (
+                    "Home (主) 近况走势 - WWDLL 盘路赢输 - WWLWL "
+                    "Away 近况走势 - WDLWD 盘路赢输 - WLLWL "
+                    "推介 - Home 对赛成绩 - Home 2胜1和0负 分析正文"
+                ),
+            },
+        }, ensure_ascii=False)))
+        self.assertIn(
+            '<div class="ai-tip-recommendation-grid"><div>Home (主)</div>'
+            '<div>近况走势 - ',
+            rendered,
+        )
+        self.assertIn(
+            '</div><div>Away</div><div>近况走势 - ',
+            rendered,
+        )
+        self.assertIn(
+            '<div class="ai-tip-recommendation-pick"><div>推介 - Home</div>'
+            '<div>对赛成绩 - Home 2<span class="ai-tip-result-win">胜</span>1和0<span class="ai-tip-result-loss">负</span></div>',
+            rendered,
+        )
 
     def test_ai_tooltip_uses_one_font_size(self):
         rendered = render_query_html([], issues=[], issue="", leagues=[])
         self.assertIn(".ai-tip-section h4 { margin: 0 0 3px; color: #475569; font-size: 13px;", rendered)
         self.assertIn(".ai-tip-recommendation h4 { margin-bottom: 5px; color: #1d4ed8; font-size: 13px;", rendered)
         self.assertIn(".ai-tip-recommendation-text { color: #0f172a; font-size: 13px;", rendered)
+        self.assertIn(
+            ".ai-tip-recommendation-pick { display: grid; grid-template-columns: "
+            "minmax(100px, .8fr) minmax(0, 1.2fr) minmax(0, 1.3fr);",
+            rendered,
+        )
+        self.assertIn(
+            ".h2h-table tbody tr:nth-child(even) { background: #f8fafc; }",
+            rendered,
+        )
 
     def test_over_tendency_without_confidence_is_hidden(self):
         row = _analysis(
@@ -570,6 +660,108 @@ class StoreAndReportTests(unittest.TestCase):
         rendered = _lean_cell(row)
         self.assertNotIn("大球", rendered)
         self.assertNotIn("大小球资料不足", rendered)
+
+    def test_over_tendency_hovers_h2h_score_popup(self):
+        h2h = (
+            "赛事 | 比赛日期 | 主队比分客队 | 半场 | 赛果 | 平均欧指 | 让球指数 | 盘路 | 大小 | 备注\n"
+            "英超 | 2026-10-31 | [13]伯恩茅斯VS利兹联[7] | VS | - | 2.093.343.56 | 1.08半球0.76 | - | - | -\n"
+            "英超 | 2026-04-23 | [9]伯恩茅斯2:2利兹联[15] | 0:0 | 平 | odds-hidden | line-hidden | 输 | 大 | note-hidden\n"
+            "英超 | 2025-09-27 | [12]利兹联2:2伯恩茅斯[4] | 1:1 | 平 | odds-hidden | line-hidden | 赢 | 大 | note-hidden"
+        )
+        row = _analysis(
+            league_color="#FF1717",
+            team_read=json.dumps(
+                {
+                    "tendency": "主队赢盘",
+                    "confidence": 0.55,
+                    "over_tendency": "大球",
+                    "over_confidence": 0.6,
+                    "source_references": {
+                        "交战历史": h2h,
+                    },
+                },
+                ensure_ascii=False,
+            )
+        )
+        rendered = _lean_cell(row)
+        popup = rendered[rendered.index('aria-label="大球 60%'):]
+        self.assertIn(
+            'aria-label="大球 60%，对赛往绩"',
+            popup,
+        )
+        self.assertIn(
+            '<div class="ai-tip-title">对赛往绩</div>',
+            popup,
+        )
+        self.assertEqual(popup.count("<tr>"), 3)
+        for label in ("赛事名", "比赛日期", "主队名", "全场比分", "客队名", "半场比分", "盘路", "大小"):
+            self.assertIn(f"<th>{label}</th>", popup)
+        self.assertIn("<td>伯恩茅斯</td><td>2:2</td><td>利兹联</td>", popup)
+        self.assertIn(
+            '<span class="league-badge" style="background:#FF1717;">英超</span>',
+            popup,
+        )
+        self.assertIn('<span class="ai-tip-result-loss">输</span>', popup)
+        self.assertIn('<span class="ai-tip-result-win">赢</span>', popup)
+        self.assertNotIn("VS", popup)
+        self.assertNotIn("平均欧指", popup)
+        self.assertNotIn("odds-hidden", popup)
+        self.assertNotIn("备注", popup)
+        self.assertNotIn("note-hidden", popup)
+
+    def test_query_uses_cached_h2h_for_existing_over_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache_dir = Path(tmp)
+            (cache_dir / "odds_pages_26154.json").write_text(
+                json.dumps(
+                    {
+                        "fixture-1|shuju": {
+                            "status": "ok",
+                            "text": (
+                                "## Home VS Away 对战历史\n"
+                                "赛事 | 比赛日期 | 主队比分客队 | 半场 | 赛果 | 平均欧指 | 让球指数 | 盘路 | 大小 | 备注\n"
+                                "英超 | 2026-10-31 | Home VS Away | VS | - | odds | line | - | - | -\n"
+                                "英超 | 2026-04-13 | Home 2:0 Away | 1:0 | 胜 | odds-hidden | line-hidden | 赢 | 大 | note-hidden"
+                            ),
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            row = {
+                "issue": "26154",
+                "match_no": "1",
+                "team_read": json.dumps(
+                    {
+                        "over_tendency": "大球",
+                        "over_confidence": 0.6,
+                    },
+                    ensure_ascii=False,
+                ),
+                "payload_json": "{}",
+            }
+            html = render_query_html(
+                [row],
+                issues=[],
+                issue="26154",
+                analyses=[{"match_no": "1", "fixture_id": "fixture-1"}],
+                cache_dir=cache_dir,
+            )
+
+        self.assertIn(
+            '<div class="model-lean" data-ai-tip tabindex="0" role="note" '
+            'aria-describedby="ai-pop" aria-label="大球 60%，对赛往绩">大球 60%'
+            '<template class="ai-tip-content">',
+            html,
+        )
+        self.assertIn('<div class="ai-tip-title">对赛往绩</div>', html)
+        h2h_table = html.split('<table class="h2h-table">', 1)[1].split("</table>", 1)[0]
+        self.assertIn("<td>Home</td><td>2:0</td><td>Away</td>", h2h_table)
+        self.assertEqual(h2h_table.count("<tr>"), 2)
+        self.assertNotIn("VS", h2h_table)
+        self.assertNotIn("odds-hidden", h2h_table)
+        self.assertNotIn("note-hidden", h2h_table)
 
     def test_migration_adds_team_read_column(self):
         # Windows 上 sqlite 的句柄释放比 close() 慢一拍，清理失败不算这条用例的失败点

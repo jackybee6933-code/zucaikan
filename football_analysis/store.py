@@ -53,6 +53,11 @@ CREATE INDEX IF NOT EXISTS idx_issue_runs_issue ON issue_runs(issue, captured_at
 CREATE INDEX IF NOT EXISTS idx_movements_issue ON match_movements(issue, captured_at);
 CREATE INDEX IF NOT EXISTS idx_movements_team ON match_movements(home_team, away_team);
 CREATE INDEX IF NOT EXISTS idx_movements_level ON match_movements(level, attention);
+
+CREATE TABLE IF NOT EXISTS team_name_aliases (
+    source_name TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL
+);
 """
 
 _LEVEL_ORDER = {"重点关注": 3, "关注": 2, "稳定": 1, "无数据": 0}
@@ -361,6 +366,43 @@ def list_issues(db_path: str | Path) -> list[dict]:
             """
         ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def upsert_team_name_aliases(
+    db_path: str | Path,
+    aliases: dict[str, str],
+) -> None:
+    normalized = [
+        (str(source).strip(), str(display).strip())
+        for source, display in aliases.items()
+        if str(source).strip() and str(display).strip()
+    ]
+    conn = connect(db_path)
+    try:
+        conn.executemany(
+            """
+            INSERT INTO team_name_aliases (source_name, display_name)
+            VALUES (?, ?)
+            ON CONFLICT(source_name) DO UPDATE SET display_name = excluded.display_name
+            """,
+            normalized,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_team_name_aliases(db_path: str | Path) -> dict[str, str]:
+    conn = connect(db_path)
+    try:
+        return {
+            str(row["source_name"]): str(row["display_name"])
+            for row in conn.execute(
+                "SELECT source_name, display_name FROM team_name_aliases"
+            )
+        }
     finally:
         conn.close()
 

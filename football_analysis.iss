@@ -1,6 +1,6 @@
 #define AppName "足彩胜负彩分析系统"
 #ifndef AppVersion
-  #define AppVersion "1.3.21"
+  #define AppVersion "1.4"
 #endif
 
 [Setup]

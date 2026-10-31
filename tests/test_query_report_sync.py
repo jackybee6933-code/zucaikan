@@ -13,6 +13,9 @@ class FetchBlockSyncTests(unittest.TestCase):
         self.assertEqual(src.count('id="refresh-odds-progress-bar"'), 1)
         self.assertEqual(src.count('getElementById("refresh-odds-progress-bar")'), 1)
         self.assertEqual(src.count("function _renderRefreshProgress(s)"), 1)
+        self.assertEqual(src.count('p.phase === "verification_required"'), 2)
+        self.assertEqual(src.count('p.phase === "verification_resolved"'), 2)
+        self.assertIn("请在 Chrome 中完成人工验证", src)
 
     def test_single_render_query_html(self):
         src = Path(query_report.__file__).read_text(encoding="utf-8")

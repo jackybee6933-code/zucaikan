@@ -16,6 +16,7 @@ from .odds_pages import (
     page_failures,
     pages_age_hours,
     pages_kind_age_hours,
+    shuju_references,
 )
 from .report_index import build_issue_report_index
 from . import __version__
@@ -26,16 +27,7 @@ def _esc(value: object) -> str:
     return html.escape("" if value is None else str(value), quote=False)
 
 
-def _result_markers_html(value: str, *, strip_legend: bool = False) -> str:
-    if strip_legend:
-        value = re.sub(
-            r"\s*\(\s*W\s*=\s*胜\s*[、,，]\s*D\s*=\s*和\s*[、,，]\s*L\s*=\s*负\s*\)\s*",
-            " ",
-            value,
-            flags=re.IGNORECASE,
-        )
-        value = re.sub(r"\s*\|\s*", "\n", value)
-        value = re.sub(r"\s*(推介\s*[-—:：])", r"\n\1", value)
+def _result_markers_html(value: str, *, color_cn_results: bool = False) -> str:
     if "对赛成绩" in value:
         value = re.sub(
             r"((?:\d+\s*胜\s*\d+\s*和\s*\d+\s*负))\s*",
@@ -54,7 +46,85 @@ def _result_markers_html(value: str, *, strip_legend: bool = False) -> str:
             for char in match.group()
         )
 
-    return re.sub(r"(?<![A-Za-z])[WDL]+(?![A-Za-z])", color_results, escaped, flags=re.IGNORECASE)
+    result = re.sub(r"(?<![A-Za-z])[WDL]+(?![A-Za-z])", color_results, escaped, flags=re.IGNORECASE)
+    if color_cn_results:
+        result = re.sub(r"胜", '<span class="ai-tip-result-win">胜</span>', result)
+        result = re.sub(r"负", '<span class="ai-tip-result-loss">负</span>', result)
+    return result
+
+
+def _recommendation_html(value: str) -> str:
+    value = re.sub(
+        r"\s*\(\s*W\s*=\s*胜\s*[、,，]\s*D\s*=\s*和\s*[、,，]\s*L\s*=\s*负\s*\)\s*",
+        " ",
+        value,
+        flags=re.IGNORECASE,
+    ).strip()
+    pick_match = re.search(r"(?:^|\s)(推介\s*[-—:：])", value)
+    records_text = value[:pick_match.start()].strip().strip("| ") if pick_match else value
+    form_matches = list(re.finditer(r"近况走势\s*[-—:：]\s*([WDL]+)", records_text))
+    handicap_matches = list(
+        re.finditer(r"盘路(?:赢输|输赢)\s*[-—:：]\s*([WDL1/\-]+)", records_text)
+    )
+    if (
+        len(form_matches) >= 2
+        and len(handicap_matches) >= 2
+        and form_matches[0].start() < handicap_matches[0].start()
+        and handicap_matches[0].end() < form_matches[1].start()
+        and form_matches[1].start() < handicap_matches[1].start()
+    ):
+        parts = [
+            records_text[:form_matches[0].start()].strip(" |\n"),
+            f"近况走势 - {form_matches[0].group(1)}",
+            f"盘路赢输 - {handicap_matches[0].group(1)}",
+            records_text[handicap_matches[0].end():form_matches[1].start()].strip(" |\n"),
+            f"近况走势 - {form_matches[1].group(1)}",
+            f"盘路赢输 - {handicap_matches[1].group(1)}",
+        ]
+        grid = (
+            '<div class="ai-tip-recommendation-grid">'
+            + "".join(
+                f"<div>{_result_markers_html(part)}</div>"
+                for part in parts
+            )
+            + "</div>"
+        )
+    else:
+        grid = f"<p>{_result_markers_html(records_text)}</p>" if records_text else ""
+
+    if not pick_match:
+        return grid
+
+    pick_and_analysis = value[pick_match.start(1):].strip()
+    record_match = re.search(r"\d+\s*胜\s*\d+\s*和\s*\d+\s*负", pick_and_analysis)
+    if record_match:
+        split_at = record_match.end()
+        pick_text = pick_and_analysis[:split_at].strip()
+        analysis = pick_and_analysis[split_at:].strip()
+    else:
+        pick_text = pick_and_analysis
+        analysis = ""
+
+    h2h_match = re.search(r"对赛成绩", pick_text)
+    if h2h_match:
+        pick_html = (
+            '<div class="ai-tip-recommendation-pick">'
+            f'<div>{_result_markers_html(pick_text[:h2h_match.start()].rstrip())}</div>'
+            f'<div>{_result_markers_html(pick_text[h2h_match.start():], color_cn_results=True)}</div>'
+            '</div>'
+        )
+    else:
+        pick_html = (
+            f'<p class="ai-tip-recommendation-pick">'
+            f'{_result_markers_html(pick_text)}</p>'
+        )
+    grid += pick_html
+    if analysis:
+        grid += (
+            f'<p class="ai-tip-recommendation-analysis">'
+            f'{_result_markers_html(analysis)}</p>'
+        )
+    return grid
 
 
 def _data_freshness(
@@ -249,7 +319,49 @@ def _split_html(row: dict, uid: str) -> str:
     )
 
 
-def _lean_cell(row: dict) -> str:
+def _h2h_table_html(text: str, *, league_color: str = "") -> str:
+    """Render one compact row per completed historical head-to-head match."""
+    rows: list[str] = []
+    for line in str(text or "").splitlines():
+        cells = [part.strip() for part in line.split("|")]
+        if len(cells) < 10 or cells[0] in ("赛事", "赛事名"):
+            continue
+        league, date, teams, halftime = cells[:4]
+        handicap, total = cells[7], cells[8]
+        score_match = re.search(r"(\d+)\s*:\s*(\d+)", teams)
+        if not score_match:
+            continue
+        full_score = f"{score_match.group(1)}:{score_match.group(2)}"
+        home = re.sub(r"^\[\d+\]\s*", "", teams[:score_match.start()]).strip()
+        away = re.sub(r"\s*\[\d+\]$", "", teams[score_match.end():]).strip()
+        if not home or not away or halftime.upper() == "VS":
+            continue
+        handicap_html = _esc(handicap)
+        handicap_html = re.sub(
+            r"赢", '<span class="ai-tip-result-win">赢</span>', handicap_html
+        )
+        handicap_html = re.sub(
+            r"输", '<span class="ai-tip-result-loss">输</span>', handicap_html
+        )
+        rows.append(
+            "<tr>"
+            f"<td>{_league_badge(league, league_color)}</td>"
+            f"<td>{_esc(date)}</td><td>{_esc(home)}</td><td>{_esc(full_score)}</td>"
+            f"<td>{_esc(away)}</td><td>{_esc(halftime)}</td>"
+            f"<td>{handicap_html}</td><td>{_esc(total)}</td>"
+            "</tr>"
+        )
+    if not rows:
+        return ""
+    headers = ("赛事名", "比赛日期", "主队名", "全场比分", "客队名", "半场比分", "盘路", "大小")
+    head = "<tr>" + "".join(f"<th>{_esc(value)}</th>" for value in headers) + "</tr>"
+    return (
+        '<table class="h2h-table"><thead>'
+        f"{head}</thead><tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
+def _lean_cell(row: dict, *, h2h_score: str = "") -> str:
     """AI分析列：球队资料的亚盘赢盘倾向 + 大小球倾向（主行/次行）。"""
     parts: list[str] = []
     try:
@@ -284,12 +396,17 @@ def _lean_cell(row: dict) -> str:
                 is_recommendation = key_text in ("推介", "心水推荐")
                 section_class = " ai-tip-recommendation" if is_recommendation else ""
                 body = (
-                    f'<p class="ai-tip-recommendation-text">{_result_markers_html(value_text[:800], strip_legend=True)}</p>'
+                    f'<div class="ai-tip-recommendation-text">{_recommendation_html(value_text[:800])}</div>'
                     if is_recommendation
-                    else f"<p>{_result_markers_html(value_text[:800])}</p>"
+                    else (
+                        f"<p>{_result_markers_html(value_text[:800], color_cn_results=True)}</p>"
+                        if key_text == "对赛成绩"
+                        else f"<p>{_result_markers_html(value_text[:800])}</p>"
+                    )
                 )
+                heading = "" if key_text == "心水推荐" else f"<h4>{_esc(key_text)}</h4>"
                 reference_sections.append(
-                    f'<section class="ai-tip-section{section_class}"><h4>{_esc(key_text)}</h4>{body}</section>'
+                    f'<section class="ai-tip-section{section_class}">{heading}{body}</section>'
                 )
         tooltip_sections.extend(
             section
@@ -338,7 +455,39 @@ def _lean_cell(row: dict) -> str:
         over_confidence = 0.0
     if over_tendency and over_confidence > 0:
         over_conf = f" {over_confidence * 100:.0f}%" if over_confidence > 0 else ""
-        parts.append(f'<div class="model-lean">{over_tendency}{over_conf}</div>')
+        h2h_text = str(h2h_score or "").strip()
+        source_references = read.get("source_references") or {}
+        if isinstance(source_references, dict) and not h2h_text:
+            h2h_text = next(
+                (
+                    str(source_references.get(key) or "").strip()
+                    for key in ("对赛成绩", "对战历史", "交战历史")
+                    if str(source_references.get(key) or "").strip()
+                ),
+                "",
+            )
+        h2h_tip_attrs = ""
+        h2h_template = ""
+        if h2h_text:
+            h2h_table = _h2h_table_html(
+                h2h_text,
+                league_color=str(row.get("league_color") or ""),
+            )
+        else:
+            h2h_table = ""
+        if h2h_table:
+            h2h_tip_attrs = (
+                ' data-ai-tip tabindex="0" role="note" aria-describedby="ai-pop"'
+                f' aria-label="{html.escape(over_tendency + over_conf + "，对赛往绩", quote=True)}"'
+            )
+            h2h_template = (
+                '<template class="ai-tip-content"><div class="ai-tip-title">对赛往绩</div>'
+                f'<section class="ai-tip-section">{h2h_table}</section></template>'
+            )
+        parts.append(
+            f'<div class="model-lean"{h2h_tip_attrs}>{_esc(over_tendency)}{_esc(over_conf)}'
+            f'{h2h_template}</div>'
+        )
         over_reason = str(read.get("over_reason") or "").strip()
         if over_reason:
             parts.append(
@@ -515,7 +664,13 @@ _FETCH_BLOCK = \
       const done = p.done || 0;
       const pct = total > 0 ? Math.round(done / total * 100) : 0;
       refreshProgressBar.style.width = pct + "%";
-      if (p.phase === "aborted" && p.reason) {
+      if (p.phase === "verification_required") {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " — 请在 Chrome 中完成人工验证，抓取会继续";
+      } else if (p.phase === "verification_resolved") {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " — 验证已通过，正在检查当前页";
+      } else if (p.phase === "aborted" && p.reason === "verification_required") {
+        refreshStatus.textContent = "盘口刷新 " + s.issue + " — 人工验证未完成，整批抓取已暂停；验证后请重试";
+      } else if (p.phase === "aborted" && p.reason) {
         refreshStatus.textContent = "盘口刷新 " + s.issue + " 中 — 抓取中止: " + p.reason;
       } else if (p.phase === "done") {
         refreshStatus.textContent = "盘口刷新 " + s.issue + " 中 — 正在入库...";
@@ -572,7 +727,13 @@ _FETCH_BLOCK = \
       const done = p.done || 0;
       const pct = total > 0 ? Math.round(done / total * 100) : 0;
       aiProgressBar.style.width = pct + "%";
-      if (p.phase === "llm") {
+      if (p.phase === "verification_required") {
+        aiStatus.textContent = "AI 分析 " + s.issue + " — 请在 Chrome 中完成人工验证，抓取会继续";
+      } else if (p.phase === "verification_resolved") {
+        aiStatus.textContent = "AI 分析 " + s.issue + " — 验证已通过，正在检查当前页";
+      } else if (p.phase === "aborted" && p.reason === "verification_required") {
+        aiStatus.textContent = "AI 分析 " + s.issue + " — 人工验证未完成，抓取已暂停；验证后请重试";
+      } else if (p.phase === "llm") {
         aiStatus.textContent = "AI 分析 " + s.issue + " 中 — 模型分析 " + done + "/" + total + " (" + pct + "%)";
       } else if (p.phase === "aborted" && p.reason) {
         aiStatus.textContent = "AI 分析 " + s.issue + " 中 — 抓取中止: " + p.reason;
@@ -1389,10 +1550,50 @@ def render_query_html(
 ) -> str:
     from .browser_report import render_browser_html
     report_links = report_links or {}
+    rows = [dict(row) for row in rows]
+    analyses = [dict(item) for item in analyses]
     leagues = leagues or []
     bets = bets or []
+    bets = [dict(item) for item in bets]
     bet_stats = bet_stats or summarize_bets(bets)
     bet_trend = bet_trend or []
+    h2h_by_match: dict[str, str] = {}
+    if issue and cache_dir and analyses:
+        raw_pages = load_odds_pages_raw(cache_dir, issue)
+        shuju_fids = list(dict.fromkeys(
+            str(key).rsplit("|", 1)[0]
+            for key in (raw_pages or {})
+            if str(key).endswith("|shuju")
+        ))
+        for item in analyses:
+            match_no = str(item.get("match_no") or "")
+            fixture_id = str(item.get("fixture_id") or "")
+            if not fixture_id:
+                try:
+                    index = int(match_no) - 1
+                except ValueError:
+                    index = -1
+                fixture_id = shuju_fids[index] if 0 <= index < len(shuju_fids) else ""
+            references = shuju_references(raw_pages, fixture_id) if fixture_id else {}
+            h2h = next(
+                (
+                    str(references.get(key) or "").strip()
+                    for key in ("对赛成绩", "对战历史", "交战历史")
+                    if str(references.get(key) or "").strip()
+                ),
+                "",
+            )
+            if match_no and h2h:
+                h2h_by_match[match_no] = h2h
+    if db_path:
+        from .store import list_team_name_aliases
+
+        name_aliases = list_team_name_aliases(db_path)
+        for items in (rows, analyses, bets):
+            for item in items:
+                for field in ("home_team", "away_team"):
+                    name = str(item.get(field) or "")
+                    item[field] = name_aliases.get(name, name)
     fetch_block = _FETCH_BLOCK.replace(
         "{_esc(__version__)}", _esc(__version__)
     )
@@ -1501,7 +1702,7 @@ def render_query_html(
                 <div class="line-pair"><span class="k">即</span>{_esc(row.get("current_line") or "无数据")}</div>
                 {_line_delta_html(row)}
               </td>
-              <td class="lean-cell">{_lean_cell(row)}</td>
+              <td class="lean-cell">{_lean_cell(row, h2h_score=h2h_by_match.get(match_no, ""))}</td>
 
               <td class="total-cell">
                 {_total_goals_html(row.get('payload_json') or '')}
@@ -1711,7 +1912,7 @@ def render_query_html(
       margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }}
-    #ai-pop {{ position: fixed; z-index: 45; width: min(640px, calc(100vw - 20px)); max-height: min(400px, calc(100vh - 20px)); overflow-y: auto; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; color: var(--ink); box-shadow: 0 10px 28px rgba(15, 23, 42, .2); font-size: 13px; font-weight: 400; line-height: 1.55; }}
+    #ai-pop {{ position: fixed; z-index: 45; width: min(640px, calc(100vw - 20px)); max-height: min(480px, calc(100vh - 20px)); overflow-y: auto; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 7px; background: rgba(255, 255, 255, .85); color: var(--ink); box-shadow: 0 10px 28px rgba(15, 23, 42, .2); font-size: 13px; font-weight: 400; line-height: 1.55; }}
     #ai-pop[hidden] {{ display: none; }}
     .ai-tip-title {{ margin-bottom: 8px; color: #334155; font-size: 13px; font-weight: 700; }}
     .ai-tip-section + .ai-tip-section {{ margin-top: 9px; padding-top: 8px; border-top: 1px solid #e2e8f0; }}
@@ -1721,6 +1922,18 @@ def render_query_html(
     .ai-tip-recommendation {{ margin-top: 0; padding: 10px 11px; border: 1px solid #bfdbfe; border-radius: 6px; background: #eff6ff; }}
     .ai-tip-recommendation h4 {{ margin-bottom: 5px; color: #1d4ed8; font-size: 13px; }}
     .ai-tip-recommendation-text {{ color: #0f172a; font-size: 13px; line-height: 1.45; }}
+    .ai-tip-recommendation-grid {{ display: grid; grid-template-columns: minmax(100px, .8fr) minmax(0, 1.2fr) minmax(0, 1.3fr); column-gap: 10px; overflow-wrap: anywhere; }}
+    .ai-tip-recommendation-grid > div {{ min-width: 0; padding: 7px 5px; }}
+    .ai-tip-recommendation-grid > div:nth-child(-n+3) {{ border-bottom: 1px solid #dbe3ec; }}
+    .ai-tip-recommendation-pick {{ display: grid; grid-template-columns: minmax(100px, .8fr) minmax(0, 1.2fr) minmax(0, 1.3fr); column-gap: 10px; margin-top: 8px; overflow-wrap: anywhere; }}
+    .ai-tip-recommendation-pick > div {{ min-width: 0; padding: 4px 5px; }}
+    .ai-tip-recommendation-text > p.ai-tip-recommendation-pick {{ margin: 8px 0 0; }}
+    .ai-tip-recommendation-text > .ai-tip-recommendation-analysis {{ margin: 7px 0 0; }}
+    .h2h-table {{ border-collapse: collapse; min-width: 620px; width: max-content; white-space: nowrap; font-size: 12px; }}
+    .h2h-table th, .h2h-table td {{ padding: 5px 7px; border: 1px solid #e2e8f0; text-align: left; }}
+    .h2h-table th {{ background: #f8fafc; color: #475569; font-weight: 700; }}
+    .h2h-table tbody tr:nth-child(odd) {{ background: #fff; }}
+    .h2h-table tbody tr:nth-child(even) {{ background: #f8fafc; }}
     .ai-tip-result-win {{ color: #dc2626; font-weight: 700; }}
     .ai-tip-result-loss {{ color: #16a34a; font-weight: 700; }}
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}

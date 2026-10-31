@@ -36,6 +36,15 @@ from .cdp import CdpError, CdpPage
 
 DEFAULT_CDP = "http://127.0.0.1:9222"
 VERIFY_MARK = "Security Verification"
+VERIFY_TEXT_MARKS = (
+    VERIFY_MARK,
+    "verify you are human",
+    "human verification",
+    "verification required",
+    "安全验证",
+    "人机验证",
+)
+VERIFY_URL_MARKS = ("captcha", "challenge", "security-verification", "secverify")
 RATE_LIMIT_MARKS = ("频繁", "过于频繁", "Too Many Requests", "too many requests")
 PAGE_TIMEOUT_MS = 25_000
 POLL_SECONDS = 1.5
@@ -72,6 +81,25 @@ RATECHECK_JS = (
     "() => { const t = document.body ? document.body.innerText : '';"
     " return %s.some(m => t.indexOf(m) >= 0); }" % json.dumps(list(RATE_LIMIT_MARKS))
 )
+
+CHALLENGE_CONTEXT_JS = (
+    "() => ({url: location.href, text: document.body ? "
+    "document.body.innerText.slice(0, 3000) : ''})"
+)
+
+
+def is_verification_page(title: str, url: str = "", body: str = "") -> bool:
+    title = title.casefold()
+    url = url.casefold()
+    body = body.casefold()
+    return (
+        any(
+            marker.casefold() in title or marker.casefold() in body
+            for marker in VERIFY_TEXT_MARKS
+        )
+        or any(marker in url for marker in VERIFY_URL_MARKS)
+    )
+
 
 # 数据分析页：按最近的小标题给表格分组，保留积分排名/交战历史/近期战绩/
 # 阵容与伤停/预计阵容/未来赛事/平均数据，丢掉登录框和彩票列表。
@@ -178,6 +206,8 @@ STATUS_OK = "ok"
 STATUS_EMPTY = "empty"
 STATUS_TIMEOUT = "timeout"
 STATUS_ERROR = "error"
+STATUS_VERIFICATION_REQUIRED = "verification_required"
+EXIT_VERIFICATION_REQUIRED = 6
 
 
 def _error(detail: str, *, text_mode: bool = False) -> dict:
@@ -271,6 +301,8 @@ def fetch_page(
     *,
     extract_js: str = EXTRACT_JS,
     text_mode: bool = False,
+    on_verification=None,
+    on_verification_resolved=None,
 ) -> dict:
     """打开单场页取数据；撞到 EdgeOne 验证页则置前窗口并等待人工勾选。
 
@@ -287,7 +319,7 @@ def fetch_page(
         return _error(detail, text_mode=text_mode)
 
     deadline = time.time() + wait_seconds
-    warned = False
+    verification_pending = False
     settled = 0
     while time.time() < deadline:
         try:
@@ -295,10 +327,25 @@ def fetch_page(
         except CdpError as exc:
             return _error(str(exc).splitlines()[0][:90], text_mode=text_mode)
 
-        if VERIFY_MARK in title:
+        verification_page = VERIFY_MARK.casefold() in title.casefold()
+        if not verification_page:
+            try:
+                challenge_context = page.evaluate(CHALLENGE_CONTEXT_JS)
+            except CdpError as exc:
+                return _error(str(exc).splitlines()[0][:90], text_mode=text_mode)
+            challenge_context = challenge_context if isinstance(challenge_context, dict) else {}
+            verification_page = is_verification_page(
+                title,
+                str(challenge_context.get("url") or ""),
+                str(challenge_context.get("text") or ""),
+            )
+
+        if verification_page:
             settled = 0
-            if not warned:
-                warned = True
+            if not verification_pending:
+                verification_pending = True
+                if on_verification:
+                    on_verification()
                 try:
                     page.bring_to_front()
                     # 窗口平时在屏幕外，验证页需要人工勾选时挪回屏幕中央
@@ -306,12 +353,16 @@ def fetch_page(
                 except CdpError:
                     pass
                 log("    [!] EdgeOne 验证页（窗口已挪回屏幕中央）。")
-                log("        请切到 Chrome 里刚打开的那个标签页（标题 Security Verification），")
+                log("        请切到 Chrome 里刚打开的那个标签页，")
                 log("        勾选一次复选框；勾完本脚本会自动继续。")
         elif not title:
             # 还在导航，等下一轮
             settled = 0
         else:
+            if verification_pending:
+                verification_pending = False
+                if on_verification_resolved:
+                    on_verification_resolved()
             # 标题已是真实赔率页。只给 JS 渲染留几拍时间。
             try:
                 if page.evaluate(RATECHECK_JS):
@@ -333,7 +384,8 @@ def fetch_page(
         time.sleep(POLL_SECONDS)
 
     # 等到超时仍未拿到真实页面，多半是没人勾验证
-    return {"status": STATUS_TIMEOUT, "text" if text_mode else "rows": "" if text_mode else []}
+    status = STATUS_VERIFICATION_REQUIRED if verification_pending else STATUS_TIMEOUT
+    return {"status": status, "text" if text_mode else "rows": "" if text_mode else []}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -447,6 +499,24 @@ def main(argv: list[str] | None = None) -> int:
                         args.wait,
                         extract_js=SHUJU_JS if text_mode else EXTRACT_JS,
                         text_mode=text_mode,
+                        on_verification=lambda: _write_progress(
+                            cache_dir,
+                            issue,
+                            phase="verification_required",
+                            total=total,
+                            done=done,
+                            failed=failed,
+                            last=f"{kind}-{fid}",
+                        ),
+                        on_verification_resolved=lambda: _write_progress(
+                            cache_dir,
+                            issue,
+                            phase="verification_resolved",
+                            total=total,
+                            done=done,
+                            failed=failed,
+                            last=f"{kind}-{fid}",
+                        ),
                     )
                 except BrowserGone:
                     log("")
@@ -466,6 +536,19 @@ def main(argv: list[str] | None = None) -> int:
                     log("    已抓页面已保存，重新运行会从断点继续。")
                     _write_progress(cache_dir, issue, phase="aborted", total=total, done=page_no - 1, failed=failed, reason="cdp_error")
                     return 4
+                if payload.get("status") == STATUS_VERIFICATION_REQUIRED:
+                    log("")
+                    log("[!] EdgeOne 人工验证未在等待时间内完成，已暂停整批抓取；已抓页面已保存，请验证后重试。")
+                    _write_progress(
+                        cache_dir,
+                        issue,
+                        phase="aborted",
+                        total=total,
+                        done=done,
+                        failed=failed,
+                        reason="verification_required",
+                    )
+                    return EXIT_VERIFICATION_REQUIRED
                 done += 1
                 failed += 1 if payload.get("status") not in (STATUS_OK, STATUS_EMPTY) else 0
                 result[key] = payload

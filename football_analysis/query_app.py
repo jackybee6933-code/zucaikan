@@ -454,6 +454,8 @@ def _run_odds_scraper(
     if kinds:
         argv.extend(["--kinds", *kinds])
     code = mod.main(argv)
+    if code == mod.EXIT_VERIFICATION_REQUIRED:
+        return f"{issue} 检测到 EdgeOne 人工验证，整批抓取已暂停；请手动完成验证后重试"
     if code != 0:
         return f"{issue} 抓取未完成（退出码 {code}），已抓页面已保存，重试会从断点继续"
     return None
