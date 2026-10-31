@@ -500,13 +500,68 @@ class StoreAndReportTests(unittest.TestCase):
         self.assertIn('<section class="ai-tip-section"><h4>模型理由</h4><p>模型理由</p></section>', rendered)
         self.assertIn('<section class="ai-tip-section ai-tip-recommendation"><h4>推介</h4><div class="ai-tip-recommendation-text"><p>主队赢盘</p></div></section>', rendered)
         self.assertNotIn('title="', rendered)
-        self.assertIn("对赛成绩", rendered)
-        self.assertIn(
-            '主队 3<span class="ai-tip-result-win">胜</span>1平',
-            rendered,
-        )
+        self.assertNotIn("对赛成绩", rendered)
+        self.assertNotIn("主队 3", rendered)
         self.assertIn("分析", rendered)
         self.assertIn("近期状态较好", rendered)
+
+    def test_ai_tooltip_trigger_is_limited_to_display_text(self):
+        h2h = (
+            "英超 | 2026-04-23 | Home 2:2 Away | 0:0 | 平 | odds | line | 输 | 大 | note"
+        )
+        rendered = _lean_cell(_analysis(team_read=json.dumps({
+            "tendency": "主队赢盘",
+            "confidence": 0.6,
+            "reason": "模型理由",
+            "over_tendency": "大球",
+            "over_confidence": 0.6,
+            "source_references": {
+                "推介": "主队赢盘",
+                "交战历史": h2h,
+            },
+        }, ensure_ascii=False)))
+        self.assertEqual(
+            rendered.count('class="model-lean"><span class="model-lean-tip"'),
+            2,
+        )
+        self.assertEqual(rendered.count(' data-ai-tip tabindex="0"'), 2)
+        self.assertNotIn('<div class="model-lean" data-ai-tip', rendered)
+        self.assertIn(
+            ".model-lean-tip[data-ai-tip] { cursor: help;",
+            render_query_html([], issues=[]),
+        )
+
+    def test_handicap_tooltip_omits_h2h_but_keeps_over_popup(self):
+        h2h = (
+            "英超 | 2026-04-23 | Home 2:2 Away | 0:0 | 平 | odds | line | 输 | 大 | note"
+        )
+        for heading in ("交战历史", "对战历史", "对赛成绩"):
+            with self.subTest(heading=heading):
+                rendered = _lean_cell(_analysis(team_read=json.dumps({
+                    "tendency": "主队赢盘",
+                    "confidence": 0.6,
+                    "reason": "盘口模型理由",
+                    "factors": ["盘口重点因素"],
+                    "over_tendency": "大球",
+                    "over_confidence": 0.6,
+                    "source_references": {
+                        heading: h2h,
+                        "推介": "主队赢盘",
+                        "分析": "近期状态较好",
+                    },
+                }, ensure_ascii=False)))
+                handicap_popup, over_popup = rendered.split("</template>", 1)
+                self.assertIn("AI分析依据", handicap_popup)
+                self.assertIn("盘口模型理由", handicap_popup)
+                self.assertIn("盘口重点因素", handicap_popup)
+                self.assertIn("<h4>推介</h4>", handicap_popup)
+                self.assertIn("近期状态较好", handicap_popup)
+                self.assertNotIn(heading, handicap_popup)
+                self.assertNotIn("2026-04-23", handicap_popup)
+                self.assertIn("对赛往绩", over_popup)
+                self.assertIn('<table class="h2h-table">', over_popup)
+                self.assertIn("<td>Home</td><td>2:2</td><td>Away</td>", over_popup)
+                self.assertEqual(rendered.count("2026-04-23"), 1)
 
     def test_recommendation_strips_result_legend_and_colors_win_loss(self):
         rendered = _lean_cell(_analysis(team_read=json.dumps({
@@ -750,7 +805,7 @@ class StoreAndReportTests(unittest.TestCase):
             )
 
         self.assertIn(
-            '<div class="model-lean" data-ai-tip tabindex="0" role="note" '
+            '<div class="model-lean"><span class="model-lean-tip" data-ai-tip tabindex="0" role="note" '
             'aria-describedby="ai-pop" aria-label="大球 60%，对赛往绩">大球 60%'
             '<template class="ai-tip-content">',
             html,

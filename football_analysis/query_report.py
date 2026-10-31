@@ -391,18 +391,17 @@ def _lean_cell(row: dict, *, h2h_score: str = "") -> str:
             for key, value in source_references.items():
                 key_text = str(key).strip()
                 value_text = str(value).strip()
-                if not key_text or not value_text:
+                if (
+                    not key_text or not value_text
+                    or key_text in ("对赛成绩", "对战历史", "交战历史")
+                ):
                     continue
                 is_recommendation = key_text in ("推介", "心水推荐")
                 section_class = " ai-tip-recommendation" if is_recommendation else ""
                 body = (
                     f'<div class="ai-tip-recommendation-text">{_recommendation_html(value_text[:800])}</div>'
                     if is_recommendation
-                    else (
-                        f"<p>{_result_markers_html(value_text[:800], color_cn_results=True)}</p>"
-                        if key_text == "对赛成绩"
-                        else f"<p>{_result_markers_html(value_text[:800])}</p>"
-                    )
+                    else f"<p>{_result_markers_html(value_text[:800])}</p>"
                 )
                 heading = "" if key_text == "心水推荐" else f"<h4>{_esc(key_text)}</h4>"
                 reference_sections.append(
@@ -442,7 +441,8 @@ def _lean_cell(row: dict, *, h2h_score: str = "") -> str:
             else ""
         )
         parts.append(
-            f'<div class="model-lean"{tip_attrs}>{_esc(tendency)}{_esc(conf)}{tooltip}</div>'
+            f'<div class="model-lean"><span class="model-lean-tip"{tip_attrs}>'
+            f'{_esc(tendency)}{_esc(conf)}{tooltip}</span></div>'
         )
         if reason:
             parts.append(
@@ -485,8 +485,8 @@ def _lean_cell(row: dict, *, h2h_score: str = "") -> str:
                 f'<section class="ai-tip-section">{h2h_table}</section></template>'
             )
         parts.append(
-            f'<div class="model-lean"{h2h_tip_attrs}>{_esc(over_tendency)}{_esc(over_conf)}'
-            f'{h2h_template}</div>'
+            f'<div class="model-lean"><span class="model-lean-tip"{h2h_tip_attrs}>'
+            f'{_esc(over_tendency)}{_esc(over_conf)}{h2h_template}</span></div>'
         )
         over_reason = str(read.get("over_reason") or "").strip()
         if over_reason:
@@ -864,6 +864,8 @@ _FETCH_BLOCK = \
           <span class="muted">当前版本：v{_esc(__version__)}。升级包来自 GitHub Releases，下载后会校验 SHA-256。</span>
           <div class="settings-backup-actions">
             <button type="button" id="update-check" class="settings-button"><svg class="settings-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>检查更新</button>
+            <button type="button" id="update-verify" class="settings-button" title="通过 API 下载最新安装包并校验，完成后清理，不执行安装"><svg class="settings-icon" aria-hidden="true"><use href="#icon-plug"></use></svg>验证 API 通道</button>
+            <button type="button" id="update-download-test" class="settings-button" title="按正常升级流程下载并校验，完成后清理，不执行安装"><svg class="settings-icon" aria-hidden="true"><use href="#icon-download"></use></svg>测试下载安装包</button>
             <button type="button" id="update-install" class="settings-button settings-button-primary" disabled><svg class="settings-icon" aria-hidden="true"><use href="#icon-arrow-up-circle"></use></svg>一键升级</button>
           </div>
           <div id="update-status" class="muted"></div>
@@ -982,6 +984,8 @@ _FETCH_BLOCK = \
       const updateStatus = document.getElementById("update-status");
       const updateInstall = document.getElementById("update-install");
       const updateCheck = document.getElementById("update-check");
+      const updateVerify = document.getElementById("update-verify");
+      const updateDownloadTest = document.getElementById("update-download-test");
       const updateDetails = document.getElementById("update-details");
       const updateVersions = document.getElementById("update-versions");
       const updateNotes = document.getElementById("update-notes");
@@ -1004,6 +1008,12 @@ _FETCH_BLOCK = \
       function stopUpdatePolling() {
         if (updatePollTimer) clearTimeout(updatePollTimer);
         updatePollTimer = null;
+      }
+      function setUpdateBusy(busy) {
+        updateCheck.disabled = busy;
+        updateVerify.disabled = busy;
+        updateDownloadTest.disabled = busy;
+        updateInstall.disabled = busy || !updateInfo?.update_available || Boolean(updateInfo?.cached);
       }
       function pollUpdateStatus(targetVersion) {
         stopUpdatePolling();
@@ -1032,7 +1042,9 @@ _FETCH_BLOCK = \
             } else if (state.phase === "ready") {
               updateProgress.value = 100;
               updateProgress.setAttribute("value", "100");
-              updateProgressLabel.textContent = "SHA-256 校验通过，正在准备安装...";
+              updateProgressLabel.textContent = (state.verify_only || state.download_test)
+                ? "SHA-256 校验通过，正在清理临时文件..."
+                : "SHA-256 校验通过，正在准备安装...";
               updateStatus.textContent = "升级包验证完成";
             } else if (state.phase === "installing") {
               updateProgress.value = 100;
@@ -1043,21 +1055,23 @@ _FETCH_BLOCK = \
               stopUpdatePolling();
               updateProgressWrap.hidden = true;
               updateStatus.textContent = state.result || "升级已启动";
-              setTimeout(() => location.reload(), 8000);
+              setUpdateBusy(false);
+              if (!state.verify_only && !state.download_test) setTimeout(() => location.reload(), 8000);
               return;
             } else if (state.phase === "error") {
               stopUpdatePolling();
               updateProgressWrap.hidden = true;
               updateStatus.textContent = state.error || "升级失败";
-              updateInstall.disabled = false;
+              setUpdateBusy(false);
               return;
             } else if (state.running) {
               updateProgress.removeAttribute("value");
-              updateProgressLabel.textContent = "正在准备升级...";
+              updateProgressLabel.textContent = state.verify_only
+                ? "正在通过 API 读取更新清单..." : "正在准备升级...";
             } else {
               stopUpdatePolling();
               updateProgressWrap.hidden = true;
-              updateInstall.disabled = false;
+              setUpdateBusy(false);
               return;
             }
             if (state.running) updatePollTimer = setTimeout(poll, 500);
@@ -1065,7 +1079,7 @@ _FETCH_BLOCK = \
             stopUpdatePolling();
             updateProgressWrap.hidden = true;
             updateStatus.textContent = e.message || String(e);
-            updateInstall.disabled = false;
+            setUpdateBusy(false);
           }
         }, 250);
       }
@@ -1073,8 +1087,8 @@ _FETCH_BLOCK = \
         function formatElapsedSeconds(milliseconds) {
           return (Number(milliseconds || 0) / 1000).toFixed(2) + " 秒";
         }
-        updateCheck.disabled = true;
-        updateInstall.disabled = true;
+        setUpdateBusy(true);
+        updateInfo = null;
         updateStatus.textContent = "正在检查更新清单...";
         updateDetails.hidden = true;
         try {
@@ -1118,15 +1132,49 @@ _FETCH_BLOCK = \
           updateRelease.href = "https://github.com/jackybee6933-code/zucaikan/releases";
           updateDetails.hidden = false;
         } finally {
-          updateCheck.disabled = false;
+          setUpdateBusy(false);
         }
       }
       updateCheck.addEventListener("click", checkForUpdate);
+      updateVerify.addEventListener("click", async function () {
+        setUpdateBusy(true);
+        updateProgressWrap.hidden = false;
+        updateProgress.removeAttribute("value");
+        updateProgressLabel.textContent = "正在通过 API 读取更新清单...";
+        updateStatus.textContent = "正在验证 API 通道：读取清单、下载安装包、校验 SHA-256，不执行安装。";
+        try {
+          const response = await fetch("/update/verify", {method: "POST"});
+          const data = await response.json();
+          if (!response.ok || !data.ok) throw new Error(data.error || "API 验证失败");
+          pollUpdateStatus("安装包（API 验证）");
+        } catch (e) {
+          updateStatus.textContent = e.message || String(e);
+          updateProgressWrap.hidden = true;
+          setUpdateBusy(false);
+        }
+      });
+      updateDownloadTest.addEventListener("click", async function () {
+        setUpdateBusy(true);
+        updateProgressWrap.hidden = false;
+        updateProgress.removeAttribute("value");
+        updateProgressLabel.textContent = "正在准备下载安装包...";
+        updateStatus.textContent = "正在按正常升级流程下载并校验，完成后清理临时文件，不执行安装。";
+        try {
+          const response = await fetch("/update/download-test", {method: "POST"});
+          const data = await response.json();
+          if (!response.ok || !data.ok) throw new Error(data.error || "下载安装包测试失败");
+          pollUpdateStatus("安装包下载测试");
+        } catch (e) {
+          updateStatus.textContent = e.message || String(e);
+          updateProgressWrap.hidden = true;
+          setUpdateBusy(false);
+        }
+      });
       updateInstall.addEventListener("click", async function () {
         if (!updateInfo?.update_available) return;
         const targetVersion = formatVersionLabel(updateInfo.latest_version);
         if (!window.confirm(`将下载并安装 ${targetVersion}，校验通过后会关闭并重启程序。是否继续？`)) return;
-        this.disabled = true;
+        setUpdateBusy(true);
         updateProgressWrap.hidden = false;
         updateProgress.removeAttribute("value");
         updateProgressLabel.textContent = "正在准备升级...";
@@ -1141,11 +1189,11 @@ _FETCH_BLOCK = \
           }
           updateStatus.textContent = data.message || "已是最新版本";
           updateProgressWrap.hidden = true;
-          this.disabled = false;
+          setUpdateBusy(false);
         } catch (e) {
           updateStatus.textContent = e.message || String(e);
           updateProgressWrap.hidden = true;
-          this.disabled = false;
+          setUpdateBusy(false);
         }
       });
       document.getElementById("backup-download").addEventListener("click", async function () {
@@ -1906,8 +1954,8 @@ def render_query_html(
     .line-delta {{ margin-top: 5px; color: #475569; font-size: 12px; font-weight: 600; }}
     .lean-cell {{ font-weight: 600; color: #334155; }}
     .model-lean {{ color: #0f172a; }}
-    .model-lean[data-ai-tip] {{ cursor: help; text-decoration: underline dotted #94a3b8; text-underline-offset: 3px; }}
-    .model-lean[data-ai-tip]:focus-visible {{ outline: 2px solid rgba(37, 99, 235, .35); outline-offset: 2px; border-radius: 2px; }}
+    .model-lean-tip[data-ai-tip] {{ cursor: help; text-decoration: underline dotted #94a3b8; text-underline-offset: 3px; }}
+    .model-lean-tip[data-ai-tip]:focus-visible {{ outline: 2px solid rgba(37, 99, 235, .35); outline-offset: 2px; border-radius: 2px; }}
     .model-reason {{
       margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

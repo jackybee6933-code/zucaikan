@@ -291,6 +291,34 @@ class UpdaterTests(unittest.TestCase):
             result.unlink()
             result.parent.rmdir()
 
+    def test_api_only_download_skips_direct_link_and_checks_hash(self):
+        data = b"installer"
+        info = {"url": INSTALLER_URL, "sha256": hashlib.sha256(data).hexdigest()}
+        release = {"assets": [{
+            "browser_download_url": INSTALLER_URL,
+            "url": INSTALLER_API_URL,
+        }]}
+        with mock.patch("urllib.request.urlopen", return_value=_Response(data)) as urlopen, \
+                mock.patch.object(updater, "_http_json", return_value=release):
+            result, package_type = updater.download_package(info, api_only=True)
+        try:
+            self.assertEqual(result.read_bytes(), data)
+            self.assertEqual(package_type, "inno-setup")
+            urlopen.assert_called_once()
+            request = urlopen.call_args.args[0]
+            self.assertEqual(request.full_url, INSTALLER_API_URL)
+            self.assertEqual(request.get_header("Accept"), "application/octet-stream")
+        finally:
+            result.unlink()
+            result.parent.rmdir()
+
+    def test_api_only_download_rejects_non_release_link(self):
+        info = {"url": "https://example.test/setup.exe", "sha256": "a" * 64}
+        with mock.patch.object(updater, "_download_candidate") as download:
+            with self.assertRaisesRegex(updater.UpdateError, "API"):
+                updater.download_package(info, api_only=True)
+        download.assert_not_called()
+
     def test_api_installer_hash_failure_is_rejected_and_cleaned(self):
         info = {"url": INSTALLER_URL, "sha256": "0" * 64}
         release = {

@@ -28,8 +28,10 @@ UPDATE_CACHE_FILENAME = ".update_manifest.json"
 RELEASES_BASE_URL = "https://github.com/jackybee6933-code/zucaikan/releases/tag/v"
 MANIFEST_ATTEMPTS = 3
 MANIFEST_RETRY_DELAYS = (1, 3)
+MANIFEST_TIMEOUT = 10.0
 DOWNLOAD_ATTEMPTS = 3
 DOWNLOAD_RETRY_DELAYS = (2, 5)
+DOWNLOAD_TIMEOUT = 15.0
 APP_EXE_NAME = "football_analysis.exe"
 UPDATER_EXE_NAME = "updater.exe"
 UPDATE_RELAUNCH_ENV = "FA_UPDATE_RELAUNCH"
@@ -51,7 +53,7 @@ def _manifest_url() -> str:
 
 
 def _http_json(
-    url: str, *, timeout: float = 20.0, accept: str = "application/json"
+    url: str, *, timeout: float = MANIFEST_TIMEOUT, accept: str = "application/json"
 ) -> dict:
     request = urllib.request.Request(
         url, headers={"User-Agent": "football-analysis-updater", "Accept": accept}
@@ -237,17 +239,19 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def download_package(info: dict, *, progress=None, phase=None) -> tuple[Path, str]:
+def download_package(info: dict, *, progress=None, phase=None, api_only=False) -> tuple[Path, str]:
     primary_url = str(info.get("url", ""))
     primary_sha = str(info.get("sha256", "")).lower()
     if not primary_url.lower().endswith(".exe") or len(primary_sha) != 64:
         raise UpdateError("更新信息无效")
 
-    target, last_error = _download_candidate(
-        primary_url, primary_sha, progress=progress, phase=phase
-    )
-    if target is not None:
-        return target, "inno-setup"
+    last_error = UpdateError("该安装包不支持 GitHub API 下载")
+    if not api_only:
+        target, last_error = _download_candidate(
+            primary_url, primary_sha, progress=progress, phase=phase
+        )
+        if target is not None:
+            return target, "inno-setup"
     try:
         api_url = _installer_api_url(primary_url)
         if api_url:
@@ -281,7 +285,9 @@ def _download_candidate(
             headers["Accept"] = accept
         request = urllib.request.Request(url, headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=30) as resp, target.open("wb") as out:
+            with urllib.request.urlopen(
+                request, timeout=DOWNLOAD_TIMEOUT
+            ) as resp, target.open("wb") as out:
                 total = int(resp.headers.get("Content-Length") or 0)
                 downloaded = 0
                 while True:
