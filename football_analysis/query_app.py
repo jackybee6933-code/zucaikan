@@ -569,16 +569,14 @@ def serve_query(
     }
     update_lock = threading.Lock()
 
-    def _do_update_install(
-        verify_only: bool = False, download_test: bool = False
-    ) -> None:
+    def _do_update_install(verify_only: bool = False) -> None:
         try:
             _updater = _UPDATER_LOADER()
             info = (
                 _updater.check_update(_updater.RELEASE_API_URL)
                 if verify_only else _updater.check_update()
             )
-            if not verify_only and not download_test and not info["update_available"]:
+            if not verify_only and not info["update_available"]:
                 with update_lock:
                     update_state.update(
                         running=False, phase="complete", result="已是最新版本"
@@ -601,7 +599,7 @@ def serve_query(
             archive, package_type = _updater.download_package(
                 info, progress=_progress, phase=_phase, **options
             )
-            if verify_only or download_test:
+            if verify_only:
                 archive.unlink()
                 archive.parent.rmdir()
                 with update_lock:
@@ -609,15 +607,8 @@ def serve_query(
                         running=False,
                         phase="complete",
                         result=(
-                            (
-                                f"API 验证通过：v{info['latest_version']} 安装包下载完成，"
-                                "SHA-256 校验通过，临时文件已清理，未执行安装"
-                            )
-                            if verify_only
-                            else (
-                                f"下载安装包测试通过：v{info['latest_version']} 安装包下载完成，"
-                                "SHA-256 校验通过，临时文件已清理，未执行安装"
-                            )
+                            f"API 验证通过：v{info['latest_version']} 安装包下载完成，"
+                            "SHA-256 校验通过，临时文件已清理，未执行安装"
                         ),
                     )
                 return
@@ -640,8 +631,7 @@ def serve_query(
                     running=False,
                     phase="error",
                     error=(
-                        "API 验证失败" if verify_only else
-                        "下载安装包测试失败" if download_test else "升级失败"
+                        "API 验证失败" if verify_only else "升级失败"
                     ) + f"：{exc}",
                 )
 
@@ -954,9 +944,8 @@ def serve_query(
                     self._json(200, {"ok": False, "message": f"测试失败：{exc}"})
                 return
 
-            if parsed.path in ("/update/install", "/update/verify", "/update/download-test"):
+            if parsed.path in ("/update/install", "/update/verify"):
                 verify_only = parsed.path == "/update/verify"
-                download_test = parsed.path == "/update/download-test"
                 with update_lock:
                     if update_state["running"]:
                         self._json(200, {"ok": True, "busy": True})
@@ -969,11 +958,10 @@ def serve_query(
                         "result": "",
                         "error": "",
                         "verify_only": verify_only,
-                        "download_test": download_test,
                     })
                 worker = threading.Thread(
                     target=_do_update_install,
-                    args=(verify_only, download_test),
+                    args=(verify_only,),
                     daemon=True,
                 )
                 worker.start()
