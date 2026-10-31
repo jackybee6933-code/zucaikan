@@ -864,8 +864,6 @@ _FETCH_BLOCK = \
           <span class="muted">当前版本：v{_esc(__version__)}。升级包来自 GitHub Releases，下载后会校验 SHA-256。</span>
           <div class="settings-backup-actions">
             <button type="button" id="update-check" class="settings-button"><svg class="settings-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>检查更新</button>
-            <button type="button" id="update-verify" class="settings-button" title="通过 API 下载最新安装包并校验，完成后清理，不执行安装"><svg class="settings-icon" aria-hidden="true"><use href="#icon-plug"></use></svg>验证 API 通道</button>
-            <button type="button" id="update-download-test" class="settings-button" title="按正常升级流程下载并校验，完成后清理，不执行安装"><svg class="settings-icon" aria-hidden="true"><use href="#icon-download"></use></svg>测试下载安装包</button>
             <button type="button" id="update-install" class="settings-button settings-button-primary" disabled><svg class="settings-icon" aria-hidden="true"><use href="#icon-arrow-up-circle"></use></svg>一键升级</button>
           </div>
           <div id="update-status" class="muted"></div>
@@ -984,8 +982,6 @@ _FETCH_BLOCK = \
       const updateStatus = document.getElementById("update-status");
       const updateInstall = document.getElementById("update-install");
       const updateCheck = document.getElementById("update-check");
-      const updateVerify = document.getElementById("update-verify");
-      const updateDownloadTest = document.getElementById("update-download-test");
       const updateDetails = document.getElementById("update-details");
       const updateVersions = document.getElementById("update-versions");
       const updateNotes = document.getElementById("update-notes");
@@ -1011,8 +1007,6 @@ _FETCH_BLOCK = \
       }
       function setUpdateBusy(busy) {
         updateCheck.disabled = busy;
-        updateVerify.disabled = busy;
-        updateDownloadTest.disabled = busy;
         updateInstall.disabled = busy || !updateInfo?.update_available || Boolean(updateInfo?.cached);
       }
       function pollUpdateStatus(targetVersion) {
@@ -1042,9 +1036,7 @@ _FETCH_BLOCK = \
             } else if (state.phase === "ready") {
               updateProgress.value = 100;
               updateProgress.setAttribute("value", "100");
-              updateProgressLabel.textContent = (state.verify_only || state.download_test)
-                ? "SHA-256 校验通过，正在清理临时文件..."
-                : "SHA-256 校验通过，正在准备安装...";
+              updateProgressLabel.textContent = "SHA-256 校验通过，正在准备安装...";
               updateStatus.textContent = "升级包验证完成";
             } else if (state.phase === "installing") {
               updateProgress.value = 100;
@@ -1056,7 +1048,7 @@ _FETCH_BLOCK = \
               updateProgressWrap.hidden = true;
               updateStatus.textContent = state.result || "升级已启动";
               setUpdateBusy(false);
-              if (!state.verify_only && !state.download_test) setTimeout(() => location.reload(), 8000);
+              setTimeout(() => location.reload(), 8000);
               return;
             } else if (state.phase === "error") {
               stopUpdatePolling();
@@ -1066,8 +1058,7 @@ _FETCH_BLOCK = \
               return;
             } else if (state.running) {
               updateProgress.removeAttribute("value");
-              updateProgressLabel.textContent = state.verify_only
-                ? "正在通过 API 读取更新清单..." : "正在准备升级...";
+              updateProgressLabel.textContent = "正在准备升级...";
             } else {
               stopUpdatePolling();
               updateProgressWrap.hidden = true;
@@ -1136,40 +1127,6 @@ _FETCH_BLOCK = \
         }
       }
       updateCheck.addEventListener("click", checkForUpdate);
-      updateVerify.addEventListener("click", async function () {
-        setUpdateBusy(true);
-        updateProgressWrap.hidden = false;
-        updateProgress.removeAttribute("value");
-        updateProgressLabel.textContent = "正在通过 API 读取更新清单...";
-        updateStatus.textContent = "正在验证 API 通道：读取清单、下载安装包、校验 SHA-256，不执行安装。";
-        try {
-          const response = await fetch("/update/verify", {method: "POST"});
-          const data = await response.json();
-          if (!response.ok || !data.ok) throw new Error(data.error || "API 验证失败");
-          pollUpdateStatus("安装包（API 验证）");
-        } catch (e) {
-          updateStatus.textContent = e.message || String(e);
-          updateProgressWrap.hidden = true;
-          setUpdateBusy(false);
-        }
-      });
-      updateDownloadTest.addEventListener("click", async function () {
-        setUpdateBusy(true);
-        updateProgressWrap.hidden = false;
-        updateProgress.removeAttribute("value");
-        updateProgressLabel.textContent = "正在准备下载安装包...";
-        updateStatus.textContent = "正在按正常升级流程下载并校验，完成后清理临时文件，不执行安装。";
-        try {
-          const response = await fetch("/update/download-test", {method: "POST"});
-          const data = await response.json();
-          if (!response.ok || !data.ok) throw new Error(data.error || "下载安装包测试失败");
-          pollUpdateStatus("安装包下载测试");
-        } catch (e) {
-          updateStatus.textContent = e.message || String(e);
-          updateProgressWrap.hidden = true;
-          setUpdateBusy(false);
-        }
-      });
       updateInstall.addEventListener("click", async function () {
         if (!updateInfo?.update_available) return;
         const targetVersion = formatVersionLabel(updateInfo.latest_version);
