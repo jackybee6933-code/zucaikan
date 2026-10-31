@@ -1659,7 +1659,7 @@ def render_query_html(
       margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }}
-    #ai-pop {{ position: fixed; z-index: 45; width: min(360px, calc(100vw - 20px)); max-height: min(340px, calc(100vh - 20px)); overflow-y: auto; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; color: var(--ink); box-shadow: 0 10px 28px rgba(15, 23, 42, .2); font-size: 13px; font-weight: 400; line-height: 1.55; }}
+    #ai-pop {{ position: fixed; z-index: 45; width: min(640px, calc(100vw - 20px)); max-height: min(340px, calc(100vh - 20px)); overflow-y: auto; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; color: var(--ink); box-shadow: 0 10px 28px rgba(15, 23, 42, .2); font-size: 13px; font-weight: 400; line-height: 1.55; }}
     #ai-pop[hidden] {{ display: none; }}
     .ai-tip-title {{ margin-bottom: 8px; color: #334155; font-size: 13px; font-weight: 700; }}
     .ai-tip-section + .ai-tip-section {{ margin-top: 9px; padding-top: 8px; border-top: 1px solid #e2e8f0; }}

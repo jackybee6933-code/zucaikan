@@ -436,6 +436,7 @@ class StoreAndReportTests(unittest.TestCase):
             self.assertIn("盘口：主让半球升到一球", html)
             self.assertIn("主场赢盘率高于客队", html)
             self.assertIn('id="ai-pop" role="tooltip" hidden', html)
+            self.assertIn("width: min(640px, calc(100vw - 20px))", html)
             self.assertIn('<h4>推介</h4><p>主队状态稳定</p>', html)
             self.assertIn("pop.addEventListener('mouseenter', cancelHide)", html)
             self.assertIn("pop.contains(event.target)", html)
