@@ -52,14 +52,27 @@ def _manifest_url() -> str:
     return os.environ.get("FA_UPDATE_MANIFEST_URL", DEFAULT_MANIFEST_URL)
 
 
+def _report_progress(progress, message: str) -> None:
+    if progress:
+        progress(message)
+
+
 def _http_json(
-    url: str, *, timeout: float = MANIFEST_TIMEOUT, accept: str = "application/json"
+    url: str,
+    *,
+    timeout: float = MANIFEST_TIMEOUT,
+    accept: str = "application/json",
+    progress=None,
+    progress_label: str = "正在读取更新信息",
 ) -> dict:
     request = urllib.request.Request(
         url, headers={"User-Agent": "football-analysis-updater", "Accept": accept}
     )
     last_error: Exception | None = None
     for attempt in range(MANIFEST_ATTEMPTS):
+        _report_progress(
+            progress, f"{progress_label}（第 {attempt + 1}/{MANIFEST_ATTEMPTS} 次尝试）"
+        )
         try:
             with urllib.request.urlopen(request, timeout=timeout) as resp:
                 payload = json.loads(resp.read().decode("utf-8"))
@@ -93,11 +106,19 @@ def _http_json(
     raise UpdateError("无法读取更新清单")
 
 
-def _release_manifest(data: dict) -> tuple[str, dict] | None:
+def _release_manifest(data: dict, *, progress=None) -> tuple[str, dict] | None:
     for asset in data.get("assets") or []:
         if str(asset.get("name") or "") == "latest.json":
             url = str(asset.get("url") or asset.get("browser_download_url") or "").strip()
             if url:
+                if progress:
+                    _report_progress(progress, "正在通过 Releases API 读取 latest.json 资产")
+                    return url, _http_json(
+                        url,
+                        accept="application/octet-stream",
+                        progress=progress,
+                        progress_label="正在读取 API 清单资产",
+                    )
                 return url, _http_json(url, accept="application/octet-stream")
     return None
 
@@ -193,7 +214,12 @@ def _version_tuple(value: str) -> tuple[int, ...]:
         raise UpdateError(f"版本号无效：{value}") from exc
 
 
-def check_update(manifest_url: str | None = None, *, current_version: str = __version__) -> dict:
+def check_update(
+    manifest_url: str | None = None,
+    *,
+    current_version: str = __version__,
+    progress=None,
+) -> dict:
     target = manifest_url or _manifest_url()
     started = time.monotonic()
     data = None
@@ -204,9 +230,22 @@ def check_update(manifest_url: str | None = None, *, current_version: str = __ve
         candidates.append(RELEASE_API_URL)
     for candidate in candidates:
         try:
-            payload = _http_json(candidate)
             if candidate == RELEASE_API_URL:
-                resolved = _release_manifest(payload)
+                _report_progress(progress, "正在读取 GitHub Releases API 发布信息")
+                payload = _http_json(
+                    candidate,
+                    progress=progress,
+                    progress_label="正在读取 GitHub Releases",
+                ) if progress else _http_json(candidate)
+            else:
+                _report_progress(progress, "正在直连读取更新清单")
+                payload = _http_json(
+                    candidate,
+                    progress=progress,
+                    progress_label="正在读取直连更新清单",
+                ) if progress else _http_json(candidate)
+            if candidate == RELEASE_API_URL:
+                resolved = _release_manifest(payload, progress=progress)
                 if resolved is None:
                     raise UpdateError("GitHub Releases API 未找到 latest.json")
                 resolved_manifest_url, data = resolved
@@ -216,9 +255,12 @@ def check_update(manifest_url: str | None = None, *, current_version: str = __ve
             break
         except UpdateError as exc:
             last_error = exc
+            if candidate != candidates[-1]:
+                _report_progress(progress, f"直连失败（{exc}），正在回退到 GitHub Releases API")
             continue
     if data is None:
         raise last_error or UpdateError("无法读取更新清单，请检查网络后重试")
+    _report_progress(progress, "已取得更新清单，正在校验版本及安装包信息")
     checked_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     info = _validated_info(data, current_version=current_version)
     info.update({

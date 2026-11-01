@@ -122,6 +122,38 @@ class UpdaterTests(unittest.TestCase):
             mock.call(manifest_api_url, accept="application/octet-stream"),
         ])
 
+    def test_check_update_reports_direct_and_api_progress(self):
+        manifest_api_url = INSTALLER_API_URL.removesuffix("123") + "124"
+        api_payload = {
+            "assets": [{
+                "name": "latest.json",
+                "url": manifest_api_url,
+                "browser_download_url": updater.DEFAULT_MANIFEST_URL,
+            }]
+        }
+        manifest = {
+            "version": "1.4",
+            "installer_url": "https://example.test/setup.exe",
+            "installer_sha256": "a" * 64,
+        }
+        progress = []
+        with mock.patch.dict(
+            os.environ, {"FA_UPDATE_MANIFEST_URL": updater.DEFAULT_MANIFEST_URL}
+        ), mock.patch.object(
+            updater,
+            "_http_json",
+            side_effect=[updater.UpdateError("direct timeout"), api_payload, manifest],
+        ), mock.patch.object(updater, "_save_cache"):
+            result = updater.check_update(
+                current_version="1.3", progress=progress.append
+            )
+        self.assertTrue(result["update_available"])
+        self.assertTrue(any("直连读取更新清单" in item for item in progress))
+        self.assertTrue(any("回退到 GitHub Releases API" in item for item in progress))
+        self.assertTrue(any("读取 GitHub Releases" in item for item in progress))
+        self.assertTrue(any("latest.json 资产" in item for item in progress))
+        self.assertTrue(any("校验版本及安装包信息" in item for item in progress))
+
     def test_manifest_asset_request_uses_octet_stream_without_token(self):
         with mock.patch("urllib.request.urlopen", return_value=_Response(b'{"version": "1.4"}')) as urlopen:
             result = updater._http_json(
@@ -551,6 +583,10 @@ class UpdaterTests(unittest.TestCase):
             )
             self.assertEqual(Path(install_dir).resolve(), root.resolve())
             self.assertIn("/FORCECLOSEAPPLICATIONS", installer_args)
+            self.assertIn("/NORESTART", installer_args)
+            self.assertIn("/NORESTARTAPPLICATIONS", installer_args)
+            setup_script = Path(__file__).parents[1] / "football_analysis.iss"
+            self.assertIn("RestartApplications=no", setup_script.read_text(encoding="utf-8"))
             self.assertTrue(any(arg.startswith("/LOG=") for arg in installer_args))
             self.assertEqual(popen.call_count, 2)
             self.assertEqual(

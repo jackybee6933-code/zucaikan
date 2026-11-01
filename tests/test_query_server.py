@@ -318,6 +318,8 @@ class QueryServerTests(unittest.TestCase):
         self.assertIn('id="update-progress-wrap"', body)
         self.assertIn('id="update-progress"', body)
         self.assertIn("/update/install-status", body)
+        self.assertIn("pollUpdateCheck()", body)
+        self.assertIn('fetch("/update/check", {method: "POST"})', body)
         self.assertNotIn('id="update-verify"', body)
         self.assertNotIn("/update/verify", body)
         self.assertIn("formatElapsedSeconds", body)
@@ -340,6 +342,58 @@ class QueryServerTests(unittest.TestCase):
         self.assertNotIn("scrape_delay_seconds", body)
         self.assertNotIn('name="attention"', body)
         self.assertNotIn('name="latest"', body)
+
+    def test_update_check_runs_in_background_and_reports_progress(self):
+        from football_analysis import query_app
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        class FakeUpdater:
+            UpdateError = updater.UpdateError
+
+            @staticmethod
+            def check_update(*, progress):
+                progress("正在直连读取更新清单（第 1/3 次尝试）")
+                entered.set()
+                release.wait(5)
+                progress("直连失败，正在回退到 GitHub Releases API")
+                return {
+                    "current_version": __version__,
+                    "latest_version": "9.9",
+                    "update_available": True,
+                    "manifest_url": "https://example.test/latest.json",
+                    "release_url": "https://github.com/jackybee6933-code/zucaikan/releases/v9.9",
+                    "elapsed_ms": 0,
+                }
+
+            @staticmethod
+            def load_cached_update():
+                raise AssertionError("successful check should not read cache")
+
+            @staticmethod
+            def _manifest_url():
+                return "https://example.test/latest.json"
+
+        with mock.patch.object(query_app, "_UPDATER_LOADER", return_value=FakeUpdater):
+            try:
+                status, body = _post(self.base + "/update/check", {})
+                self.assertEqual(status, 202)
+                self.assertTrue(json.loads(body)["started"])
+                self.assertTrue(entered.wait(2))
+                status, body = _get(self.base + "/update/install-status")
+                self.assertEqual(status, 200)
+                state = json.loads(body)
+                self.assertTrue(state["running"])
+                self.assertEqual(state["phase"], "checking")
+                self.assertIn("直连读取更新清单", state["message"])
+                release.set()
+                state = _wait_idle(self.base, "/update/install-status")
+            finally:
+                release.set()
+        self.assertEqual(state["phase"], "check-complete")
+        self.assertEqual(state["info"]["latest_version"], "9.9")
+        self.assertGreaterEqual(state["elapsed_ms"], 0)
 
     def test_update_check_falls_back_to_last_manifest_cache(self):
         payload = {

@@ -161,6 +161,7 @@ def _run_installer(
                 "/SP-",
                 "/CLOSEAPPLICATIONS",
                 "/FORCECLOSEAPPLICATIONS",
+                "/NORESTARTAPPLICATIONS",
                 f"/DIR={root}",
                 f"/LOG={installer.parent / 'install.log'}",
             ],

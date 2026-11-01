@@ -566,8 +566,55 @@ def serve_query(
         "attempts": 0,
         "result": "",
         "error": "",
+        "message": "",
+        "info": None,
+        "elapsed_ms": 0,
+        "started_at": 0.0,
+        "manifest_url": "",
     }
     update_lock = threading.Lock()
+
+    def _update_check_progress(message: str) -> None:
+        with update_lock:
+            update_state["message"] = message
+
+    def _do_update_check() -> None:
+        started = time.monotonic()
+        _updater = _UPDATER_LOADER()
+        try:
+            info = _updater.check_update(progress=_update_check_progress)
+        except _updater.UpdateError as exc:
+            try:
+                info = _updater.load_cached_update()
+            except _updater.UpdateError:
+                with update_lock:
+                    update_state.update(
+                        running=False,
+                        phase="error",
+                        error=str(exc),
+                        elapsed_ms=round((time.monotonic() - started) * 1000),
+                        manifest_url=_updater._manifest_url(),
+                    )
+                return
+            info["offline_error"] = str(exc)
+        except Exception as exc:  # noqa: BLE001
+            with update_lock:
+                update_state.update(
+                    running=False,
+                    phase="error",
+                    error=str(exc),
+                    elapsed_ms=round((time.monotonic() - started) * 1000),
+                    manifest_url=_updater._manifest_url(),
+                )
+            return
+        with update_lock:
+            update_state.update(
+                running=False,
+                phase="check-complete",
+                info=info,
+                elapsed_ms=round((time.monotonic() - started) * 1000),
+                message="更新检查完成",
+            )
 
     def _do_update_install(verify_only: bool = False) -> None:
         try:
@@ -705,7 +752,13 @@ def serve_query(
                 return
             if parsed.path == "/update/install-status":
                 with update_lock:
-                    self._json(200, dict(update_state))
+                    payload = dict(update_state)
+                    if payload["running"] and payload["started_at"]:
+                        payload["elapsed_ms"] = round(
+                            (time.monotonic() - payload["started_at"]) * 1000
+                        )
+                    payload.pop("started_at", None)
+                    self._json(200, payload)
                 return
             if parsed.path == "/bet-options":
                 params = parse_qs(parsed.query)
@@ -944,6 +997,30 @@ def serve_query(
                     self._json(200, {"ok": False, "message": f"测试失败：{exc}"})
                 return
 
+            if parsed.path == "/update/check":
+                with update_lock:
+                    if update_state["running"]:
+                        self._json(200, {"ok": True, "busy": True})
+                        return
+                    update_state.update({
+                        "running": True,
+                        "phase": "checking",
+                        "message": "正在准备检查更新...",
+                        "info": None,
+                        "error": "",
+                        "elapsed_ms": 0,
+                        "started_at": time.monotonic(),
+                        "manifest_url": "",
+                        "verify_only": False,
+                    })
+                worker = threading.Thread(
+                    target=_do_update_check,
+                    daemon=True,
+                )
+                worker.start()
+                self._json(202, {"ok": True, "started": True})
+                return
+
             if parsed.path in ("/update/install", "/update/verify"):
                 verify_only = parsed.path == "/update/verify"
                 with update_lock:
@@ -957,6 +1034,10 @@ def serve_query(
                         "total": 0,
                         "result": "",
                         "error": "",
+                        "message": "",
+                        "info": None,
+                        "elapsed_ms": 0,
+                        "started_at": time.monotonic(),
                         "verify_only": verify_only,
                     })
                 worker = threading.Thread(

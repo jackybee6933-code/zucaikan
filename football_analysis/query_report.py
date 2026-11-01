@@ -1009,6 +1009,72 @@ _FETCH_BLOCK = \
         updateCheck.disabled = busy;
         updateInstall.disabled = busy || !updateInfo?.update_available || Boolean(updateInfo?.cached);
       }
+      function formatElapsedSeconds(milliseconds) {
+        return (Number(milliseconds || 0) / 1000).toFixed(2) + " 秒";
+      }
+      function showUpdateCheckResult(data) {
+        updateInfo = data;
+        const offline = Boolean(data.cached);
+        const currentVersion = formatVersionLabel(data.current_version);
+        const latestVersion = formatVersionLabel(data.latest_version);
+        updateStatus.textContent = offline
+          ? `GitHub 暂不可达，以下为缓存清单（${data.checked_at || "时间未知"}），仅供查看。`
+          : data.update_available
+            ? `发现新版本 ${latestVersion}`
+            : `当前已是最新版本 ${currentVersion}`;
+        updateVersions.textContent =
+          `当前版本：${currentVersion}　最新版本：${latestVersion}`;
+        updateNotes.textContent = data.notes ? "更新说明：" + data.notes : "暂无更新说明";
+        updateDiagnostics.textContent =
+          `清单：${data.manifest_url || "未知"}；检查耗时 ${formatElapsedSeconds(data.elapsed_ms)}` +
+          (offline ? "；离线缓存" : "") +
+          (data.offline_error ? `；在线检查失败：${data.offline_error}` : "");
+        const releaseUrl = String(data.release_url || "");
+        updateRelease.href = releaseUrl.indexOf("https://github.com/jackybee6933-code/zucaikan/releases/") === 0
+          ? releaseUrl
+          : "https://github.com/jackybee6933-code/zucaikan/releases";
+        updateRelease.textContent = `打开 ${latestVersion} 发布页`;
+        updateDetails.hidden = false;
+        updateInstall.disabled = !data.update_available || offline;
+      }
+      function pollUpdateCheck() {
+        stopUpdatePolling();
+        updatePollTimer = setTimeout(async function poll() {
+          try {
+            const response = await fetch("/update/install-status");
+            const state = await response.json();
+            if (!response.ok) throw new Error(state.error || "读取检查进度失败");
+            if (state.running) {
+              updateStatus.textContent = state.message || "正在检查更新...";
+              updateDiagnostics.textContent =
+                `检查耗时 ${formatElapsedSeconds(state.elapsed_ms)}`;
+              updateDetails.hidden = false;
+              updatePollTimer = setTimeout(poll, 500);
+              return;
+            }
+            stopUpdatePolling();
+            if (state.phase === "check-complete" && state.info) {
+              showUpdateCheckResult({
+                ...state.info,
+                elapsed_ms: state.elapsed_ms,
+              });
+            } else {
+              updateStatus.textContent = state.error || "检查更新失败";
+              updateDiagnostics.textContent =
+                `清单：${state.manifest_url || "未取得"}；检查耗时 ${formatElapsedSeconds(state.elapsed_ms)}`;
+              updateDetails.hidden = false;
+              updateRelease.href = "https://github.com/jackybee6933-code/zucaikan/releases";
+            }
+            setUpdateBusy(false);
+          } catch (e) {
+            stopUpdatePolling();
+            updateStatus.textContent = e.message || String(e);
+            updateDetails.hidden = false;
+            updateRelease.href = "https://github.com/jackybee6933-code/zucaikan/releases";
+            setUpdateBusy(false);
+          }
+        }, 100);
+      }
       function pollUpdateStatus(targetVersion) {
         stopUpdatePolling();
         updatePollTimer = setTimeout(async function poll() {
@@ -1075,54 +1141,22 @@ _FETCH_BLOCK = \
         }, 250);
       }
       async function checkForUpdate() {
-        function formatElapsedSeconds(milliseconds) {
-          return (Number(milliseconds || 0) / 1000).toFixed(2) + " 秒";
-        }
         setUpdateBusy(true);
         updateInfo = null;
-        updateStatus.textContent = "正在检查更新清单...";
+        updateStatus.textContent = "正在连接更新源...";
         updateDetails.hidden = true;
         try {
-          const response = await fetch("/update/check");
+          const response = await fetch("/update/check", {method: "POST"});
           const data = await response.json();
-          if (!response.ok) {
-            updateStatus.textContent = (data.error || "检查更新失败") +
-              "。可检查网络/代理后重试，或打开 GitHub Releases 手动查看。";
-            updateDiagnostics.textContent = "清单：" + (data.manifest_url || "未取得") +
-              "；耗时 " + formatElapsedSeconds(data.elapsed_ms);
-            updateDetails.hidden = false;
-            updateRelease.href = "https://github.com/jackybee6933-code/zucaikan/releases";
-            return;
-          }
-          updateInfo = data;
-          const offline = Boolean(data.cached);
-          const currentVersion = formatVersionLabel(data.current_version);
-          const latestVersion = formatVersionLabel(data.latest_version);
-          updateStatus.textContent = offline
-            ? `GitHub 暂不可达，以下为缓存清单（${data.checked_at || "时间未知"}），仅供查看。`
-            : data.update_available
-              ? `发现新版本 ${latestVersion}`
-              : `当前已是最新版本 ${currentVersion}`;
-          updateVersions.textContent =
-            `当前版本：${currentVersion}　最新版本：${latestVersion}`;
-          updateNotes.textContent = data.notes ? "更新说明：" + data.notes : "暂无更新说明";
-          updateDiagnostics.textContent =
-            `清单：${data.manifest_url || "未知"}；检查耗时 ${formatElapsedSeconds(data.elapsed_ms)}` +
-            (offline ? "；离线缓存" : "");
-          const releaseUrl = String(data.release_url || "");
-          updateRelease.href = releaseUrl.indexOf("https://github.com/jackybee6933-code/zucaikan/releases/") === 0
-            ? releaseUrl
-            : "https://github.com/jackybee6933-code/zucaikan/releases";
-          updateRelease.textContent = `打开 ${latestVersion} 发布页`;
-          updateDetails.hidden = false;
-          updateInstall.disabled = !data.update_available || offline;
+          if (!response.ok || !data.ok) throw new Error(data.error || "启动更新检查失败");
+          if (data.busy) throw new Error("已有更新任务正在运行，请稍后重试");
+          pollUpdateCheck();
         } catch (e) {
           updateStatus.textContent = e instanceof TypeError
             ? "无法连接本地更新服务，请刷新页面后重试。"
             : (e.message || String(e)) + "。可重试或打开 GitHub Releases。";
           updateRelease.href = "https://github.com/jackybee6933-code/zucaikan/releases";
           updateDetails.hidden = false;
-        } finally {
           setUpdateBusy(false);
         }
       }
