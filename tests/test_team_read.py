@@ -749,6 +749,11 @@ class StoreAndReportTests(unittest.TestCase):
             popup,
         )
         self.assertEqual(popup.count("<tr>"), 3)
+        self.assertIn(
+            '<div class="h2h-summary"><span>2 场交锋</span>'
+            '<span>总进球 8</span><span>场均进球 4.0</span></div>',
+            popup,
+        )
         for label in ("赛事名", "比赛日期", "主队名", "全场比分", "客队名", "半场比分", "盘路", "大小"):
             self.assertIn(f"<th>{label}</th>", popup)
         self.assertIn("<td>伯恩茅斯</td><td>2:2</td><td>利兹联</td>", popup)

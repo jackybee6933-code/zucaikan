@@ -322,6 +322,7 @@ def _split_html(row: dict, uid: str) -> str:
 def _h2h_table_html(text: str, *, league_color: str = "") -> str:
     """Render one compact row per completed historical head-to-head match."""
     rows: list[str] = []
+    total_goals = 0
     for line in str(text or "").splitlines():
         cells = [part.strip() for part in line.split("|")]
         if len(cells) < 10 or cells[0] in ("赛事", "赛事名"):
@@ -336,6 +337,7 @@ def _h2h_table_html(text: str, *, league_color: str = "") -> str:
         away = re.sub(r"\s*\[\d+\]$", "", teams[score_match.end():]).strip()
         if not home or not away or halftime.upper() == "VS":
             continue
+        total_goals += int(score_match.group(1)) + int(score_match.group(2))
         handicap_html = _esc(handicap)
         handicap_html = re.sub(
             r"赢", '<span class="ai-tip-result-win">赢</span>', handicap_html
@@ -355,9 +357,18 @@ def _h2h_table_html(text: str, *, league_color: str = "") -> str:
         return ""
     headers = ("赛事名", "比赛日期", "主队名", "全场比分", "客队名", "半场比分", "盘路", "大小")
     head = "<tr>" + "".join(f"<th>{_esc(value)}</th>" for value in headers) + "</tr>"
+    summary = (
+        '<div class="h2h-summary">'
+        f'<span>{len(rows)} 场交锋</span>'
+        f'<span>总进球 {total_goals}</span>'
+        f'<span>场均进球 {total_goals / len(rows):.1f}</span>'
+        "</div>"
+    )
     return (
+        f'<div class="h2h-block">{summary}'
         '<table class="h2h-table"><thead>'
         f"{head}</thead><tbody>{''.join(rows)}</tbody></table>"
+        "</div>"
     )
 
 
@@ -1973,6 +1984,8 @@ def render_query_html(
     .h2h-table th {{ background: #f8fafc; color: #475569; font-weight: 700; }}
     .h2h-table tbody tr:nth-child(odd) {{ background: #fff; }}
     .h2h-table tbody tr:nth-child(even) {{ background: #f8fafc; }}
+    .h2h-block {{ display: grid; gap: 8px; }}
+    .h2h-summary {{ display: flex; flex-wrap: wrap; gap: 8px 14px; color: #475569; font-size: 12px; font-weight: 700; }}
     .ai-tip-result-win {{ color: #dc2626; font-weight: 700; }}
     .ai-tip-result-loss {{ color: #16a34a; font-weight: 700; }}
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}
