@@ -475,7 +475,7 @@ class StoreAndReportTests(unittest.TestCase):
             self.assertIn("max-height: min(480px, calc(100vh - 20px))", html)
             self.assertIn("background: rgba(255, 255, 255, .85)", html)
             self.assertIn(
-                '<h4>推介</h4><div class="ai-tip-recommendation-text"><p>主队状态稳定</p></div>',
+                '<h4>足彩推荐</h4><div class="ai-tip-recommendation-text"><p>主队状态稳定</p></div>',
                 html,
             )
             self.assertIn("ai-tip-recommendation", html)
@@ -498,7 +498,7 @@ class StoreAndReportTests(unittest.TestCase):
         self.assertIn('<template class="ai-tip-content">', rendered)
         self.assertIn('<div class="ai-tip-title">AI分析依据</div>', rendered)
         self.assertIn('<section class="ai-tip-section"><h4>模型理由</h4><p>模型理由</p></section>', rendered)
-        self.assertIn('<section class="ai-tip-section ai-tip-recommendation"><h4>推介</h4><div class="ai-tip-recommendation-text"><p>主队赢盘</p></div></section>', rendered)
+        self.assertIn('<section class="ai-tip-section ai-tip-recommendation"><h4>足彩推荐</h4><div class="ai-tip-recommendation-text"><p>主队赢盘</p></div></section>', rendered)
         self.assertNotIn('title="', rendered)
         self.assertNotIn("对赛成绩", rendered)
         self.assertNotIn("主队 3", rendered)
@@ -531,6 +531,22 @@ class StoreAndReportTests(unittest.TestCase):
             render_query_html([], issues=[]),
         )
 
+    def test_h2h_popup_is_available_when_over_confidence_is_zero(self):
+        h2h = (
+            "英超 | 2026-04-23 | Home 2:2 Away | 0:0 | 平 | odds | line | 输 | 大 | note"
+        )
+        rendered = _lean_cell(_analysis(team_read=json.dumps({
+            "tendency": "主队赢盘",
+            "confidence": 0.6,
+            "over_tendency": "观望",
+            "over_confidence": 0.0,
+            "source_references": {"交战历史": h2h},
+        }, ensure_ascii=False)))
+
+        self.assertIn("对赛往绩", rendered)
+        self.assertIn("2026-04-23", rendered)
+        self.assertIn("<td>Home</td><td>2:2</td><td>Away</td>", rendered)
+
     def test_handicap_tooltip_omits_h2h_but_keeps_over_popup(self):
         h2h = (
             "英超 | 2026-04-23 | Home 2:2 Away | 0:0 | 平 | odds | line | 输 | 大 | note"
@@ -554,7 +570,7 @@ class StoreAndReportTests(unittest.TestCase):
                 self.assertIn("AI分析依据", handicap_popup)
                 self.assertIn("盘口模型理由", handicap_popup)
                 self.assertIn("盘口重点因素", handicap_popup)
-                self.assertIn("<h4>推介</h4>", handicap_popup)
+                self.assertIn("<h4>足彩推荐</h4>", handicap_popup)
                 self.assertIn("近期状态较好", handicap_popup)
                 self.assertNotIn(heading, handicap_popup)
                 self.assertNotIn("2026-04-23", handicap_popup)
@@ -620,7 +636,7 @@ class StoreAndReportTests(unittest.TestCase):
         }, ensure_ascii=False)))
         self.assertIn(
             '<div class="ai-tip-recommendation-text">'
-            '<div class="ai-tip-recommendation-pick"><div>推介 - Roma</div>'
+            '<div class="ai-tip-recommendation-pick"><div>足彩推荐 - Roma</div>'
             '<div>对赛成绩 - Roma 2<span class="ai-tip-result-win">胜</span>'
             '1和0<span class="ai-tip-result-loss">负</span></div></div>'
             '<p class="ai-tip-recommendation-analysis">Analysis text</p></div>',
@@ -648,7 +664,7 @@ class StoreAndReportTests(unittest.TestCase):
         self.assertIn('</span></div><div>盘路赢输 - ', rendered)
         self.assertIn('</div><div>Man U</div><div>近况走势 - ', rendered)
         self.assertIn(
-            '<div class="ai-tip-recommendation-pick"><div>推介 - Roma</div>'
+            '<div class="ai-tip-recommendation-pick"><div>足彩推荐 - Roma</div>'
             '<div>对赛成绩 - Roma 2<span class="ai-tip-result-win">胜</span>1和0<span class="ai-tip-result-loss">负</span></div>',
             rendered,
         )
@@ -679,7 +695,7 @@ class StoreAndReportTests(unittest.TestCase):
             rendered,
         )
         self.assertIn(
-            '<div class="ai-tip-recommendation-pick"><div>推介 - Home</div>'
+            '<div class="ai-tip-recommendation-pick"><div>足彩推荐 - Home</div>'
             '<div>对赛成绩 - Home 2<span class="ai-tip-result-win">胜</span>1和0<span class="ai-tip-result-loss">负</span></div>',
             rendered,
         )
@@ -691,7 +707,11 @@ class StoreAndReportTests(unittest.TestCase):
         self.assertIn(".ai-tip-recommendation-text { color: #0f172a; font-size: 13px;", rendered)
         self.assertIn(
             ".ai-tip-recommendation-pick { display: grid; grid-template-columns: "
-            "minmax(100px, .8fr) minmax(0, 1.2fr) minmax(0, 1.3fr);",
+            "repeat(2, minmax(0, 1fr));",
+            rendered,
+        )
+        self.assertIn(
+            ".ai-tip-recommendation-pick > :only-child { grid-column: 1 / -1; }",
             rendered,
         )
         self.assertIn(

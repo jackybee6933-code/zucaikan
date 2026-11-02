@@ -21,6 +21,13 @@ class FetchBlockSyncTests(unittest.TestCase):
         src = Path(query_report.__file__).read_text(encoding="utf-8")
         self.assertEqual(src.count("def render_query_html("), 1)
 
+    def test_fetch_issue_is_restored_after_successful_action_reload(self):
+        html = query_report._FETCH_BLOCK
+        self.assertIn('const fetchIssueStorageKey = "fetch-issue-input"', html)
+        self.assertIn("fetchIssueInput.value = savedIssue", html)
+        self.assertIn("sessionStorage.removeItem(fetchIssueStorageKey)", html)
+        self.assertEqual(html.count("reloadQueryWithIssue(issue)"), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

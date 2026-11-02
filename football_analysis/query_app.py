@@ -701,6 +701,9 @@ def serve_query(
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+            if parsed.path == "/health":
+                self._json(200, {"status": "ok", "version": __version__})
+                return
             # fetch-status is a JSON endpoint handled via GET in JS polling
             if parsed.path == "/fetch-status":
                 self.send_response(200)

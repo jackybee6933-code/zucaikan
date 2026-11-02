@@ -184,6 +184,19 @@ class QueryServerTests(unittest.TestCase):
         self.assertIn("running", payload)
         self.assertIn("result", payload)
 
+    def test_health_status_is_json(self):
+        status, body = _get(self.base + "/health")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(payload["version"], __version__)
+
+    def test_query_page_refreshes_after_server_recovery(self):
+        status, body = _get(self.base + "/")
+        self.assertEqual(status, 200)
+        self.assertIn("fetch('/health?ts=' + Date.now()", body)
+        self.assertIn("if (serverWasDown) window.location.reload()", body)
+
     def test_fetch_status_is_json(self):
         status, body = _get(self.base + "/fetch-status")
         self.assertEqual(status, 200)

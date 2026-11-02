@@ -105,6 +105,7 @@ def _recommendation_html(value: str) -> str:
         pick_text = pick_and_analysis
         analysis = ""
 
+    pick_text = re.sub(r"^推介(?=\s*[-—:：])", "足彩推荐", pick_text)
     h2h_match = re.search(r"对赛成绩", pick_text)
     if h2h_match:
         pick_html = (
@@ -414,7 +415,8 @@ def _lean_cell(row: dict, *, h2h_score: str = "") -> str:
                     if is_recommendation
                     else f"<p>{_result_markers_html(value_text[:800])}</p>"
                 )
-                heading = "" if key_text == "心水推荐" else f"<h4>{_esc(key_text)}</h4>"
+                heading_text = "足彩推荐" if key_text == "推介" else key_text
+                heading = "" if key_text == "心水推荐" else f"<h4>{_esc(heading_text)}</h4>"
                 reference_sections.append(
                     f'<section class="ai-tip-section{section_class}">{heading}{body}</section>'
                 )
@@ -464,28 +466,25 @@ def _lean_cell(row: dict, *, h2h_score: str = "") -> str:
         over_confidence = float(read.get("over_confidence") or 0.0)
     except (TypeError, ValueError):
         over_confidence = 0.0
-    if over_tendency and over_confidence > 0:
+    h2h_text = str(h2h_score or "").strip()
+    source_references = read.get("source_references") or {}
+    if isinstance(source_references, dict) and not h2h_text:
+        h2h_text = next(
+            (
+                str(source_references.get(key) or "").strip()
+                for key in ("对赛成绩", "对战历史", "交战历史")
+                if str(source_references.get(key) or "").strip()
+            ),
+            "",
+        )
+    h2h_table = (
+        _h2h_table_html(h2h_text, league_color=str(row.get("league_color") or ""))
+        if h2h_text else ""
+    )
+    if over_tendency and (over_confidence > 0 or h2h_table):
         over_conf = f" {over_confidence * 100:.0f}%" if over_confidence > 0 else ""
-        h2h_text = str(h2h_score or "").strip()
-        source_references = read.get("source_references") or {}
-        if isinstance(source_references, dict) and not h2h_text:
-            h2h_text = next(
-                (
-                    str(source_references.get(key) or "").strip()
-                    for key in ("对赛成绩", "对战历史", "交战历史")
-                    if str(source_references.get(key) or "").strip()
-                ),
-                "",
-            )
         h2h_tip_attrs = ""
         h2h_template = ""
-        if h2h_text:
-            h2h_table = _h2h_table_html(
-                h2h_text,
-                league_color=str(row.get("league_color") or ""),
-            )
-        else:
-            h2h_table = ""
         if h2h_table:
             h2h_tip_attrs = (
                 ' data-ai-tip tabindex="0" role="note" aria-describedby="ai-pop"'
@@ -658,6 +657,21 @@ _FETCH_BLOCK = \
     </form>
     <script>
     const fetchForm = document.getElementById("fetch-form");
+    const fetchIssueInput = fetchForm?.elements.namedItem("issue");
+    const fetchIssueStorageKey = "fetch-issue-input";
+    if (fetchIssueInput) {
+      const savedIssue = sessionStorage.getItem(fetchIssueStorageKey);
+      if (savedIssue !== null) {
+        fetchIssueInput.value = savedIssue;
+        sessionStorage.removeItem(fetchIssueStorageKey);
+      }
+    }
+    function reloadQueryWithIssue(issue) {
+      if (fetchIssueInput) {
+        sessionStorage.setItem(fetchIssueStorageKey, fetchIssueInput.value);
+      }
+      location.href = "?issue=" + encodeURIComponent(issue);
+    }
     const statusEl = document.getElementById("fetch-status");
     const refreshBtn = document.getElementById("refresh-odds-btn");
     const refreshStatus = document.getElementById("refresh-odds-status");
@@ -719,7 +733,7 @@ _FETCH_BLOCK = \
             refreshStatus.textContent = s.error || s.result || "完成";
             _renderRefreshProgress(null);
             refreshStatus.scrollIntoView({ block: "nearest" });
-            if (s.result && !s.error) location.href = "?issue=" + encodeURIComponent(issue);
+            if (s.result && !s.error) reloadQueryWithIssue(issue);
           } catch (e) { /* 轮询瞬时失败，下个 tick 重试 */ }
         }, 2000);
       });
@@ -789,7 +803,7 @@ _FETCH_BLOCK = \
             aiStatus.textContent = s.error || s.result || "完成";
             _renderAiProgress(null);
             aiStatus.scrollIntoView({ block: "nearest" });
-            if (s.result && !s.error) location.href = "?issue=" + encodeURIComponent(issue);
+            if (s.result && !s.error) reloadQueryWithIssue(issue);
           } catch (e) { /* 轮询瞬时失败，下一 tick 重试 */ }
         }, 2000);
       });
@@ -808,7 +822,7 @@ _FETCH_BLOCK = \
           else {
             clearInterval(poll);
             statusEl.textContent = s.error || s.result || "完成";
-            if (s.result && !s.error) location.href = "?issue=" + encodeURIComponent(issue);
+            if (s.result && !s.error) reloadQueryWithIssue(issue);
           }
         }, 2000);
       });
@@ -1975,8 +1989,9 @@ def render_query_html(
     .ai-tip-recommendation-grid {{ display: grid; grid-template-columns: minmax(100px, .8fr) minmax(0, 1.2fr) minmax(0, 1.3fr); column-gap: 10px; overflow-wrap: anywhere; }}
     .ai-tip-recommendation-grid > div {{ min-width: 0; padding: 7px 5px; }}
     .ai-tip-recommendation-grid > div:nth-child(-n+3) {{ border-bottom: 1px solid #dbe3ec; }}
-    .ai-tip-recommendation-pick {{ display: grid; grid-template-columns: minmax(100px, .8fr) minmax(0, 1.2fr) minmax(0, 1.3fr); column-gap: 10px; margin-top: 8px; overflow-wrap: anywhere; }}
+    .ai-tip-recommendation-pick {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 10px; margin-top: 8px; overflow-wrap: anywhere; }}
     .ai-tip-recommendation-pick > div {{ min-width: 0; padding: 4px 5px; }}
+    .ai-tip-recommendation-pick > :only-child {{ grid-column: 1 / -1; }}
     .ai-tip-recommendation-text > p.ai-tip-recommendation-pick {{ margin: 8px 0 0; }}
     .ai-tip-recommendation-text > .ai-tip-recommendation-analysis {{ margin: 7px 0 0; }}
     .h2h-table {{ border-collapse: collapse; min-width: 620px; width: max-content; white-space: nowrap; font-size: 12px; }}
@@ -2350,6 +2365,22 @@ def render_query_html(
       hide();
     }}, true);
     window.addEventListener('resize', hide);
+  }})();
+  </script>
+  <script>
+  (function () {{
+    var serverWasDown = false;
+    async function checkServer() {{
+      try {{
+        var response = await fetch('/health?ts=' + Date.now(), {{ cache: 'no-store' }});
+        if (!response.ok) throw new Error('health check failed');
+        if (serverWasDown) window.location.reload();
+        serverWasDown = false;
+      }} catch (e) {{
+        serverWasDown = true;
+      }}
+    }}
+    window.setInterval(checkServer, 2000);
   }})();
   </script>
 </body>

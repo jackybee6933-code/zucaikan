@@ -101,8 +101,8 @@ def is_verification_page(title: str, url: str = "", body: str = "") -> bool:
     )
 
 
-# 数据分析页：按最近的小标题给表格分组，保留积分排名/交战历史/近期战绩/
-# 阵容与伤停/预计阵容/未来赛事/平均数据，丢掉登录框和彩票列表。
+# 数据分析页：按最近的小标题给表格分组，保留心水推荐/积分排名/交战历史/
+# 近期战绩/阵容与伤停/预计阵容/未来赛事/平均数据，丢掉登录框和彩票列表。
 SHUJU_JS = r"""() => {
   const HEADS = 'h1,h2,h3,h4,.tit,.sub_title,.teamTitle,.lstit,.maintitle';
   const heads = Array.from(document.querySelectorAll(HEADS));
@@ -118,7 +118,13 @@ SHUJU_JS = r"""() => {
   };
   const SKIP_LABEL = ['用户登录', '免费注册', '忘记密码', '500彩票'];
   const out = [];
+  const recommendation = document.querySelector('.M_box.recommend .M_content');
+  if (recommendation) {
+    const text = recommendation.textContent.replace(/\s+/g, ' ').trim();
+    if (text) out.push('## 心水推荐\n' + text.slice(0, 800));
+  }
   document.querySelectorAll('table').forEach((t) => {
+    if (t.closest('.M_box.recommend')) return;
     const rows = Array.from(t.querySelectorAll('tr'));
     if (rows.length < 2 || rows.length > 40) return;
     const label = labelFor(t);
@@ -321,6 +327,7 @@ def fetch_page(
     deadline = time.time() + wait_seconds
     verification_pending = False
     settled = 0
+    last_text = ""
     while time.time() < deadline:
         try:
             title = page.title() or ""
@@ -373,7 +380,14 @@ def fetch_page(
             except CdpError as exc:
                 return _error(str(exc).splitlines()[0][:90], text_mode=text_mode)
             if data:
-                return {"status": STATUS_OK, "text" if text_mode else "rows": data}
+                if not text_mode or "## 心水推荐" in data or "## 推介" in data:
+                    return {"status": STATUS_OK, "text" if text_mode else "rows": data}
+                settled = settled + 1 if data == last_text else 1
+                last_text = data
+                if settled >= SETTLE_POLLS:
+                    return {"status": STATUS_OK, "text": data}
+                time.sleep(POLL_SECONDS)
+                continue
             settled += 1
             if settled >= SETTLE_POLLS:
                 # 真实页面已渲染但零公司行 = 上游确实没开盘，属正常结果

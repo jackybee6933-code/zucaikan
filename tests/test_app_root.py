@@ -218,6 +218,7 @@ class DefaultFlowTests(unittest.TestCase):
         prepare.assert_called_once_with()
         self.assertEqual(run_query.call_args.args[0].command, "query")
         self.assertTrue(run_query.call_args.args[0].serve)
+        self.assertTrue(run_query.call_args.args[0].no_open)
         run_analyze.assert_not_called()
 
     def test_old_updater_marker_reallocates_console_and_enters_query(self):
@@ -237,6 +238,7 @@ class DefaultFlowTests(unittest.TestCase):
             prepare.assert_called_once_with()
             self.assertEqual(run_query.call_args.args[0].command, "query")
             self.assertTrue(run_query.call_args.args[0].serve)
+            self.assertTrue(run_query.call_args.args[0].no_open)
 
     def test_previous_score_refresh_skips_issue_without_matches(self):
         with tempfile.TemporaryDirectory() as tmp:

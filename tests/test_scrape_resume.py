@@ -15,6 +15,40 @@ def _scraper():
 
 
 class ScraperPackagingTests(unittest.TestCase):
+    def test_shuju_script_extracts_recommendation_container(self):
+        mod = _scraper()
+        self.assertIn(
+            "document.querySelector('.M_box.recommend .M_content')",
+            mod.SHUJU_JS,
+        )
+        self.assertIn("out.push('## 心水推荐\\n' + text.slice(0, 800))", mod.SHUJU_JS)
+        self.assertIn("t.closest('.M_box.recommend')", mod.SHUJU_JS)
+
+    def test_shuju_waits_for_delayed_recommendation(self):
+        mod = _scraper()
+        page = mock.MagicMock()
+        page.title.return_value = "Data analysis"
+        page.evaluate.side_effect = [
+            False,
+            "## 近期战绩\n球队近期表现",
+            False,
+            "## 心水推荐\n推介 - 主队 赢",
+        ]
+
+        with mock.patch.object(mod, "POLL_SECONDS", 0.001):
+            result = mod.fetch_page(
+                page,
+                "https://odds.500.com/fenxi/shuju-111.shtml",
+                0.1,
+                extract_js=mod.SHUJU_JS,
+                text_mode=True,
+            )
+
+        self.assertEqual(
+            result,
+            {"status": mod.STATUS_OK, "text": "## 心水推荐\n推介 - 主队 赢"},
+        )
+
     def test_compatibility_script_forwards_to_packaged_module(self):
         source = (ROOT / "tools" / "scrape_odds_pages.py").read_text(encoding="utf-8-sig")
         self.assertIn("from football_analysis.scrape_odds_pages import main", source)

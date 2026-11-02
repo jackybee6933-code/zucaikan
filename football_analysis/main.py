@@ -1123,7 +1123,7 @@ def main(argv: list[str] | None = None) -> int:
         marker_requested = _consume_update_restart_marker()
         if env_requested or marker_requested:
             _prepare_update_console()
-            return _run_query(parser.parse_args(["query", "--serve"]))
+            return _run_query(parser.parse_args(["query", "--serve", "--no-open"]))
     if not raw:
         return _run_analyze_then_serve(parser)
     if raw[0] not in {

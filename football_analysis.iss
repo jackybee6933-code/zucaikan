@@ -1,6 +1,12 @@
 #define AppName "足彩胜负彩分析系统"
 #ifndef AppVersion
-  #define AppVersion "1.4"
+  #define AppVersion "1.9"
+#endif
+#ifndef AppSourceDir
+  #define AppSourceDir "dist"
+#endif
+#ifndef AppOutputDir
+  #define AppOutputDir "dist"
 #endif
 
 [Setup]
@@ -11,7 +17,7 @@ AppPublisher=足彩分析工具
 DefaultDirName={localappdata}\FootballAnalysis
 DefaultGroupName={#AppName}
 UninstallDisplayIcon={app}\football_analysis.exe
-OutputDir=dist
+OutputDir={#AppOutputDir}
 OutputBaseFilename=football_analysis_setup
 Compression=lzma
 SolidCompression=yes
@@ -28,9 +34,9 @@ DefaultDialogFontName=Microsoft YaHei
 Name: "chinesesimp"; MessagesFile: "installer\ChineseSimplified.isl"
 
 [Files]
-Source: "dist\football_analysis.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "dist\updater.exe"; DestDir: "{app}"; DestName: "updater.new.exe"; Flags: ignoreversion; Check: FileExists(ExpandConstant('{app}\updater.exe'))
-Source: "dist\updater.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: not FileExists(ExpandConstant('{app}\updater.exe'))
+Source: "{#AppSourceDir}\football_analysis.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#AppSourceDir}\updater.exe"; DestDir: "{app}"; DestName: "updater.new.exe"; Flags: ignoreversion; Check: FileExists(ExpandConstant('{app}\updater.exe'))
+Source: "{#AppSourceDir}\updater.exe"; DestDir: "{app}"; Flags: ignoreversion; Check: not FileExists(ExpandConstant('{app}\updater.exe'))
 Source: "tools\scrape_odds_pages.py"; DestDir: "{app}\tools"; Flags: ignoreversion
 
 [Dirs]
