@@ -1035,7 +1035,7 @@ _FETCH_BLOCK = \
         updateInstall.disabled = busy || !updateInfo?.update_available || Boolean(updateInfo?.cached);
       }
       function formatElapsedSeconds(milliseconds) {
-        return (Number(milliseconds || 0) / 1000).toFixed(2) + " 秒";
+        return Math.round(Number(milliseconds || 0) / 1000) + " 秒";
       }
       function showUpdateCheckResult(data) {
         updateInfo = data;
