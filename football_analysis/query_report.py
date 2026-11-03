@@ -1284,10 +1284,13 @@ _BET_BLOCK = """
     </div>
     <div id="bet-existing"></div>
     <div id="bet-markets"></div>
-    <label class="bet-stake">投注积分
-      <input id="bet-stake-input" type="number" min="0.01" step="0.01" value="10">
+    <label class="bet-reason">理由（选填）
+      <textarea id="bet-reason-input" rows="3" maxlength="100" placeholder="记录本次投注判断依据"></textarea>
+      <span class="bet-reason-count"><span id="bet-reason-count">0</span>/100</span>
     </label>
-    <div id="bet-preview" class="bet-preview"></div>
+    <label class="bet-stake">投注积分
+      <input id="bet-stake-input" type="number" min="1" step="1" value="10">
+    </label>
     <div id="bet-error" class="bet-error"></div>
     <div class="bet-dialog-actions">
       <button type="button" id="bet-cancel">取消</button>
@@ -1296,17 +1299,43 @@ _BET_BLOCK = """
     </div>
   </form>
 </dialog>
+<dialog id="bet-reason-dialog">
+  <div class="bet-reason-dialog-content">
+    <div class="bet-dialog-head">
+      <strong>投注理由</strong>
+      <button type="button" id="bet-reason-close" class="icon-btn" title="关闭">×</button>
+    </div>
+    <label class="bet-reason-edit">理由
+      <textarea id="bet-reason-edit-input" rows="5" maxlength="100"></textarea>
+      <span class="bet-reason-count"><span id="bet-reason-edit-count">0</span>/100</span>
+    </label>
+    <div id="bet-reason-state" class="muted"></div>
+    <div id="bet-reason-error" class="bet-error"></div>
+    <div class="bet-reason-actions">
+      <button type="button" id="bet-reason-cancel">取消</button>
+      <button type="button" id="bet-reason-save">保存</button>
+    </div>
+  </div>
+</dialog>
 <script>
 (function () {
   var dialog = document.getElementById("bet-dialog");
   if (!dialog) return;
+  var reasonDialog = document.getElementById("bet-reason-dialog");
+  var reasonInputEl = document.getElementById("bet-reason-edit-input");
+  var reasonCountEditEl = document.getElementById("bet-reason-edit-count");
+  var reasonStateEl = document.getElementById("bet-reason-state");
+  var reasonErrorEl = document.getElementById("bet-reason-error");
+  var reasonSaveEl = document.getElementById("bet-reason-save");
+  var reasonBetId = 0;
   var state = {options: null, bet: null};
   var titleEl = document.getElementById("bet-title");
   var metaEl = document.getElementById("bet-meta");
   var existingEl = document.getElementById("bet-existing");
   var marketsEl = document.getElementById("bet-markets");
   var stakeEl = document.getElementById("bet-stake-input");
-  var previewEl = document.getElementById("bet-preview");
+  var reasonEl = document.getElementById("bet-reason-input");
+  var reasonCountEl = document.getElementById("bet-reason-count");
   var errorEl = document.getElementById("bet-error");
   var submitEl = document.getElementById("bet-submit");
   var deleteEl = document.getElementById("bet-delete");
@@ -1395,9 +1424,10 @@ _BET_BLOCK = """
     var html = '<div class="bet-existing-title">已有注单</div>';
     existing.forEach(function (bet) {
       html += '<div class="bet-existing-row">' +
-        '<span>' + esc(bet.market_label) + ' · ' + esc(bet.selection_label) +
-        ' · ' + money(bet.stake) + ' 积分 · ' + esc(bet.status_label) + '</span>' +
-        '<span class="bet-existing-actions">' +
+        '<div><span>' + esc(bet.market_label) + ' · ' + esc(bet.selection_label) +
+        ' · ' + Number(bet.stake).toFixed(0) + ' 积分 · ' + esc(bet.status_label) + '</span>' +
+        (bet.reason ? '<div class="bet-existing-reason">理由：' + esc(bet.reason) + '</div>' : '') +
+        '</div><span class="bet-existing-actions">' +
         (bet.can_edit ? '<button type="button" class="bet-inline-edit" data-bet-id="' + Number(bet.id) + '">修改</button>' : '') +
         (bet.can_delete ? '<button type="button" class="bet-inline-delete" data-bet-id="' + Number(bet.id) + '">删除</button>' : '') +
         '</span></div>';
@@ -1460,31 +1490,12 @@ _BET_BLOCK = """
         });
         var box = el.closest(".bet-market");
         if (box) box.classList.add("active");
-        updatePreview();
       });
     });
-    marketsEl.querySelectorAll('input[type="radio"]').forEach(function (el) {
-      el.addEventListener("change", updatePreview);
-    });
     submitEl.disabled = !!state.options.locked || !defaultMarket;
-    updatePreview();
   }
-  function updatePreview() {
-    var market = selectedMarket();
-    var selection = selectedSelection(market);
-    var info = (state.options.markets || {})[market];
-    var item = info ? (info.selections || []).find(function (x) { return x.value === selection; }) : null;
-    var stake = Number(stakeEl.value || 0);
-    if (!item || !(stake > 0)) {
-      previewEl.textContent = "";
-      return;
-    }
-    var water = Number(item.water || 0);
-    previewEl.textContent = "当前水位 " + money(water) +
-      "：全赢 +" + money(stake * water) +
-      "，赢半 +" + money(stake * water / 2) +
-      "，输半 -" + money(stake / 2) +
-      "，全输 -" + money(stake);
+  function updateReasonCount() {
+    reasonCountEl.textContent = String(reasonEl.value.length);
   }
   function render() {
     var match = state.options.match || {};
@@ -1495,7 +1506,9 @@ _BET_BLOCK = """
     setError(state.options.locked ? state.options.locked_reason : "");
     renderExisting();
     renderMarkets();
-    if (state.bet) stakeEl.value = money(state.bet.stake);
+    stakeEl.value = state.bet ? String(Math.round(Number(state.bet.stake) || 0)) : "10";
+    reasonEl.value = state.bet ? (state.bet.reason || "") : "";
+    updateReasonCount();
     deleteEl.hidden = !state.bet || !state.bet.can_delete;
     if (state.bet) submitEl.textContent = "保存修改";
     else submitEl.textContent = "确认下注";
@@ -1511,7 +1524,6 @@ _BET_BLOCK = """
       state.bet = betId
         ? (data.existing || []).find(function (b) { return Number(b.id) === Number(betId); }) || null
         : null;
-      stakeEl.value = state.bet ? money(state.bet.stake) : "10";
       dialog.showModal();
       render();
     } catch (err) {
@@ -1551,14 +1563,53 @@ _BET_BLOCK = """
       deleteBet(Number(btn.getAttribute("data-bet-id")));
     });
   });
+  document.querySelectorAll(".reason-preview").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      reasonBetId = Number(btn.getAttribute("data-bet-id") || 0);
+      reasonInputEl.value = btn.getAttribute("data-reason") || "";
+      reasonCountEditEl.textContent = String(reasonInputEl.value.length);
+      var canEditReason = btn.getAttribute("data-can-edit") === "true";
+      reasonInputEl.readOnly = !canEditReason;
+      reasonSaveEl.disabled = !canEditReason;
+      reasonStateEl.textContent = canEditReason ? "" : "已开赛或结算，理由只读";
+      reasonErrorEl.textContent = "";
+      reasonDialog.showModal();
+    });
+  });
   document.getElementById("bet-close").addEventListener("click", function () { dialog.close(); });
   document.getElementById("bet-cancel").addEventListener("click", function () { dialog.close(); });
+  document.getElementById("bet-reason-close").addEventListener("click", function () { reasonDialog.close(); });
+  document.getElementById("bet-reason-cancel").addEventListener("click", function () { reasonDialog.close(); });
+  reasonInputEl.addEventListener("input", function () {
+    reasonCountEditEl.textContent = String(reasonInputEl.value.length);
+  });
+  reasonSaveEl.addEventListener("click", async function () {
+    if (!reasonBetId || reasonSaveEl.disabled) return;
+    reasonErrorEl.textContent = "";
+    reasonSaveEl.disabled = true;
+    try {
+      var resp = await fetch("/bets/update", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({id: reasonBetId, reason: reasonInputEl.value})
+      });
+      var data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "保存理由失败");
+      flashAndReload("投注理由已保存", data.id);
+    } catch (err) {
+      reasonErrorEl.textContent = err.message || String(err);
+      reasonSaveEl.disabled = false;
+    }
+  });
   deleteEl.addEventListener("click", function () {
     if (state.bet) deleteBet(state.bet.id);
   });
-  stakeEl.addEventListener("input", updatePreview);
+  reasonEl.addEventListener("input", updateReasonCount);
   dialog.addEventListener("click", function (event) {
     if (event.target === dialog) dialog.close();
+  });
+  reasonDialog.addEventListener("click", function (event) {
+    if (event.target === reasonDialog) reasonDialog.close();
   });
   document.getElementById("bet-form").addEventListener("submit", async function (event) {
     event.preventDefault();
@@ -1567,11 +1618,11 @@ _BET_BLOCK = """
     var selection = selectedSelection(market);
     var stake = Number(stakeEl.value || 0);
     if (!market || !selection) { setError("请选择市场和方向"); return; }
-    if (!(stake > 0)) { setError("请输入大于 0 的投注积分"); return; }
+    if (!(Number.isInteger(stake) && stake > 0)) { setError("请输入正整数投注积分"); return; }
     var payload = state.bet
-      ? {id: state.bet.id, selection: selection, stake: stake}
+      ? {id: state.bet.id, selection: selection, stake: stake, reason: reasonEl.value}
       : {issue: state.options.issue, match_no: state.options.match_no,
-         market: market, selection: selection, stake: stake};
+         market: market, selection: selection, stake: stake, reason: reasonEl.value};
     var url = state.bet ? "/bets/update" : "/bets";
     try {
       var resp = await fetch(url, {
@@ -1582,7 +1633,7 @@ _BET_BLOCK = """
       var data = await resp.json();
       if (!resp.ok) throw new Error(data.error || "保存失败");
       var label = (data.market_label || "") + " " + (data.selection_label || "") +
-        " " + money(data.stake) + " 积分";
+        " " + String(Math.round(Number(data.stake) || 0)) + " 积分";
       flashAndReload((state.bet ? "注单已更新：" : "已记录：") + label, data.id);
     } catch (err) {
       setError(err.message || String(err));
@@ -1835,6 +1886,9 @@ def render_query_html(
                 <div class="muted">水位 {_esc(f'{float(bet.get("water") or 0):.2f}')}</div>
               </td>
               <td>{int(round(float(bet.get("stake") or 0)))} 积分</td>
+              <td class="reason-cell">
+                <button type="button" class="reason-preview" data-bet-id="{int(bet.get('id') or 0)}" data-can-edit="{'true' if bet.get('can_edit') else 'false'}" data-reason="{_esc(bet.get('reason'))}">{_esc(bet.get("reason") or "-")}</button>
+              </td>
               <td>{_esc(bet.get("status_label"))}<div class="muted">{_esc(bet.get("result_label"))}</div></td>
               <td class="profit-cell">{profit}</td>
               <td class="rec-cell">{_esc(rec_text)}</td>
@@ -1886,9 +1940,9 @@ def render_query_html(
       <div class="table-scroll">
         <table class="bets-table">
           <thead>
-            <tr><th class="issue-cell">期号</th><th class="match-cell">比赛</th><th class="score-cell">完场比分</th><th>市场</th><th>方向</th><th>积分</th><th>状态</th><th>收益</th><th>模型</th></tr>
+            <tr><th class="issue-cell">期号</th><th class="match-cell">比赛</th><th class="score-cell">完场比分</th><th>市场</th><th>方向</th><th>积分</th><th>理由</th><th>状态</th><th>收益</th><th>模型</th></tr>
           </thead>
-          <tbody>{''.join(bet_table_rows) or '<tr><td colspan="9" class="bets-empty">本期还没有投注。</td></tr>'}</tbody>
+          <tbody>{''.join(bet_table_rows) or '<tr><td colspan="10" class="bets-empty">本期还没有投注。</td></tr>'}</tbody>
         </table>
       </div>
       {trend_panel}
@@ -2074,7 +2128,7 @@ def render_query_html(
 .bets-table th, .bets-table td {{ padding: 8px 10px; font-size: 13px; }}
 .bets-table tbody tr:nth-child(even) td {{ background: #f8fafc; }}
 .bets-table .issue-cell {{ width: 6%; white-space: nowrap; }}
-.bets-table .match-cell {{ width: 32%; white-space: normal; }}
+.bets-table .match-cell {{ width: 21.33%; white-space: normal; }}
 .bets-table .score-cell {{ width: 8%; white-space: nowrap; font-weight: 600; }}
 .bets-table .match-cell strong {{ display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
 .bets-table .profit-cell {{ font-variant-numeric: tabular-nums; font-weight: 600; }}
@@ -2092,6 +2146,20 @@ def render_query_html(
 .bet-existing {{ margin-bottom: 10px; padding: 8px 10px; background: #f8fafc; border: 1px solid var(--line); border-radius: 6px; }}
 .bet-existing-title {{ margin-bottom: 5px; font-size: 12px; font-weight: 600; color: var(--muted); }}
 .bet-existing-row {{ display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; padding: 3px 0; font-size: 12px; }}
+.bet-existing-reason {{ margin-top: 4px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }}
+.bets-table .reason-cell {{ width: 180px; }}
+.reason-preview {{ display: block; width: 100%; overflow: hidden; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--ink); font: inherit; text-align: left; text-overflow: ellipsis; white-space: nowrap; }}
+.reason-preview:hover {{ color: var(--blue); text-decoration: underline; }}
+.reason-preview:focus-visible {{ outline: 2px solid rgba(37, 99, 235, .35); outline-offset: 2px; }}
+#bet-reason-dialog {{ width: min(560px, calc(100vw - 24px)); max-height: calc(100vh - 24px); padding: 0; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); box-shadow: 0 20px 60px rgba(15, 23, 42, .3); }}
+#bet-reason-dialog::backdrop {{ background: rgba(15, 23, 42, .45); }}
+.bet-reason-dialog-content {{ padding: 16px; }}
+.bet-reason-edit {{ display: block; position: relative; }}
+.bet-reason-edit textarea {{ display: block; width: 100%; min-height: 140px; max-height: calc(100vh - 220px); margin-top: 5px; padding: 9px 10px 24px; resize: vertical; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); font: inherit; }}
+.bet-reason-edit textarea[readonly] {{ background: #f8fafc; color: var(--muted); }}
+.bet-reason-actions {{ display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 10px; }}
+#bet-reason-save {{ background: #2563eb; border-color: #2563eb; }}
+#bet-reason-save:disabled {{ background: #cbd5e1; border-color: #cbd5e1; cursor: not-allowed; }}
 .bet-market {{ margin-top: 8px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 6px; }}
 .bet-market.active {{ border-color: #2563eb; background: #f8fbff; }}
 .bet-market.disabled {{ opacity: .55; }}
@@ -2100,8 +2168,10 @@ def render_query_html(
 .bet-rec {{ margin: 3px 0 6px 20px; color: #1d4ed8; font-size: 12px; font-weight: 600; }}
 .bet-selections {{ display: flex; flex-wrap: wrap; gap: 12px; margin-left: 20px; }}
 .bet-selection {{ display: inline-flex; flex-direction: row; gap: 4px; align-items: center; color: var(--ink); font-size: 13px; }}
-.bet-stake {{ margin-top: 12px; max-width: 220px; }}
-.bet-preview {{ min-height: 18px; margin-top: 6px; color: var(--muted); font-size: 12px; }}
+.bet-reason {{ display: block; position: relative; margin-top: 12px; }}
+.bet-reason textarea {{ display: block; width: 100%; min-height: 82px; margin-top: 5px; padding: 9px 10px 24px; resize: vertical; border: 1px solid var(--line); border-radius: 4px; background: #fff; color: var(--ink); font: inherit; }}
+.bet-reason-count {{ position: absolute; right: 9px; bottom: 7px; color: var(--muted); font-size: 11px; }}
+.bet-stake {{ display: block; margin-top: 12px; max-width: 220px; }}
 .bet-error {{ min-height: 18px; margin-top: 4px; color: var(--red); font-size: 12px; }}
 .bet-dialog-actions {{ display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 10px; }}
 #bet-delete {{ background: #fff; color: var(--red); border-color: #fecaca; }}

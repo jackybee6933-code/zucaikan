@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS manual_bets (
     water REAL NOT NULL DEFAULT 0,
     odds REAL NOT NULL DEFAULT 0,
     stake REAL NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
     rec_action TEXT NOT NULL DEFAULT '',
     rec_side TEXT NOT NULL DEFAULT '',
     rec_confidence REAL NOT NULL DEFAULT 0,
@@ -61,6 +62,9 @@ class BetError(ValueError):
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(manual_bets)")}
+    if "reason" not in columns:
+        conn.execute("ALTER TABLE manual_bets ADD COLUMN reason TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
 
@@ -115,7 +119,16 @@ def _stake(value: object) -> float:
         raise BetError("积分必须大于 0")
     if amount > 1_000_000:
         raise BetError("积分不能超过 1,000,000")
+    if not amount.is_integer():
+        raise BetError("积分必须是整数")
     return amount
+
+
+def _reason(value: object) -> str:
+    text = str(value or "").strip()
+    if len(text) > 100:
+        raise BetError("理由不能超过 100 字")
+    return text
 
 
 def _parse_score(score: str) -> tuple[int, int] | None:
@@ -450,7 +463,7 @@ def export_bets_csv(
     writer = csv.writer(output)
     writer.writerow([
         "期号", "场次", "联赛", "开赛", "主队", "客队", "市场", "方向",
-        "盘口", "水位", "积分", "模型动作", "模型方向", "是否跟随",
+        "盘口", "水位", "积分", "理由", "模型动作", "模型方向", "是否跟随",
         "状态", "结果", "收益", "最终比分", "创建时间", "更新时间",
     ])
     for bet in bets:
@@ -471,7 +484,8 @@ def export_bets_csv(
             bet.get("selection_label", ""),
             bet.get("line_text", ""),
             bet.get("water", 0),
-            f"{float(bet.get('stake') or 0):.2f}",
+            f"{int(float(bet.get('stake') or 0))}",
+            bet.get("reason", ""),
             bet.get("rec_action", ""),
             bet.get("rec_side_label", ""),
             follow,
@@ -540,9 +554,11 @@ def create_bet(
     selection: str,
     stake: object,
     *,
+    reason: object = "",
     now: datetime | None = None,
 ) -> dict:
     now = now or datetime.now()
+    note = _reason(reason)
     options = bet_options(db_path, issue, match_no, now=now)
     if options["locked"]:
         raise BetError(options["locked_reason"], 409)
@@ -571,9 +587,9 @@ def create_bet(
             INSERT INTO manual_bets (
                 issue, match_no, source_run_id, league, match_time, home_team,
                 away_team, kickoff_at, market, selection, line, line_text, water,
-                odds, stake, rec_action, rec_side, rec_confidence, rec_margin,
+                odds, stake, reason, rec_action, rec_side, rec_confidence, rec_margin,
                 follows_recommendation, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 issue,
@@ -591,6 +607,7 @@ def create_bet(
                 _num(choice.get("water")),
                 _num(choice.get("odds")),
                 amount,
+                note,
                 str(rec.get("action") or ""),
                 str(rec.get("side") or ""),
                 _num(rec.get("confidence")),
@@ -615,6 +632,7 @@ def update_bet(
     *,
     selection: str | None = None,
     stake: object | None = None,
+    reason: object | None = None,
     now: datetime | None = None,
 ) -> dict:
     now = now or datetime.now()
@@ -630,6 +648,9 @@ def update_bet(
     amount = _stake(stake if stake is not None else existing["stake"])
     fields = ["stake = ?", "updated_at = ?"]
     params: list[object] = [amount, now.isoformat(timespec="seconds")]
+    if reason is not None:
+        fields.append("reason = ?")
+        params.append(_reason(reason))
     if new_selection != existing["selection"]:
         snapshot = options["markets"].get(str(existing["market"]))
         if snapshot is None:

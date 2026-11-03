@@ -824,7 +824,7 @@ class BetServerTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def _create(self, market="asian", selection="away", stake=10):
+    def _create(self, market="asian", selection="away", stake=10, reason=""):
         return _post(
             self.base + "/bets",
             {
@@ -833,6 +833,7 @@ class BetServerTests(unittest.TestCase):
                 "market": market,
                 "selection": selection,
                 "stake": stake,
+                "reason": reason,
             },
         )
 
@@ -853,18 +854,31 @@ class BetServerTests(unittest.TestCase):
         self.assertEqual(set(options["markets"]), {"asian", "total"})
         self.assertFalse(options["locked"])
 
-        status, body = self._create()
+        status, body = self._create(reason="客队阵容完整")
         self.assertEqual(status, 201)
         created = json.loads(body)
         self.assertEqual(created["selection"], "away")
         self.assertEqual(created["stake"], 10.0)
+        self.assertEqual(created["reason"], "客队阵容完整")
 
         status, body = _post(
             self.base + "/bets/update",
-            {"id": created["id"], "selection": "home", "stake": 20},
+            {"id": created["id"], "selection": "home", "stake": 20, "reason": "临场阵容变化"},
         )
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body)["stake"], 20.0)
+        updated = json.loads(body)
+        self.assertEqual(updated["stake"], 20.0)
+        self.assertEqual(updated["reason"], "临场阵容变化")
+
+        status, body = _post(
+            self.base + "/bets/update",
+            {"id": created["id"], "reason": "仅补充复盘笔记"},
+        )
+        self.assertEqual(status, 200)
+        reason_updated = json.loads(body)
+        self.assertEqual(reason_updated["reason"], "仅补充复盘笔记")
+        self.assertEqual(reason_updated["selection"], "home")
+        self.assertEqual(reason_updated["stake"], 20.0)
 
         status, body = _post(self.base + "/bets/delete", {"id": created["id"]})
         self.assertEqual(status, 200)

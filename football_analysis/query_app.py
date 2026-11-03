@@ -1083,6 +1083,7 @@ def serve_query(
                             str(data.get("market") or ""),
                             str(data.get("selection") or ""),
                             data.get("stake"),
+                            reason=data.get("reason", ""),
                         ),
                     )
                 except BetError as exc:
@@ -1105,6 +1106,7 @@ def serve_query(
                             bet_id,
                             selection=data.get("selection"),
                             stake=data.get("stake"),
+                            reason=data.get("reason"),
                         ),
                     )
                 except BetError as exc:

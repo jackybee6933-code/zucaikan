@@ -1,10 +1,13 @@
+import sqlite3
 import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
 
 from football_analysis.bets import (
+    SCHEMA,
     BetError,
+    ensure_schema,
     bet_trend,
     export_bets_csv,
     bet_options,
@@ -86,6 +89,20 @@ def _seed(tmp: str, item: dict | None = None) -> Path:
     return db
 
 
+class BetSchemaTests(unittest.TestCase):
+    def test_existing_database_gets_reason_column(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "legacy.sqlite"
+            conn = sqlite3.connect(db)
+            try:
+                conn.executescript(SCHEMA.replace("    reason TEXT NOT NULL DEFAULT '',\n", ""))
+                ensure_schema(conn)
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(manual_bets)")}
+            finally:
+                conn.close()
+        self.assertIn("reason", columns)
+
+
 class BetOptionsTests(unittest.TestCase):
     def test_options_expose_two_markets_and_recommendations(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -107,17 +124,21 @@ class BetLifecycleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             db = _seed(tmp)
             created = create_bet(
-                db, ISSUE, "1", "asian", "away", 10, now=NOW
+                db, ISSUE, "1", "asian", "away", 10,
+                reason="客队防守稳定，主队前锋缺阵", now=NOW
             )
             self.assertEqual(created["stake"], 10.0)
+            self.assertEqual(created["reason"], "客队防守稳定，主队前锋缺阵")
             self.assertEqual(created["selection"], "away")
             self.assertEqual(created["follows_recommendation"], 1)
             self.assertEqual(created["status_label"], "待开赛")
             self.assertTrue(created["can_edit"])
 
             updated = update_bet(
-                db, created["id"], selection="home", stake=20, now=NOW
+                db, created["id"], selection="home", stake=20,
+                reason="临场阵容变化", now=NOW
             )
+            self.assertEqual(updated["reason"], "临场阵容变化")
             self.assertEqual(updated["selection"], "home")
             self.assertEqual(updated["stake"], 20.0)
             self.assertEqual(updated["water"], 1.04)
@@ -145,6 +166,10 @@ class BetLifecycleTests(unittest.TestCase):
                 create_bet(db, ISSUE, "1", "asian", "away", 0, now=NOW)
             with self.assertRaises(BetError):
                 create_bet(db, ISSUE, "1", "asian", "draw", 10, now=NOW)
+            with self.assertRaises(BetError):
+                create_bet(db, ISSUE, "1", "asian", "away", 1.5, now=NOW)
+            with self.assertRaises(BetError):
+                create_bet(db, ISSUE, "1", "asian", "away", 10, reason="x" * 101, now=NOW)
 
     def test_operations_locked_after_kickoff_or_settlement(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -185,7 +210,10 @@ class BetStatsTests(unittest.TestCase):
         item = _item(asian_line=-0.75, total_line=2.25)
         with tempfile.TemporaryDirectory() as tmp:
             db = _seed(tmp, item)
-            create_bet(db, ISSUE, "1", "asian", "away", 10, now=NOW)
+            create_bet(
+                db, ISSUE, "1", "asian", "away", 10,
+                reason="客队反击效率更高", now=NOW
+            )
             create_bet(db, ISSUE, "1", "total", "over", 10, now=NOW)
             update_match_scores(db, ISSUE, {"1": "2-1"})
             bets = list_bets(db, issue=ISSUE, now=NOW)
@@ -205,6 +233,8 @@ class BetStatsTests(unittest.TestCase):
         self.assertIn("期号,场次", csv_text)
         self.assertIn("跟随", csv_text)
         self.assertIn("无推荐", csv_text)
+        self.assertIn("理由", csv_text)
+        self.assertIn("客队反击效率更高", csv_text)
 
 
 class KickoffTests(unittest.TestCase):
@@ -225,7 +255,10 @@ class BetRenderTests(unittest.TestCase):
     def test_static_page_is_read_only_and_serve_page_has_dialog(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = _seed(tmp)
-            create_bet(db, ISSUE, "1", "asian", "away", 10, now=NOW)
+            create_bet(
+                db, ISSUE, "1", "asian", "away", 10,
+                reason="客队阵容完整", now=NOW
+            )
             rows = query_movements(db, issue=ISSUE)
             bets = list_bets(db, issue=ISSUE, now=NOW)
             common = {
@@ -247,6 +280,22 @@ class BetRenderTests(unittest.TestCase):
         self.assertIn("本期投注", static_html)
         self.assertNotIn('id="bet-dialog"', static_html)
         self.assertIn('id="bet-dialog"', serve_html)
+        self.assertIn('id="bet-reason-dialog"', serve_html)
+        self.assertIn('maxlength="100"', serve_html)
+        self.assertEqual(serve_html.count('id="bet-reason-count"'), 1)
+        self.assertIn('step="1"', serve_html)
+        self.assertIn("客队阵容完整", serve_html)
+        self.assertIn('class="reason-preview" data-bet-id="1" data-can-edit="true"', serve_html)
+        self.assertIn('data-reason="客队阵容完整"', serve_html)
+        self.assertIn('id="bet-reason-edit-input"', serve_html)
+        self.assertIn('id="bet-reason-cancel">取消</button>', serve_html)
+        self.assertIn('id="bet-reason-save">保存</button>', serve_html)
+        self.assertIn(".bets-table .reason-cell { width: 180px; }", serve_html)
+        self.assertIn("text-overflow: ellipsis", serve_html)
+        self.assertIn('reasonInputEl.value = btn.getAttribute("data-reason")', serve_html)
+        self.assertIn('JSON.stringify({id: reasonBetId, reason: reasonInputEl.value})', serve_html)
+        self.assertNotIn("当前水位", serve_html)
+        self.assertNotIn('id="bet-preview"', serve_html)
         self.assertIn("bet-open", serve_html)
         self.assertIn("bet-more", serve_html)
         self.assertIn('id="bets-section"', serve_html)
@@ -261,10 +310,19 @@ class BetRenderTests(unittest.TestCase):
         bets_section = serve_html[serve_html.index('<section class="bets-section"'):]
         self.assertNotIn("<th>操作</th>", bets_section)
         self.assertIn('class="match-cell"', bets_section)
+        self.assertIn(
+            "<th>\u65b9\u5411</th><th>\u79ef\u5206</th><th>\u7406\u7531</th>",
+            bets_section,
+        )
+        bet_row = bets_section[bets_section.index('<tr id="bet-row-1"'):]
+        self.assertLess(
+            bet_row.index("10 \u79ef\u5206</td>"),
+            bet_row.index('class="reason-cell"'),
+        )
         self.assertIn('class="score-cell">完场比分</th>', bets_section)
         self.assertIn('class="score-cell">未开赛</td>', bets_section)
         self.assertIn(".bets-table .issue-cell { width: 6%;", serve_html)
-        self.assertIn(".bets-table .match-cell { width: 32%;", serve_html)
+        self.assertIn(".bets-table .match-cell { width: 21.33%;", serve_html)
 
     def test_started_match_button_says_closed(self):
         with tempfile.TemporaryDirectory() as tmp:
