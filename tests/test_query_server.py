@@ -682,6 +682,48 @@ class QueryServerTests(unittest.TestCase):
         finally:
             release.set()
 
+    def test_ai_task_excludes_refresh_fetch_review_and_backup_restore(self):
+        import threading as _t
+
+        release = _t.Event()
+
+        def slow_ai(issue, db_path=""):
+            release.wait(10)
+            return f"{issue} AI 分析完成"
+
+        _wait_idle(self.base, "/ai-analyze-status")
+        try:
+            with mock.patch("football_analysis.query_app.run_ai_analyze", side_effect=slow_ai):
+                status, _ = _post(self.base + "/ai-analyze", {"issue": ISSUE})
+                self.assertEqual(status, 202)
+                _, body = _get(self.base + "/ai-analyze-status")
+                self.assertTrue(json.loads(body)["running"])
+
+                for path, payload in (
+                    ("/refresh-odds", {"issue": ISSUE}),
+                    ("/fetch", {"issue": ISSUE}),
+                    ("/review", {"issue": ISSUE}),
+                ):
+                    status, body = _post(self.base + path, payload)
+                    self.assertEqual(status, 200)
+                    busy = json.loads(body)
+                    self.assertEqual(busy["status"], "busy")
+                    self.assertEqual(busy["task"], "AI 分析")
+                    self.assertEqual(busy["issue"], ISSUE)
+
+                status, body = _post(self.base + "/backup/restore", {"data": "eA=="})
+                self.assertEqual(status, 409)
+                busy = json.loads(body)
+                self.assertEqual(busy["status"], "busy")
+                self.assertEqual(busy["task"], "AI 分析")
+                self.assertEqual(busy["issue"], ISSUE)
+
+                release.set()
+                payload = _wait_idle(self.base, "/ai-analyze-status")
+                self.assertIn("AI 分析完成", payload["result"])
+        finally:
+            release.set()
+
     # --- /review ---
 
     def test_post_review_requires_issue(self):

@@ -70,15 +70,24 @@ class FixtureIdFallbackTests(unittest.TestCase):
         import football_analysis.llm as llm_mod
         import football_analysis.store as store_mod
 
+        def fake_rebuild(db, issue, *, run_id=None):
+            captured["run_id"] = run_id
+            return analyses
+
         p1 = mock.patch.object(odds_pages, "pages_kind_age_hours", return_value=1.0)
         p2 = mock.patch.object(odds_pages, "load_odds_pages_raw", return_value=raw)
-        p3 = mock.patch.object(store_mod, "rebuild_analyses_from_db", return_value=analyses)
+        p3 = mock.patch.object(
+            store_mod, "rebuild_analyses_from_db", side_effect=fake_rebuild
+        )
         p4 = mock.patch.object(llm_mod, "enrich_team_reads", side_effect=fake_enrich)
         p5 = mock.patch.object(store_mod, "update_team_reads",
-                              side_effect=lambda db, issue, reads: len(reads))
+                              side_effect=lambda db, issue, reads, *, expected_run_id=None: len(reads))
+        p8 = mock.patch.object(
+            llm_mod, "TeamReader", return_value=mock.Mock(enabled=True)
+        )
         p6 = mock.patch("football_analysis.query_app._ensure_cdp", return_value=None)
         p7 = mock.patch("football_analysis.query_app._run_odds_scraper", return_value="")
-        return [p1, p2, p3, p4, p5, p6, p7], captured
+        return [p1, p2, p3, p4, p5, p6, p7, p8], captured
 
     def test_old_db_no_fixture_id_uses_shuju_key_order(self):
         """payload 无 fixture_id + 产物 7 场 shuju → 按 match_no 索引产物，
@@ -86,7 +95,7 @@ class FixtureIdFallbackTests(unittest.TestCase):
         raw = _raw_shuju(7)
         analyses = _analyses(7)
         patches, captured = self._patch_all(raw, analyses)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
             result = run_ai_analyze("26135", db_path=self.db)
 
         self.assertIn("AI 分析完成 7/7 场", result, f"实际: {result}")
@@ -102,7 +111,7 @@ class FixtureIdFallbackTests(unittest.TestCase):
         raw = _raw_shuju(3)
         analyses = _analyses(5)
         patches, captured = self._patch_all(raw, analyses)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
             result = run_ai_analyze("26135", db_path=self.db)
 
         self.assertEqual(captured["non_empty"], 3, "只有前 3 场能匹配到 shuju")
@@ -119,11 +128,30 @@ class FixtureIdFallbackTests(unittest.TestCase):
             {"match_no": "1", "home_team": "主", "away_team": "客", "fixture_id": "1234567"},
         ]
         patches, captured = self._patch_all(raw, analyses)
-        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
             result = run_ai_analyze("26135", db_path=self.db)
 
         self.assertIn("AI 分析完成 1/1 场", result, f"实际: {result}")
         self.assertEqual(captured["page_texts"], ["正确资料"])
+
+    def test_new_run_during_analysis_rejects_writeback(self):
+        raw = _raw_shuju(1)
+        patches, captured = self._patch_all(raw, _analyses(1))
+        import football_analysis.store as store_mod
+
+        def reject_stale_run(db, issue, reads, *, expected_run_id=None):
+            self.assertEqual(expected_run_id, 1)
+            return None
+
+        patches[4] = mock.patch.object(
+            store_mod, "update_team_reads", side_effect=reject_stale_run
+        )
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+            result = run_ai_analyze("26135", db_path=self.db)
+
+        self.assertIn("分析期间已有新数据入库", result)
+        self.assertIn("本次结果未写入", result)
+        self.assertEqual(captured["run_id"], 1)
 
 
 class StaleProgressSnapshotTests(unittest.TestCase):

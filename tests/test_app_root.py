@@ -10,6 +10,28 @@ from football_analysis import main
 class AppRootTests(unittest.TestCase):
     """_app_root 决定 exe 的 cache/data 挂哪儿；一旦退化成 cwd 会静默写错库。"""
 
+    def test_packaged_windows_app_rejects_a_second_instance(self):
+        with mock.patch.object(main.sys, "platform", "win32"), \
+             mock.patch.object(main.sys, "frozen", True, create=True), \
+             mock.patch.object(main, "_SINGLE_INSTANCE_HANDLE", None), \
+             mock.patch.object(main.ctypes, "windll", create=True) as windll:
+            windll.kernel32.CreateMutexW.return_value = 123
+            windll.kernel32.GetLastError.return_value = 183
+
+            self.assertFalse(main._acquire_single_instance())
+
+        windll.kernel32.CreateMutexW.assert_called_once_with(
+            None, False, main._SINGLE_INSTANCE_MUTEX_NAME
+        )
+        windll.kernel32.CloseHandle.assert_called_once_with(123)
+        windll.user32.MessageBoxW.assert_called_once()
+
+    def test_main_exits_when_single_instance_guard_rejects_startup(self):
+        with mock.patch.object(main, "_acquire_single_instance", return_value=False), \
+             mock.patch.object(main, "_finalize_updater_update") as finalize:
+            self.assertEqual(main.main(["query", "--serve"]), 0)
+        finalize.assert_not_called()
+
     def test_prepare_update_console_reopens_standard_streams(self):
         with mock.patch.object(main.sys, "platform", "win32"), \
              mock.patch.object(main.sys, "frozen", True, create=True), \

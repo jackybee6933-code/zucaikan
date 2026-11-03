@@ -738,10 +738,11 @@ _FETCH_BLOCK = \
         refreshBtn.scrollIntoView({ block: "nearest" });
         try {
           const resp = await fetch("/refresh-odds", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({issue})});
-          // busy = 已有任务在跑（可能是别的期号）：跟随它，不重复发抓取
           const started = await resp.json();
           if (started.status === "busy") {
-            refreshStatus.textContent = "已有刷新任务在进行（" + started.issue + "），等待完成...";
+            refreshBtn.disabled = false;
+            refreshStatus.textContent = started.task + " " + started.issue + " 正在运行，请完成后重试";
+            return;
           }
         } catch (e) {
           refreshBtn.disabled = false;
@@ -807,7 +808,9 @@ _FETCH_BLOCK = \
           const resp = await fetch("/ai-analyze", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({issue})});
           const started = await resp.json();
           if (started.status === "busy") {
-            aiStatus.textContent = "已有 AI 分析任务在进行（" + started.issue + "），等待完成...";
+            aiBtn.disabled = false;
+            aiStatus.textContent = started.task + " " + started.issue + " 正在运行，请完成后重试";
+            return;
           }
         } catch (e) {
           aiBtn.disabled = false;
@@ -839,7 +842,12 @@ _FETCH_BLOCK = \
         const issue = new URLSearchParams(new FormData(fetchForm)).get("issue") || "";
         if (!issue) return;
         statusEl.textContent = "抓取中...";
-        await fetch("/fetch", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({issue})});
+        const resp = await fetch("/fetch", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({issue})});
+        const started = await resp.json();
+        if (started.status === "busy") {
+          statusEl.textContent = started.task + " " + started.issue + " 正在运行，请完成后重试";
+          return;
+        }
         const poll = setInterval(async () => {
           const r = await fetch("/fetch-status");
           const s = await r.json();

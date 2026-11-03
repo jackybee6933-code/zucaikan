@@ -1094,6 +1094,23 @@ class UpdateTeamReadTests(unittest.TestCase):
             save_issue_movements(db, [_analysis(match_no="1")], "26140")
             self.assertEqual(update_team_reads(db, "26140", {}), 0)
 
+    def test_expected_run_id_rejects_stale_ai_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "t.sqlite"
+            save_issue_movements(db, [_analysis(match_no="1")], "26140")
+            save_issue_movements(db, [_analysis(match_no="1")], "26140")
+
+            updated = update_team_reads(
+                db,
+                "26140",
+                {"1": {"tendency": "观望"}},
+                expected_run_id=1,
+            )
+
+            self.assertIsNone(updated)
+            rows = query_movements(db, issue="26140", latest_only=False)
+            self.assertTrue(all(not row["team_read"] for row in rows))
+
 
 if __name__ == "__main__":
     unittest.main()

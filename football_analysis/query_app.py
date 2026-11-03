@@ -8,6 +8,7 @@ import socket
 import sys
 import threading
 import time
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -180,6 +181,7 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     if row is None or row[0] is None:
         return f"{issue} 未入库，请先「抓取并入库」再做 AI 分析"
     actual_issue = issue
+    run_id = int(row[0])
 
     # Ensure the per-match analysis pages are available and fresh enough for
     # the model to read team data. Skip the Chrome step entirely when the
@@ -216,7 +218,7 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
         if scrape_error:
             return f"分析页抓取失败：{scrape_error}"
 
-    analyses = rebuild_analyses_from_db(target_db, actual_issue)
+    analyses = rebuild_analyses_from_db(target_db, actual_issue, run_id=run_id)
     raw = load_odds_pages_raw(cache_dir, actual_issue)
     fixture_ids = [str(a.get("fixture_id") or "") for a in analyses]
     # Old DB payloads predate the fixture_id column; when every id is empty but
@@ -274,7 +276,11 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
         for a in analyses
         if a.get("team_read")
     }
-    updated = update_team_reads(target_db, actual_issue, team_reads)
+    updated = update_team_reads(
+        target_db, actual_issue, team_reads, expected_run_id=run_id
+    )
+    if updated is None:
+        return f"{actual_issue}：分析期间已有新数据入库，本次结果未写入，请重新运行 AI 分析"
     return (
         f"{actual_issue}：AI 分析完成 {count}/{len(analyses)} 场"
         f"（读 {needed_pages} 场数据页、更新 {updated} 行），刷新页面查看「AI分析」"
@@ -508,20 +514,13 @@ def serve_query(
 
     # State for the background fetch job
     fetch_state: dict = {"running": False, "issue": "", "result": "", "error": ""}
-    fetch_lock = threading.Lock()
 
     def _do_fetch(issue: str) -> None:
-        with fetch_lock:
-            if fetch_state["running"]:
-                fetch_state["error"] = "抓取任务进行中"
-                return
-            fetch_state.update(running=True, issue=issue, result="", error="")
-        skip = _dedup_message(db_path, issue)
-        if skip:
-            fetch_state["result"] = skip
-            fetch_state["running"] = False
-            return
         try:
+            skip = _dedup_message(db_path, issue)
+            if skip:
+                fetch_state["result"] = skip
+                return
             # 手动抓取必须走网络：舍缓存里的 sfc/detail 页面在开赛前抓取时是空比分、
             # 过期即时盘，重抓时必须重新请求。cache_dir=None 表示不读也不写缓存。
             fetcher = Fetcher(cache_dir=None)
@@ -534,43 +533,75 @@ def serve_query(
             fetch_state["result"] = f"{saved['issue']} 入库 {saved['match_count']} 场，异动 {saved['attention_count']} 场"
         except Exception as exc:  # noqa: BLE001
             fetch_state["error"] = f"抓取失败：{exc}"
-        finally:
-            fetch_state["running"] = False
 
     # State for the background review job
     review_state: dict = {"running": False, "issue": "", "result": "", "error": ""}
-    review_lock = threading.Lock()
 
     def _do_review(issue: str, refresh: bool) -> None:
-        with review_lock:
-            if review_state["running"]:
-                review_state["error"] = "复盘任务进行中"
-                return
-            review_state.update(running=True, issue=issue, result="", error="")
         try:
             review_state["result"] = run_review(db_path, issue, refresh)
         except Exception as exc:  # noqa: BLE001
             review_state["error"] = f"复盘失败：{exc}"
-        finally:
-            review_state["running"] = False
 
     # State for the background refresh-odds job
     refresh_odds_state: dict = {"running": False, "issue": "", "result": "", "error": ""}
-    refresh_odds_lock = threading.Lock()
 
     def _do_refresh_odds(issue: str) -> None:
-        # running 标志由 do_POST 在锁内提前置位：POST 响应返回时轮询就能看到
-        # running=true，重复点击在进入本函数前就被 do_POST 拒绝，不再污染 error。
         try:
             refresh_odds_state["result"] = run_refresh_odds(issue, db_path=db_path)
         except Exception as exc:  # noqa: BLE001
             refresh_odds_state["error"] = f"盘口刷新失败：{exc}"
-        finally:
-            refresh_odds_state["running"] = False
 
     # State for the background AI-analyze job
     ai_state: dict = {"running": False, "issue": "", "result": "", "error": ""}
-    ai_lock = threading.Lock()
+    task_lock = threading.Lock()
+    active_task: dict | None = None
+
+    def _claim_task(name: str, issue: str) -> dict | None:
+        nonlocal active_task
+        with task_lock:
+            if active_task is not None:
+                return dict(active_task)
+            active_task = {"name": name, "issue": issue}
+            return None
+
+    def _release_task(task: dict) -> None:
+        nonlocal active_task
+        with task_lock:
+            if active_task == task:
+                active_task = None
+
+    def _start_background_task(
+        name: str, issue: str, state: dict, worker: Callable[..., None], *args: object
+    ) -> dict | None:
+        task = _claim_task(name, issue)
+        if task is not None:
+            return task
+        task = {"name": name, "issue": issue}
+        state.update(running=True, issue=issue, result="", error="")
+
+        def run() -> None:
+            try:
+                worker(*args)
+            finally:
+                state["running"] = False
+                _release_task(task)
+
+        try:
+            threading.Thread(target=run, daemon=True).start()
+        except Exception:
+            state["running"] = False
+            _release_task(task)
+            raise
+        return None
+
+    def _task_busy(task: dict) -> dict:
+        return {
+            "status": "busy",
+            "task": task["name"],
+            "issue": task["issue"],
+        }
+
     update_state: dict = {
         "running": False,
         "phase": "idle",
@@ -701,8 +732,6 @@ def serve_query(
             ai_state["result"] = run_ai_analyze(issue, db_path=db_path)
         except Exception as exc:  # noqa: BLE001
             ai_state["error"] = f"AI 分析失败：{exc}"
-        finally:
-            ai_state["running"] = False
 
     class Handler(BaseHTTPRequestHandler):
         def _json(self, status: int, payload: dict) -> None:
@@ -984,6 +1013,15 @@ def serve_query(
                     return
                 try:
                     raw = base64.b64decode(encoded, validate=True)
+                except (ValueError, binascii.Error) as exc:
+                    self._json(400, {"error": f"恢复失败：{exc}"})
+                    return
+                task = {"name": "备份恢复", "issue": ""}
+                busy = _claim_task(task["name"], task["issue"])
+                if busy is not None:
+                    self._json(409, {"error": "后台任务进行中", **_task_busy(busy)})
+                    return
+                try:
                     safety = restore_backup_bytes(raw, db_path, settings_path)
                     self._json(200, {
                         "ok": True,
@@ -991,6 +1029,8 @@ def serve_query(
                     })
                 except (OSError, ValueError, binascii.Error) as exc:
                     self._json(400, {"error": f"恢复失败：{exc}"})
+                finally:
+                    _release_task(task)
                 return
 
             if parsed.path == "/settings/test":
@@ -1137,7 +1177,10 @@ def serve_query(
                     self.end_headers()
                     self.wfile.write(b'{"error":"issue is required"}')
                     return
-                threading.Thread(target=_do_fetch, args=(issue,), daemon=True).start()
+                busy = _start_background_task("抓取并入库", issue, fetch_state, _do_fetch, issue)
+                if busy is not None:
+                    self._json(200, _task_busy(busy))
+                    return
                 self.send_response(202)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -1153,9 +1196,12 @@ def serve_query(
                     self.end_headers()
                     self.wfile.write(b'{"error":"issue is required"}')
                     return
-                threading.Thread(
-                    target=_do_review, args=(issue, bool(data.get("refresh"))), daemon=True
-                ).start()
+                busy = _start_background_task(
+                    "复盘", issue, review_state, _do_review, issue, bool(data.get("refresh"))
+                )
+                if busy is not None:
+                    self._json(200, _task_busy(busy))
+                    return
                 self.send_response(202)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -1172,21 +1218,13 @@ def serve_query(
                     self.end_headers()
                     self.wfile.write(b'{"error":"issue is required"}')
                     return
-                # 在锁内完成「检查 + 置位」再起线程：POST 响应返回时 running 已为
-                # true，前端首次轮询不会误判完成；重复点击返回 busy，不污染 error。
-                with refresh_odds_lock:
-                    if refresh_odds_state["running"]:
-                        payload = json.dumps(
-                            {"status": "busy", "issue": refresh_odds_state["issue"]},
-                            ensure_ascii=False,
-                        )
-                        self.send_response(200)
-                        self.send_header("Content-Type", "application/json")
-                        self.end_headers()
-                        self.wfile.write(payload.encode("utf-8"))
-                        return
-                    refresh_odds_state.update(running=True, issue=issue, result="", error="")
-                threading.Thread(target=_do_refresh_odds, args=(issue,), daemon=True).start()
+                # Reserve the shared task slot before starting the worker.
+                busy = _start_background_task(
+                    "刷新盘口", issue, refresh_odds_state, _do_refresh_odds, issue
+                )
+                if busy is not None:
+                    self._json(200, _task_busy(busy))
+                    return
                 self.send_response(202)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -1202,21 +1240,11 @@ def serve_query(
                     self.end_headers()
                     self.wfile.write(b'{"error":"issue is required"}')
                     return
-                # Same lock-first pattern as refresh-odds: mark running before
-                # spawning the thread so the poller sees it on the first tick.
-                with ai_lock:
-                    if ai_state["running"]:
-                        payload = json.dumps(
-                            {"status": "busy", "issue": ai_state["issue"]},
-                            ensure_ascii=False,
-                        )
-                        self.send_response(200)
-                        self.send_header("Content-Type", "application/json")
-                        self.end_headers()
-                        self.wfile.write(payload.encode("utf-8"))
-                        return
-                    ai_state.update(running=True, issue=issue, result="", error="")
-                threading.Thread(target=_do_ai, args=(issue,), daemon=True).start()
+                # Reserve the shared task slot before starting the worker.
+                busy = _start_background_task("AI 分析", issue, ai_state, _do_ai, issue)
+                if busy is not None:
+                    self._json(200, _task_busy(busy))
+                    return
                 self.send_response(202)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()

@@ -476,22 +476,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE match_movements ADD COLUMN team_read TEXT NOT NULL DEFAULT ''")
     conn.commit()
 
-def rebuild_analyses_from_db(db_path: str | Path, issue: str) -> list[dict]:
+def rebuild_analyses_from_db(
+    db_path: str | Path, issue: str, *, run_id: int | None = None
+) -> list[dict]:
     """Read match_movements rows for issue and rebuild a flat analysis list."""
     conn = connect(db_path)
     try:
+        run_filter = "m.run_id = ?" if run_id is not None else (
+            "m.run_id = (SELECT MAX(run_id) FROM issue_runs WHERE issue = ?)"
+        )
         rows = conn.execute(
-            """
+            f"""
             SELECT m.*, r.source_url, r.captured_at
             FROM match_movements m
             JOIN issue_runs r ON r.run_id = m.run_id
-            WHERE m.issue = ?
-              AND m.run_id = (
-                  SELECT MAX(run_id) FROM issue_runs WHERE issue = ?
-              )
+            WHERE m.issue = ? AND {run_filter}
             ORDER BY CAST(m.match_no AS INTEGER)
-            """
-            , (issue, issue)
+            """,
+            (issue, run_id if run_id is not None else issue),
         ).fetchall()
         analyses: list[dict] = []
         for row in rows:
@@ -615,7 +617,9 @@ def update_team_reads(
     db_path: str | Path,
     issue: str,
     team_reads: dict[str, dict],
-) -> int:
+    *,
+    expected_run_id: int | None = None,
+) -> int | None:
     """Write team-read (LLM tendency) per match_no into every run of an issue.
 
     Display-only info, overwritten by the newest AI analyze pass; same scope
@@ -624,6 +628,14 @@ def update_team_reads(
     """
     conn = connect(db_path)
     try:
+        if expected_run_id is not None:
+            conn.execute("BEGIN IMMEDIATE")
+            latest_run_id = conn.execute(
+                "SELECT MAX(run_id) FROM issue_runs WHERE issue = ?", (issue,)
+            ).fetchone()[0]
+            if latest_run_id != expected_run_id:
+                conn.rollback()
+                return None
         updated = 0
         for match_no, payload in team_reads.items():
             cur = conn.execute(

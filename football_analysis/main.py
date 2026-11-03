@@ -39,6 +39,47 @@ _ODDS_CACHE_RE = re.compile(r"^odds_pages_(\d+)\.json$")
 _ODDS_META_RE = re.compile(r"^odds_pages_(\d+)\.meta\.json$")
 _UPDATE_RELAUNCH_ENV = "FA_UPDATE_RELAUNCH"
 _UPDATE_NEW_CONSOLE_ENV = "FA_UPDATE_NEW_CONSOLE"
+_SINGLE_INSTANCE_MUTEX_NAME = "Local\\FootballAnalysis.SingleInstance"
+_SINGLE_INSTANCE_HANDLE = None
+
+
+def _acquire_single_instance() -> bool:
+    """Keep a named Windows mutex alive for the lifetime of the packaged app."""
+    global _SINGLE_INSTANCE_HANDLE
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return True
+    if _SINGLE_INSTANCE_HANDLE is not None:
+        return True
+
+    kernel32 = ctypes.windll.kernel32
+    create_mutex = kernel32.CreateMutexW
+    create_mutex.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p)
+    create_mutex.restype = ctypes.c_void_p
+    handle = create_mutex(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
+    if not handle:
+        raise OSError("无法创建程序单实例锁")
+    if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+        close_handle = kernel32.CloseHandle
+        close_handle.argtypes = (ctypes.c_void_p,)
+        close_handle.restype = ctypes.c_int
+        close_handle(handle)
+        message_box = ctypes.windll.user32.MessageBoxW
+        message_box.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            ctypes.c_wchar_p,
+            ctypes.c_uint,
+        )
+        message_box.restype = ctypes.c_int
+        message_box(
+            None,
+            "程序已经在运行，请使用已打开的窗口。",
+            "足彩分析",
+            0x40,
+        )
+        return False
+    _SINGLE_INSTANCE_HANDLE = handle
+    return True
 
 
 def _finalize_updater_update() -> None:
@@ -1115,6 +1156,8 @@ def _run_query(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if not _acquire_single_instance():
+        return 0
     _finalize_updater_update()
     parser = build_parser()
     raw = list(argv) if argv is not None else sys.argv[1:]
