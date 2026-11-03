@@ -348,48 +348,24 @@ TEAM_READ_TENDENCIES = ("主队赢盘", "客队赢盘", "观望")
 OVER_READ_TENDENCIES = ("大球", "小球", "观望")
 
 
-def normalize_team_read(payload: dict) -> dict:
-    """Keep a directional tendency aligned with its probability."""
-    result = dict(payload)
-    tendency = str(result.get("tendency") or "").strip()
-    try:
-        confidence = float(result.get("confidence") or 0.0)
-    except (TypeError, ValueError):
-        confidence = 0.0
-    if 0.0 < confidence < 0.5:
-        if tendency == "主队赢盘":
-            result["tendency"] = "客队赢盘"
-            result["confidence"] = 1.0 - confidence
-        elif tendency == "客队赢盘":
-            result["tendency"] = "主队赢盘"
-            result["confidence"] = 1.0 - confidence
-    over_tendency = str(result.get("over_tendency") or "").strip()
-    try:
-        over_confidence = float(result.get("over_confidence") or 0.0)
-    except (TypeError, ValueError):
-        over_confidence = 0.0
-    if 0.0 < over_confidence < 0.5:
-        if over_tendency == "大球":
-            result["over_tendency"] = "小球"
-            result["over_confidence"] = 1.0 - over_confidence
-        elif over_tendency == "小球":
-            result["over_tendency"] = "大球"
-            result["over_confidence"] = 1.0 - over_confidence
-    return result
-
 TEAM_READ_SYSTEM_PROMPT = """你是一名足球盘口分析师，负责读完一场比赛的球队资料后，给出这场球的亚盘让球倾向。
 
 要求：
 - 只使用输入里给出的资料（近期战绩、主客场表现、赢盘率、大小球率、历史交锋、积分排名、阵容情况、缺阵原因、上一场出场评分、盘口与概率）。
 - 必须优先检查并在依据中体现：关键主力伤停/停赛、上一场首发与后备的构成和评分、是否存在明显轮换或全后备风险、以及初盘到即时盘的大幅变化。
 - 只有资料明确给出首发/后备标记或评分时，才能判断主力/后备比例；资料没有明确证据时必须写“阵容比例未提供”，不得凭球队名气猜测。
+- 伤停资料缺失只能视为未知，不能据此认定阵容完整；引用近期/主客场战绩时注明口径，不得在同一口径下自相矛盾。
 - 如果强队明显轮换、主力缺阵或上一场几乎全后备，必须降低信心，并在依据中说明这可能导致强队输球；盘口大幅升降或水位反转只能作为风险/验证证据，不能单独决定方向。
 - 只能输出一个 JSON 对象，不要任何额外文字、不要代码块围栏，格式：
-  {"tendency": "主队赢盘", "confidence": 0.0, "reason": "一句话，40 字以内", "factors": ["伤停：...", "阵容：...", "盘口：..."], "over_tendency": "大球", "over_confidence": 0.0, "over_reason": "一句话，40 字以内"}
+  {"tendency": "主队赢盘", "confidence": 0.0, "reason": "说明主要依据与风险，120 字以内", "factors": ["伤停：...", "阵容：...", "盘口：..."], "over_tendency": "大球", "over_confidence": 0.0, "over_reason": "说明大小球判断依据，120 字以内"}
 - tendency 只能取三个值之一：主队赢盘、客队赢盘、观望。
+- 以给出的即时亚盘判断赢盘，主队赢盘不等于主胜，客队赢盘也不等于客胜。例如主受平手/半球时，主队获胜全赢、平局赢半，不能仅凭客胜概率更高就判断客队赢盘。
+- confidence 和 over_confidence 分别是对所选结论的主观信心（0~1），不是另一方向概率的补数，不得为了超过 50% 而改换方向。
+- reason 必须明确最终选择及主要依据，与 tendency 一致；若选择与盘口异动倾向不同，必须说明逆向判断的具体依据，不能只陈述另一方的优势；缺乏支持最终选择的依据时给观望。
 - 资料不足、双方势均力敌或无法判断时，tendency 必须是「观望」。
-- factors 必须是 0~6 条可核对的短依据；没有对应资料就不要补写，单条不超过 60 字。
+- factors 必须是 0~6 条可核对的依据；没有对应资料就不要补写，单条不超过 100 字。
 - over_tendency 判断总进球数更可能落在大小盘线上方还是下方，只能取三个值之一：大球、小球、观望。
+- over_reason 必须结合即时大小盘线解释最终选择，与 over_tendency 一致；市场倾向需说明来自变盘还是当前水位，不能仅凭一次变盘夸大为“强烈支持”。
 - 大小盘数据缺失、双方大小球率都没有、或无法判断时，over_tendency 必须是「观望」。
 - 不要编造伤停、转会、内幕等资料里没有的信息，也不要预测比分。"""
 
@@ -459,7 +435,7 @@ def build_team_read_prompt(analysis: dict, page_text: str = "") -> str:
     probs = prediction.get("final_probabilities") or {}
     if probs:
         lines.append(
-            "模型概率："
+            "胜平负概率（非亚盘赢盘概率）："
             + " / ".join(
                 f"{OUTCOME_LABELS.get(key, key)} {_pct(probs.get(key, 0.0))}"
                 for key in ("home", "draw", "away")
@@ -511,7 +487,7 @@ def parse_team_read(text: str) -> dict | None:
     except (TypeError, ValueError):
         confidence = 0.0
     confidence = min(1.0, max(0.0, confidence))
-    reason = re.sub(r"\s+", " ", str(data.get("reason") or "")).strip()[:80]
+    reason = re.sub(r"\s+", " ", str(data.get("reason") or "")).strip()[:200]
     over_tendency = str(data.get("over_tendency") or "").strip()
     if over_tendency not in OVER_READ_TENDENCIES:
         over_tendency = "观望"
@@ -520,19 +496,19 @@ def parse_team_read(text: str) -> dict | None:
     except (TypeError, ValueError):
         over_confidence = 0.0
     over_confidence = min(1.0, max(0.0, over_confidence))
-    over_reason = re.sub(r"\s+", " ", str(data.get("over_reason") or "")).strip()[:80]
+    over_reason = re.sub(r"\s+", " ", str(data.get("over_reason") or "")).strip()[:200]
     raw_factors = data.get("factors") or []
     if isinstance(raw_factors, str):
         raw_factors = [raw_factors]
     factors: list[str] = []
     if isinstance(raw_factors, list):
         for factor in raw_factors:
-            text = re.sub(r"\s+", " ", str(factor or "")).strip()[:60]
+            text = re.sub(r"\s+", " ", str(factor or "")).strip()[:100]
             if text and text not in factors:
                 factors.append(text)
             if len(factors) >= 6:
                 break
-    return normalize_team_read({
+    return {
         "tendency": tendency,
         "confidence": confidence,
         "reason": reason,
@@ -540,7 +516,7 @@ def parse_team_read(text: str) -> dict | None:
         "over_tendency": over_tendency,
         "over_confidence": over_confidence,
         "over_reason": over_reason,
-    })
+    }
 
 
 class TeamReader:
@@ -677,7 +653,7 @@ def enrich_team_reads(
             continue
         result = reader.read(item, page_text)
         if result:
-            item["team_read"] = normalize_team_read(result)
+            item["team_read"] = dict(result)
             references = (
                 source_references[index]
                 if source_references and index < len(source_references)

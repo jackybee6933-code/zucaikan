@@ -334,6 +334,7 @@ def run_refresh_odds(issue: str, *, cdp: str = CDP_DEFAULT, db_path: str | Path 
     from .odds_pages import (
         PAGES_STALE_HOURS,
         load_odds_pages_raw,
+        page_failures,
         pages_age_hours,
         pages_kind_age_hours,
     )
@@ -407,6 +408,15 @@ def run_refresh_odds(issue: str, *, cdp: str = CDP_DEFAULT, db_path: str | Path 
     )
     target_db = Path(db_path) if db_path else Path(default_db_path())
     saved = save_issue_movements(target_db, analyses, actual_issue, source_url)
+    failed_pages = [
+        key for key in page_failures(load_odds_pages_raw(cache_dir, issue))
+        if key.rsplit("|", 1)[-1] in ("yazhi", "daxiao")
+    ]
+    if failed_pages:
+        return (
+            f"{issue} 盘口抓取失败 {len(failed_pages)} 页，已抓页面已保存，重试会从断点继续；"
+            f"本期共 {saved['match_count']} 场、异动 {saved['attention_count']} 条"
+        )
     return (
         f"{issue} \u76d8\u53e3\u4ea7\u7269\u5df2\u5237\u65b0\uff08{new_age:.1f} h\uff09\uff0c"
         f"\u672c\u671f\u5171 {saved['match_count']} \u573a\u3001\u5f02\u52a8 {saved['attention_count']} \u6761"
@@ -421,15 +431,19 @@ def _missing_kinds(raw: dict) -> list[str]:
     """
     wanted = ["yazhi", "daxiao"]
     ok: set[str] = set()
+    failed: set[str] = set()
     for key, page in (raw or {}).items():
         kind = key.rsplit("|", 1)[-1]
+        if kind not in wanted:
+            continue
         if (
-            kind in wanted
-            and isinstance(page, dict)
+            isinstance(page, dict)
             and str(page.get("status") or "") in ("ok", "empty")
         ):
             ok.add(kind)
-    return [k for k in wanted if k not in ok]
+        else:
+            failed.add(kind)
+    return [k for k in wanted if k not in ok or k in failed]
 
 
 def _run_odds_scraper(

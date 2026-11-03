@@ -586,6 +586,9 @@ def main(argv: list[str] | None = None) -> int:
         except CdpError:
             pass
 
+    if failed:
+        # 合并旧产物前保存本轮成功页，避免把其他页种的旧数据当成新断点。
+        save_partial(partial, result)
     # 只抓了部分页种（--kinds）时，与已有产物合并，避免覆盖 yazhi/daxiao 数据。
     if args.kinds and out.exists():
         try:
@@ -604,7 +607,8 @@ def main(argv: list[str] | None = None) -> int:
         result,
         completed_kinds={"shuju"} if stop_empty_shuju else None,
     )
-    partial.unlink(missing_ok=True)
+    if not failed:
+        partial.unlink(missing_ok=True)
     ok = sum(1 for page in result.values() if page.get("status") == STATUS_OK)
     empty = sum(1 for page in result.values() if page.get("status") == STATUS_EMPTY)
     bad = [k for k, page in result.items()
@@ -612,7 +616,9 @@ def main(argv: list[str] | None = None) -> int:
     log("")
     log(f"落盘 {out}")
     log(f"成功 {ok}   上游无数据 {empty}   抓取失败 {len(bad)}（含 shuju 资料页）")
-    _write_progress(cache_dir, issue, phase="done", total=total, done=done, failed=len(bad))
+    _write_progress(cache_dir, issue, phase="done", total=total, done=done, failed=failed)
+    if failed:
+        log(f"本次抓取失败 {failed} 页，成功页已保存为断点；重试只补失败页。")
     # 等几秒让查询页轮询到「完成」态，再清掉进度文件
     time.sleep(5)
     try:

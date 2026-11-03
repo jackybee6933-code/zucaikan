@@ -20,7 +20,6 @@ from .odds_pages import (
 )
 from .report_index import build_issue_report_index
 from . import __version__
-from .llm import normalize_team_read
 
 
 def _esc(value: object) -> str:
@@ -329,12 +328,16 @@ def _h2h_table_html(text: str, *, league_color: str = "") -> str:
         if len(cells) < 10 or cells[0] in ("赛事", "赛事名"):
             continue
         league, date, teams, halftime = cells[:4]
-        handicap, total = cells[7], cells[8]
-        score_match = re.search(r"(\d+)\s*:\s*(\d+)", teams)
+        asian, handicap, total = cells[6:9]
+        asian = re.sub(
+            r"^\d+(?:\.\d+)?\s*([\u4e00-\u9fff][\u4e00-\u9fff/\uff0f\s]*)\s*\d+(?:\.\d+)?$",
+            r"\1", asian,
+        ).strip()
+        score_match = re.search(r"(?:[Uu]\d{2})?(\d+)\s*:\s*(\d+)", teams)
         if not score_match:
             continue
         full_score = f"{score_match.group(1)}:{score_match.group(2)}"
-        home = re.sub(r"^\[\d+\]\s*", "", teams[:score_match.start()]).strip()
+        home = re.sub(r"^\[\d+\]\s*", "", teams[:score_match.start(1)]).strip()
         away = re.sub(r"\s*\[\d+\]$", "", teams[score_match.end():]).strip()
         if not home or not away or halftime.upper() == "VS":
             continue
@@ -351,12 +354,12 @@ def _h2h_table_html(text: str, *, league_color: str = "") -> str:
             f"<td>{_league_badge(league, league_color)}</td>"
             f"<td>{_esc(date)}</td><td>{_esc(home)}</td><td>{_esc(full_score)}</td>"
             f"<td>{_esc(away)}</td><td>{_esc(halftime)}</td>"
-            f"<td>{handicap_html}</td><td>{_esc(total)}</td>"
+            f"<td>{_esc(asian)}</td><td>{handicap_html}</td><td>{_esc(total)}</td>"
             "</tr>"
         )
     if not rows:
         return ""
-    headers = ("赛事名", "比赛日期", "主队名", "全场比分", "客队名", "半场比分", "盘路", "大小")
+    headers = ("赛事名", "比赛日期", "主队名", "全场比分", "客队名", "半场比分", "亚盘", "盘路", "大小")
     head = "<tr>" + "".join(f"<th>{_esc(value)}</th>" for value in headers) + "</tr>"
     summary = (
         '<div class="h2h-summary">'
@@ -380,8 +383,6 @@ def _lean_cell(row: dict, *, h2h_score: str = "") -> str:
         read = json.loads(str(row.get("team_read") or "") or "{}")
     except (json.JSONDecodeError, TypeError):
         read = {}
-    if isinstance(read, dict):
-        read = normalize_team_read(read)
     tendency = str(read.get("tendency") or "").strip()
     factors = read.get("factors") or []
     if isinstance(factors, str):
@@ -457,10 +458,6 @@ def _lean_cell(row: dict, *, h2h_score: str = "") -> str:
             f'<div class="model-lean"><span class="model-lean-tip"{tip_attrs}>'
             f'{_esc(tendency)}{_esc(conf)}{tooltip}</span></div>'
         )
-        if reason:
-            parts.append(
-                f'<div class="model-reason">{_esc(reason)}</div>'
-            )
     over_tendency = str(read.get("over_tendency") or "").strip()
     try:
         over_confidence = float(read.get("over_confidence") or 0.0)
@@ -483,26 +480,32 @@ def _lean_cell(row: dict, *, h2h_score: str = "") -> str:
     )
     if over_tendency and (over_confidence > 0 or h2h_table):
         over_conf = f" {over_confidence * 100:.0f}%" if over_confidence > 0 else ""
-        h2h_tip_attrs = ""
-        h2h_template = ""
-        if h2h_table:
-            h2h_tip_attrs = (
-                ' data-ai-tip tabindex="0" role="note" aria-describedby="ai-pop"'
-                f' aria-label="{html.escape(over_tendency + over_conf + "，对赛往绩", quote=True)}"'
+        over_reason = str(read.get("over_reason") or "").strip()
+        tooltip_sections = []
+        if over_reason:
+            tooltip_sections.append(
+                f'<section class="ai-tip-section"><h4>模型理由</h4><p>{_esc(over_reason)}</p></section>'
             )
-            h2h_template = (
-                '<template class="ai-tip-content"><div class="ai-tip-title">对赛往绩</div>'
-                f'<section class="ai-tip-section">{h2h_table}</section></template>'
+        if h2h_table:
+            tooltip_sections.append(
+                f'<section class="ai-tip-section"><h4>对赛往绩</h4>{h2h_table}</section>'
+            )
+        tip_attrs = ""
+        tooltip = ""
+        if tooltip_sections:
+            tip_attrs = (
+                ' data-ai-tip tabindex="0" role="note" aria-describedby="ai-pop"'
+                f' aria-label="{html.escape(over_tendency + over_conf + "，大小球分析依据", quote=True)}"'
+            )
+            tooltip = (
+                '<template class="ai-tip-content"><div class="ai-tip-title">大小球分析依据</div>'
+                + "".join(tooltip_sections)
+                + "</template>"
             )
         parts.append(
-            f'<div class="model-lean"><span class="model-lean-tip"{h2h_tip_attrs}>'
-            f'{_esc(over_tendency)}{_esc(over_conf)}{h2h_template}</span></div>'
+            f'<div class="model-lean"><span class="model-lean-tip"{tip_attrs}>'
+            f'{_esc(over_tendency)}{_esc(over_conf)}{tooltip}</span></div>'
         )
-        over_reason = str(read.get("over_reason") or "").strip()
-        if over_reason:
-            parts.append(
-                f'<div class="model-reason" title="{_esc(over_reason)}">{_esc(over_reason)}</div>'
-            )
     return "".join(parts) or "—"
 
 
@@ -1970,12 +1973,9 @@ def render_query_html(
     .line-delta {{ margin-top: 5px; color: #475569; font-size: 12px; font-weight: 600; }}
     .lean-cell {{ font-weight: 600; color: #334155; }}
     .model-lean {{ color: #0f172a; }}
+    .lean-cell > .model-lean + .model-lean {{ margin-top: 8px; }}
     .model-lean-tip[data-ai-tip] {{ cursor: help; text-decoration: underline dotted #94a3b8; text-underline-offset: 3px; }}
     .model-lean-tip[data-ai-tip]:focus-visible {{ outline: 2px solid rgba(37, 99, 235, .35); outline-offset: 2px; border-radius: 2px; }}
-    .model-reason {{
-      margin-top: 2px; font-weight: 400; font-size: 12px; color: var(--muted);
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }}
     #ai-pop {{ position: fixed; z-index: 45; width: min(640px, calc(100vw - 20px)); max-height: min(480px, calc(100vh - 20px)); overflow-y: auto; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 7px; background: rgba(255, 255, 255, .85); color: var(--ink); box-shadow: 0 10px 28px rgba(15, 23, 42, .2); font-size: 13px; font-weight: 400; line-height: 1.55; }}
     #ai-pop[hidden] {{ display: none; }}
     .ai-tip-title {{ margin-bottom: 8px; color: #334155; font-size: 13px; font-weight: 700; }}

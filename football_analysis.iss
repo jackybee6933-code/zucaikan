@@ -1,6 +1,6 @@
 #define AppName "足彩胜负彩分析系统"
 #ifndef AppVersion
-  #define AppVersion "1.10"
+  #define AppVersion "1.11"
 #endif
 #ifndef AppSourceDir
   #define AppSourceDir "dist"

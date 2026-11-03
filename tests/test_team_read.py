@@ -6,8 +6,10 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from bs4 import BeautifulSoup
+
 from football_analysis import llm, odds_pages
-from football_analysis.query_report import _lean_cell, render_query_html
+from football_analysis.query_report import _h2h_table_html, _lean_cell, render_query_html
 from football_analysis.store import (
     SCHEMA,
     connect,
@@ -121,6 +123,15 @@ class PromptTests(unittest.TestCase):
         self.assertIn("亚盘：无数据", prompt)
         self.assertIn("500 数据分析页资料：未抓到", prompt)
 
+    def test_prompt_distinguishes_confidence_handicap_and_match_result(self):
+        prompt = llm.build_team_read_prompt(_analysis())
+        self.assertIn("胜平负概率（非亚盘赢盘概率）", prompt)
+        self.assertIn("主队赢盘不等于主胜", llm.TEAM_READ_SYSTEM_PROMPT)
+        self.assertIn("不是另一方向概率的补数", llm.TEAM_READ_SYSTEM_PROMPT)
+        self.assertIn("与 tendency 一致", llm.TEAM_READ_SYSTEM_PROMPT)
+        self.assertIn("逆向判断", llm.TEAM_READ_SYSTEM_PROMPT)
+        self.assertIn("与 over_tendency 一致", llm.TEAM_READ_SYSTEM_PROMPT)
+
 
 class ParseTests(unittest.TestCase):
     def test_accepts_plain_fenced_and_embedded_json(self):
@@ -178,42 +189,63 @@ class ParseTests(unittest.TestCase):
         for raw in ("", "没有 JSON", '{"tendency": "主胜"}', "[1, 2]", '{"confidence": 0.5}'):
             self.assertIsNone(llm.parse_team_read(raw), raw)
 
-    def test_clamps_confidence_and_trims_reason(self):
+    def test_clamps_confidence_and_keeps_long_reasons(self):
+        reason = "详细分析 " * 30
+        over_reason = "大小球依据 " * 30
         parsed = llm.parse_team_read(
-            json.dumps({"tendency": "观望", "confidence": 7, "reason": "很长 " * 60},
+            json.dumps({
+                "tendency": "观望",
+                "confidence": 7,
+                "reason": reason,
+                "over_reason": over_reason,
+            },
                        ensure_ascii=False)
         )
         self.assertEqual(parsed["confidence"], 1.0)
-        self.assertLessEqual(len(parsed["reason"]), 80)
+        self.assertEqual(parsed["reason"], reason.strip())
+        self.assertEqual(parsed["over_reason"], over_reason.strip())
         self.assertNotIn("  ", parsed["reason"])
 
-    def test_reverses_direction_when_confidence_is_below_half(self):
+    def test_reason_fields_are_capped_and_factors_allow_more_detail(self):
+        parsed = llm.parse_team_read(json.dumps({
+            "tendency": "观望",
+            "reason": "理" * 250,
+            "over_reason": "球" * 250,
+            "factors": ["依" * 120],
+        }, ensure_ascii=False))
+        self.assertEqual(len(parsed["reason"]), 200)
+        self.assertEqual(len(parsed["over_reason"]), 200)
+        self.assertEqual(len(parsed["factors"][0]), 100)
+
+    def test_preserves_direction_and_reason_when_confidence_is_below_half(self):
         away = llm.parse_team_read(json.dumps({
             "tendency": "\u5ba2\u961f\u8d62\u76d8",
             "confidence": 0.45,
-            "reason": "x",
+            "reason": "客队抗压能力稍强，但资料不足，信心较低",
         }))
-        self.assertEqual(away["tendency"], "\u4e3b\u961f\u8d62\u76d8")
-        self.assertAlmostEqual(away["confidence"], 0.55)
+        self.assertEqual(away["tendency"], "\u5ba2\u961f\u8d62\u76d8")
+        self.assertAlmostEqual(away["confidence"], 0.45)
+        self.assertIn("客队抗压能力稍强", away["reason"])
 
         home = llm.parse_team_read(json.dumps({
             "tendency": "\u4e3b\u961f\u8d62\u76d8",
             "confidence": 0.35,
             "reason": "x",
         }))
-        self.assertEqual(home["tendency"], "\u5ba2\u961f\u8d62\u76d8")
-        self.assertAlmostEqual(home["confidence"], 0.65)
+        self.assertEqual(home["tendency"], "\u4e3b\u961f\u8d62\u76d8")
+        self.assertAlmostEqual(home["confidence"], 0.35)
 
-    def test_reverses_over_direction_when_confidence_is_below_half(self):
+    def test_preserves_over_direction_when_confidence_is_below_half(self):
         parsed = llm.parse_team_read(json.dumps({
             "tendency": "\u89c2\u671b",
             "confidence": 0.5,
             "over_tendency": "\u5c0f\u7403",
             "over_confidence": 0.45,
-            "over_reason": "x",
+            "over_reason": "小球略占优，资料不足",
         }))
-        self.assertEqual(parsed["over_tendency"], "\u5927\u7403")
-        self.assertAlmostEqual(parsed["over_confidence"], 0.55)
+        self.assertEqual(parsed["over_tendency"], "\u5c0f\u7403")
+        self.assertAlmostEqual(parsed["over_confidence"], 0.45)
+        self.assertEqual(parsed["over_reason"], "小球略占优，资料不足")
 
 
 class _StubReader:
@@ -249,6 +281,33 @@ class EnrichTests(unittest.TestCase):
         self.assertEqual(items[0]["team_read"]["tendency"], "客队赢盘")
         self.assertNotIn("team_read", items[1])
         self.assertEqual(reader.calls, [("1", "资料一")])
+
+    def test_low_confidence_survives_enrichment_storage_and_rendering(self):
+        result = {
+            "tendency": "客队赢盘",
+            "confidence": 0.45,
+            "reason": "客队抗逆能力稍强，但信心较低",
+            "over_tendency": "小球",
+            "over_confidence": 0.4,
+            "over_reason": "小球略占优，但信心较低",
+        }
+        reader = mock.Mock(enabled=True)
+        reader.read.return_value = result
+        items = [_analysis()]
+        self.assertEqual(
+            llm.enrich_team_reads(items, reader=reader, page_texts=["资料"], pace=0),
+            1,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            save_issue_movements(db, items, "26156")
+            row = query_movements(db, issue="26156")[0]
+        self.assertEqual(json.loads(row["team_read"]), result)
+        rendered = _lean_cell(row)
+        self.assertIn("客队赢盘 45%", rendered)
+        self.assertIn("小球 40%", rendered)
+        self.assertIn(result["reason"], rendered)
+        self.assertIn(result["over_reason"], rendered)
 
 
 class ReaderTests(unittest.TestCase):
@@ -316,8 +375,8 @@ class ReaderTests(unittest.TestCase):
             llm.requests, "post", side_effect=[self._throttled(), ok]
         ) as post:
             result = reader.read(_analysis())
-        self.assertEqual(result["tendency"], "主队赢盘")
-        self.assertAlmostEqual(result["confidence"], 0.6)
+        self.assertEqual(result["tendency"], "客队赢盘")
+        self.assertAlmostEqual(result["confidence"], 0.4)
         self.assertEqual(post.call_count, 2)
         self.assertTrue(post.call_args.args[0].startswith("http://backup/v1"))
         self.assertEqual(post.call_args.kwargs["json"]["model"], "m2")
@@ -425,17 +484,17 @@ class ShujuTextTests(unittest.TestCase):
 
 
 class StoreAndReportTests(unittest.TestCase):
-    def test_legacy_low_confidence_direction_is_reversed_on_render(self):
+    def test_legacy_low_confidence_direction_is_preserved_on_render(self):
         rendered = _lean_cell(_analysis(team_read=json.dumps({
             "tendency": "\u5ba2\u961f\u8d62\u76d8",
             "confidence": 0.45,
             "reason": "x",
         })))
-        self.assertIn("\u4e3b\u961f\u8d62\u76d8 55%", rendered)
+        self.assertIn("\u5ba2\u961f\u8d62\u76d8 45%", rendered)
         self.assertNotIn("\u6a21\u578b ", rendered)
-        self.assertNotIn("\u5ba2\u961f\u8d62\u76d8 45%", rendered)
+        self.assertNotIn("\u4e3b\u961f\u8d62\u76d8 55%", rendered)
 
-    def test_legacy_low_confidence_over_direction_is_reversed_on_render(self):
+    def test_legacy_low_confidence_over_direction_is_preserved_on_render(self):
         rendered = _lean_cell(_analysis(team_read=json.dumps({
             "tendency": "\u89c2\u671b",
             "confidence": 0.5,
@@ -443,9 +502,9 @@ class StoreAndReportTests(unittest.TestCase):
             "over_confidence": 0.45,
             "over_reason": "x",
         })))
-        self.assertIn("\u5927\u7403 55%", rendered)
+        self.assertIn("\u5c0f\u7403 45%", rendered)
         self.assertNotIn("\u6a21\u578b ", rendered)
-        self.assertNotIn("\u5c0f\u7403 45%", rendered)
+        self.assertNotIn("\u5927\u7403 55%", rendered)
 
     def test_team_read_round_trip_and_rendering(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -469,6 +528,7 @@ class StoreAndReportTests(unittest.TestCase):
             self.assertIn(">AI分析<", html)
             self.assertIn("伤停：客队主力中卫缺阵", html)
             self.assertIn("盘口：主让半球升到一球", html)
+            self.assertIn('<h4>重点因素</h4><ul>', html)
             self.assertIn("主场赢盘率高于客队", html)
             self.assertIn('id="ai-pop" role="tooltip" hidden', html)
             self.assertIn("width: min(640px, calc(100vw - 20px))", html)
@@ -530,6 +590,57 @@ class StoreAndReportTests(unittest.TestCase):
             ".model-lean-tip[data-ai-tip] { cursor: help;",
             render_query_html([], issues=[]),
         )
+
+    def test_reasons_are_only_in_their_market_popups(self):
+        reason = "盘口依据：主队近况与让球走势一致，需防范轮换。"
+        over_reason = "大小球依据：近期进球偏多，但盘口升高降低大球优势。"
+        rendered = _lean_cell(_analysis(team_read=json.dumps({
+            "tendency": "主队赢盘",
+            "confidence": 0.6,
+            "reason": reason,
+            "factors": ["盘口重点因素"],
+            "over_tendency": "大球",
+            "over_confidence": 0.65,
+            "over_reason": over_reason,
+            "source_references": {
+                "交战历史": (
+                    "英超 | 2026-04-23 | Home 2:2 Away | 0:0"
+                    " | 平 | odds | line | 输 | 大 | -"
+                ),
+            },
+        }, ensure_ascii=False)))
+        soup = BeautifulSoup(rendered, "html.parser")
+        triggers = soup.select(".model-lean-tip")
+        self.assertEqual(len(triggers), 2)
+        handicap_popup = triggers[0].select_one("template").decode_contents()
+        over_popup = triggers[1].select_one("template").decode_contents()
+        self.assertIn(f"<h4>模型理由</h4><p>{reason}</p>", handicap_popup)
+        self.assertIn("盘口重点因素", handicap_popup)
+        self.assertNotIn(over_reason, handicap_popup)
+        self.assertIn(f"<h4>模型理由</h4><p>{over_reason}</p>", over_popup)
+        self.assertIn("对赛往绩", over_popup)
+        self.assertIn("<td>Home</td><td>2:2</td><td>Away</td>", over_popup)
+        self.assertNotIn(reason, over_popup)
+        for template in soup.select("template"):
+            template.decompose()
+        self.assertEqual(soup.get_text(" ", strip=True), "主队赢盘 60% 大球 65%")
+        self.assertFalse(soup.select(".model-reason"))
+
+    def test_over_reason_has_popup_without_h2h(self):
+        reason = "双方近期进球率偏高，盘口较深需保留风险。"
+        rendered = _lean_cell(_analysis(team_read=json.dumps({
+            "over_tendency": "大球",
+            "over_confidence": 0.6,
+            "over_reason": reason,
+        }, ensure_ascii=False)))
+        soup = BeautifulSoup(rendered, "html.parser")
+        trigger = soup.select_one("[data-ai-tip]")
+        self.assertIsNotNone(trigger)
+        popup = trigger.select_one("template").decode_contents()
+        self.assertIn(f"<h4>模型理由</h4><p>{reason}</p>", popup)
+        self.assertNotIn("h2h-table", popup)
+        soup.select_one("template").decompose()
+        self.assertEqual(soup.get_text(" ", strip=True), "大球 60%")
 
     def test_h2h_popup_is_available_when_over_confidence_is_zero(self):
         h2h = (
@@ -740,8 +851,8 @@ class StoreAndReportTests(unittest.TestCase):
         h2h = (
             "赛事 | 比赛日期 | 主队比分客队 | 半场 | 赛果 | 平均欧指 | 让球指数 | 盘路 | 大小 | 备注\n"
             "英超 | 2026-10-31 | [13]伯恩茅斯VS利兹联[7] | VS | - | 2.093.343.56 | 1.08半球0.76 | - | - | -\n"
-            "英超 | 2026-04-23 | [9]伯恩茅斯2:2利兹联[15] | 0:0 | 平 | odds-hidden | line-hidden | 输 | 大 | note-hidden\n"
-            "英超 | 2025-09-27 | [12]利兹联2:2伯恩茅斯[4] | 1:1 | 平 | odds-hidden | line-hidden | 赢 | 大 | note-hidden"
+            "英超 | 2026-04-23 | [9]伯恩茅斯2:2利兹联[15] | 0:0 | 平 | odds-hidden | 0.95半球1.01 | 输 | 大 | note-hidden\n"
+            "英超 | 2025-09-27 | [12]利兹联2:2伯恩茅斯[4] | 1:1 | 平 | odds-hidden | 0.82受半球0.98 | 赢 | 大 | note-hidden"
         )
         row = _analysis(
             league_color="#FF1717",
@@ -761,11 +872,11 @@ class StoreAndReportTests(unittest.TestCase):
         rendered = _lean_cell(row)
         popup = rendered[rendered.index('aria-label="大球 60%'):]
         self.assertIn(
-            'aria-label="大球 60%，对赛往绩"',
+            'aria-label="大球 60%，大小球分析依据"',
             popup,
         )
         self.assertIn(
-            '<div class="ai-tip-title">对赛往绩</div>',
+            '<div class="ai-tip-title">大小球分析依据</div>',
             popup,
         )
         self.assertEqual(popup.count("<tr>"), 3)
@@ -774,8 +885,17 @@ class StoreAndReportTests(unittest.TestCase):
             '<span>总进球 8</span><span>场均进球 4.0</span></div>',
             popup,
         )
-        for label in ("赛事名", "比赛日期", "主队名", "全场比分", "客队名", "半场比分", "盘路", "大小"):
-            self.assertIn(f"<th>{label}</th>", popup)
+        table = BeautifulSoup(popup, "html.parser").select_one(".h2h-table")
+        table = BeautifulSoup(str(table), "html.parser")
+        self.assertEqual(
+            [cell.get_text() for cell in table.select("thead th")],
+            ["赛事名", "比赛日期", "主队名", "全场比分", "客队名", "半场比分", "亚盘", "盘路", "大小"],
+        )
+        self.assertEqual(
+            [[cell.get_text() for cell in row.select("td")][6:]
+             for row in table.select("tbody tr")],
+            [["半球", "输", "大"], ["受半球", "赢", "大"]],
+        )
         self.assertIn("<td>伯恩茅斯</td><td>2:2</td><td>利兹联</td>", popup)
         self.assertIn(
             '<span class="league-badge" style="background:#FF1717;">英超</span>',
@@ -788,6 +908,73 @@ class StoreAndReportTests(unittest.TestCase):
         self.assertNotIn("odds-hidden", popup)
         self.assertNotIn("备注", popup)
         self.assertNotIn("note-hidden", popup)
+
+    def test_h2h_asian_column_removes_water_and_preserves_bare_lines(self):
+        for raw, expected in (
+            ("0.95一球0.83", "一球"),
+            ("1受平手/半球0.7", "受平手/半球"),
+            ("0.76平手0.94", "平手"),
+            ("0.9半球0.8", "半球"),
+            ("0.95 受一球/球半 1.01", "受一球/球半"),
+            ("受半球", "受半球"),
+            ("0.25", "0.25"),
+            ("0/0.5", "0/0.5"),
+            ("---", "---"),
+            ("", ""),
+        ):
+            with self.subTest(raw=raw):
+                rendered = _h2h_table_html(
+                    f"联赛 | 2026-01-01 | 主队2:1客队 | 1:0 | 胜 | odds | {raw} | 赢 | 大 | -"
+                )
+                table = BeautifulSoup(rendered, "html.parser")
+                cells = table.select("tbody tr td")
+                self.assertEqual(cells[6].get_text(), expected)
+                self.assertEqual([cell.get_text() for cell in cells[7:]], ["赢", "大"])
+                self.assertIn("<span>总进球 3</span>", rendered)
+
+    def test_over_popup_keeps_u21_out_of_full_time_scores_and_totals(self):
+        h2h = (
+            "荷乙 | 2026-11-03 | [17]阿贾克斯U21VS维特斯[10] | VS | - | odds | line | - | - | -\n"
+            "荷乙 | 2026-04-06 | [15]维特斯6:1阿贾克斯U21[19] | 2:0 | 负 | odds | line | 输 | 大 | -\n"
+            "荷乙 | 2025-12-02 | [20]阿贾克斯U212:0维特斯[19] | 1:0 | 胜 | odds | line | 赢 | 小 | -\n"
+            "荷乙 | 2025-04-15 | [17]阿贾克斯U211:1维特斯[20] | 1:0 | 平 | odds | line | 走 | 小 | -\n"
+            "荷乙 | 2024-09-22 | [9]维特斯2:2阿贾克斯U21[11] | 1:2 | 平 | odds | line | 赢 | 大 | -\n"
+            "荷杯 | 2008-09-25 | 阿贾克斯U210:2维特斯 | 0:1 | 负 | -- | --- | - | 小 | -"
+        )
+        row = _analysis(team_read=json.dumps({
+            "over_tendency": "大球",
+            "over_confidence": 0.6,
+            "source_references": {"交战历史": h2h},
+        }, ensure_ascii=False))
+        rendered = _lean_cell(row)
+        for home, score, away in (
+            ("维特斯", "6:1", "阿贾克斯U21"),
+            ("阿贾克斯U21", "2:0", "维特斯"),
+            ("阿贾克斯U21", "1:1", "维特斯"),
+            ("维特斯", "2:2", "阿贾克斯U21"),
+            ("阿贾克斯U21", "0:2", "维特斯"),
+        ):
+            self.assertIn(f"<td>{home}</td><td>{score}</td><td>{away}</td>", rendered)
+        self.assertIn(
+            "<span>5 场交锋</span><span>总进球 17</span><span>场均进球 3.4</span>",
+            rendered,
+        )
+        self.assertNotIn("VS", rendered)
+        self.assertNotIn("<td>阿贾克斯U</td>", rendered)
+
+    def test_h2h_preserves_youth_suffixes_and_two_digit_scores(self):
+        for suffix in ("", "U19", "U21", "U23", "u21", "(U21)", "U21 "):
+            with self.subTest(suffix=suffix):
+                home = f"Home{suffix}"
+                rendered = _h2h_table_html(
+                    f"League | 2026-01-01 | [1]{home}12:10AwayU21[2]"
+                    " | 5:4 | 胜 | odds | line | 赢 | 大 | -"
+                )
+                self.assertIn(
+                    f"<td>{home.strip()}</td><td>12:10</td><td>AwayU21</td>",
+                    rendered,
+                )
+                self.assertIn("<span>总进球 22</span>", rendered)
 
     def test_query_uses_cached_h2h_for_existing_over_read(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -831,11 +1018,11 @@ class StoreAndReportTests(unittest.TestCase):
 
         self.assertIn(
             '<div class="model-lean"><span class="model-lean-tip" data-ai-tip tabindex="0" role="note" '
-            'aria-describedby="ai-pop" aria-label="大球 60%，对赛往绩">大球 60%'
+            'aria-describedby="ai-pop" aria-label="大球 60%，大小球分析依据">大球 60%'
             '<template class="ai-tip-content">',
             html,
         )
-        self.assertIn('<div class="ai-tip-title">对赛往绩</div>', html)
+        self.assertIn('<div class="ai-tip-title">大小球分析依据</div>', html)
         h2h_table = html.split('<table class="h2h-table">', 1)[1].split("</table>", 1)[0]
         self.assertIn("<td>Home</td><td>2:0</td><td>Away</td>", h2h_table)
         self.assertEqual(h2h_table.count("<tr>"), 2)

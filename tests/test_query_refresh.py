@@ -251,6 +251,41 @@ class RefreshOddsOnlyMissingKindsTests(unittest.TestCase):
         scraper.assert_called_once()
         self.assertEqual(scraper.call_args.kwargs.get("kinds"), ["yazhi"])
 
+    def test_failed_page_is_not_hidden_by_success_in_same_kind(self):
+        payload = {
+            "9|yazhi": {"status": "ok", "rows": [[293, "0.9", "平手", "0.9"]]},
+            "10|yazhi": {"status": "error", "rows": []},
+            "9|daxiao": {"status": "ok", "rows": [[293, "0.9", "2.5", "0.9"]]},
+        }
+        ensure, scraper = self._run(payload, PAGES_STALE_HOURS / 2)
+        ensure.assert_called_once()
+        scraper.assert_called_once()
+        self.assertEqual(scraper.call_args.kwargs["kinds"], ["yazhi"])
+
+    def test_incomplete_refresh_reports_retry_instead_of_complete_freshness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "cache"
+            cache.mkdir()
+            self._write_artifact(
+                cache,
+                {
+                    "9|yazhi": {"status": "ok", "rows": [["company", "line"]]},
+                    "9|daxiao": {"status": "error", "rows": []},
+                },
+                PAGES_STALE_HOURS + 1,
+            )
+            with mock.patch("football_analysis.main._app_root", return_value=root), \
+                 mock.patch.object(query_app, "_ensure_cdp", return_value=None), \
+                 mock.patch.object(query_app, "_run_odds_scraper", return_value=None), \
+                 mock.patch("football_analysis.cdp_profile.shutdown_cdp_chrome"), \
+                 mock.patch.object(query_app, "analyze_issue", return_value=([_item()], "26143", "u")), \
+                 mock.patch.object(query_app, "save_issue_movements", return_value={"match_count": 1, "attention_count": 0}):
+                text = query_app.run_refresh_odds("26143", db_path=root / "x.sqlite")
+            self.assertIn("抓取失败 1 页", text)
+            self.assertIn("断点继续", text)
+            self.assertNotIn("盘口产物已刷新", text)
+
     def test_empty_upstream_is_not_missing_skips_scrape(self):
         """yazhi 是 empty（上游确实没开盘）：重抓也拿不到，跳过。"""
         payload = {

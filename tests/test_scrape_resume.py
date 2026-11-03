@@ -336,6 +336,74 @@ class VerificationPauseTests(unittest.TestCase):
 class ResumeMainTests(unittest.TestCase):
     """上次中断存下的页不再重抓，只补缺的。"""
 
+    def test_finished_batch_with_failure_keeps_checkpoint_until_retry_succeeds(self):
+        from football_analysis.query_report import _data_freshness
+
+        mod = _scraper()
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            issue = "26157"
+            fids = [str(fid) for fid in range(100, 114)]
+            matches = ([{"fixture_id": fid} for fid in fids], issue)
+            out = cache / f"odds_pages_{issue}.json"
+            out.write_text(
+                json.dumps({"999|shuju": {"status": "error", "text": ""}}),
+                encoding="utf-8",
+            )
+            meta_path = cache / f"odds_pages_{issue}.meta.json"
+            old = time.time() - 12.2 * 3600
+            meta_path.write_text(
+                json.dumps({"yazhi": old, "daxiao": old, "shuju": old}),
+                encoding="utf-8",
+            )
+            failed_url = f"https://odds.500.com/fenxi/daxiao-{fids[-1]}.shtml"
+
+            def first_fetch(page, url, wait, **kwargs):
+                if url == failed_url:
+                    return {"status": "error", "rows": []}
+                return {"status": "ok", "rows": [["company", "line"]]}
+
+            args = ["--issue", issue, "--cache-dir", str(cache), "--delay", "0", "--kinds"]
+            with mock.patch.object(mod, "collect_sfc_matches", return_value=matches), \
+                 mock.patch.object(mod, "acquire", return_value=mock.MagicMock()), \
+                 mock.patch.object(mod, "fetch_page", side_effect=first_fetch) as fetch, \
+                 mock.patch.object(mod.time, "sleep"):
+                self.assertEqual(mod.main(args + ["yazhi", "daxiao"]), 0)
+            self.assertEqual(fetch.call_count, 28)
+            partial = mod.partial_path(cache, issue)
+            self.assertTrue(partial.exists())
+            checkpoint = json.loads(partial.read_text(encoding="utf-8"))
+            self.assertEqual(len(checkpoint), 27)
+            self.assertNotIn(f"{fids[-1]}|daxiao", checkpoint)
+            self.assertNotIn("999|shuju", checkpoint)
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertGreater(metadata["yazhi"], old)
+            self.assertEqual(metadata["daxiao"], old)
+            freshness = _data_freshness([], [], issue=issue, cache_dir=cache)
+            self.assertIn("12.2 小时前", freshness["pages"])
+            self.assertIn("抓取失败 1 页", freshness["pages"])
+
+            with mock.patch.object(mod, "collect_sfc_matches", return_value=matches), \
+                 mock.patch.object(mod, "acquire", return_value=mock.MagicMock()), \
+                 mock.patch.object(
+                     mod, "fetch_page",
+                     return_value={"status": "ok", "rows": [["company", "line"]]},
+                 ) as fetch, \
+                 mock.patch.object(mod.time, "sleep"):
+                self.assertEqual(mod.main(args + ["daxiao"]), 0)
+            self.assertEqual(fetch.call_count, 1)
+            self.assertEqual(fetch.call_args.args[1], failed_url)
+            self.assertFalse(partial.exists())
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertGreater(metadata["daxiao"], old)
+            freshness = _data_freshness([], [], issue=issue, cache_dir=cache)
+            self.assertIn("盘口产物：刚刚", freshness["pages"])
+            self.assertNotIn("抓取失败", freshness["pages"])
+            self.assertEqual(
+                json.loads(out.read_text(encoding="utf-8"))["999|shuju"]["status"],
+                "error",
+            )
+
     def test_skips_pages_already_in_partial(self):
         mod = _scraper()
         with tempfile.TemporaryDirectory() as tmp:
