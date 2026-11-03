@@ -565,6 +565,32 @@ class StoreAndReportTests(unittest.TestCase):
         self.assertIn("分析", rendered)
         self.assertIn("近期状态较好", rendered)
 
+    def test_team_aliases_render_in_handicap_and_total_goals_popups(self):
+        h2h = (
+            "英超 | 2026-04-23 | [9]伯恩茅斯2:2利兹联[15] | 0:0 | 平 | odds | line | 输 | 大 | note"
+        )
+        rendered = _lean_cell(
+            _analysis(team_read=json.dumps({
+                "tendency": "主队赢盘",
+                "confidence": 0.6,
+                "reason": "伯恩茅斯状态较好",
+                "over_tendency": "大球",
+                "over_confidence": 0.55,
+                "over_reason": "利兹联防线偏弱",
+                "source_references": {
+                    "分析": "伯恩茅斯近期表现稳定",
+                    "交战历史": h2h,
+                },
+            }, ensure_ascii=False)),
+            name_aliases={"伯恩茅斯": "般茅", "利兹联": "列斯聯"},
+        )
+        self.assertIn("般茅状态较好", rendered)
+        self.assertIn("般茅近期表现稳定", rendered)
+        self.assertIn("列斯聯防线偏弱", rendered)
+        self.assertIn("<td>般茅</td><td>2:2</td><td>列斯聯</td>", rendered)
+        self.assertNotIn("伯恩茅斯", rendered)
+        self.assertNotIn("利兹联", rendered)
+
     def test_ai_tooltip_trigger_is_limited_to_display_text(self):
         h2h = (
             "英超 | 2026-04-23 | Home 2:2 Away | 0:0 | 平 | odds | line | 输 | 大 | note"

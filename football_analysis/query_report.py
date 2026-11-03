@@ -26,6 +26,14 @@ def _esc(value: object) -> str:
     return html.escape("" if value is None else str(value), quote=False)
 
 
+def _replace_team_aliases(value: object, aliases: dict[str, str]) -> str:
+    text = "" if value is None else str(value)
+    for original, alias in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
+        if original:
+            text = text.replace(original, alias)
+    return text
+
+
 def _result_markers_html(value: str, *, color_cn_results: bool = False) -> str:
     if "对赛成绩" in value:
         value = re.sub(
@@ -376,8 +384,14 @@ def _h2h_table_html(text: str, *, league_color: str = "") -> str:
     )
 
 
-def _lean_cell(row: dict, *, h2h_score: str = "") -> str:
+def _lean_cell(
+    row: dict,
+    *,
+    h2h_score: str = "",
+    name_aliases: dict[str, str] | None = None,
+) -> str:
     """AI分析列：球队资料的亚盘赢盘倾向 + 大小球倾向（主行/次行）。"""
+    name_aliases = name_aliases or {}
     parts: list[str] = []
     try:
         read = json.loads(str(row.get("team_read") or "") or "{}")
@@ -389,21 +403,25 @@ def _lean_cell(row: dict, *, h2h_score: str = "") -> str:
         factors = [factors]
     if not isinstance(factors, list):
         factors = []
-    factors = [str(factor).strip() for factor in factors if str(factor).strip()]
+    factors = [
+        _replace_team_aliases(factor, name_aliases).strip()
+        for factor in factors
+        if str(factor).strip()
+    ]
     if tendency:
         try:
             confidence = float(read.get("confidence") or 0.0)
         except (TypeError, ValueError):
             confidence = 0.0
         conf = f" {confidence * 100:.0f}%" if confidence > 0 else ""
-        reason = str(read.get("reason") or "").strip()
+        reason = _replace_team_aliases(read.get("reason") or "", name_aliases).strip()
         tooltip_sections = []
         source_references = read.get("source_references") or {}
         reference_sections = []
         if isinstance(source_references, dict):
             for key, value in source_references.items():
                 key_text = str(key).strip()
-                value_text = str(value).strip()
+                value_text = _replace_team_aliases(value, name_aliases).strip()
                 if (
                     not key_text or not value_text
                     or key_text in ("对赛成绩", "对战历史", "交战历史")
@@ -416,7 +434,11 @@ def _lean_cell(row: dict, *, h2h_score: str = "") -> str:
                     if is_recommendation
                     else f"<p>{_result_markers_html(value_text[:800])}</p>"
                 )
-                heading_text = "足彩推荐" if key_text == "推介" else key_text
+                heading_text = (
+                    "足彩推荐"
+                    if key_text == "推介"
+                    else _replace_team_aliases(key_text, name_aliases)
+                )
                 heading = "" if key_text == "心水推荐" else f"<h4>{_esc(heading_text)}</h4>"
                 reference_sections.append(
                     f'<section class="ai-tip-section{section_class}">{heading}{body}</section>'
@@ -458,17 +480,17 @@ def _lean_cell(row: dict, *, h2h_score: str = "") -> str:
             f'<div class="model-lean"><span class="model-lean-tip"{tip_attrs}>'
             f'{_esc(tendency)}{_esc(conf)}{tooltip}</span></div>'
         )
-    over_tendency = str(read.get("over_tendency") or "").strip()
+    over_tendency = _replace_team_aliases(read.get("over_tendency") or "", name_aliases).strip()
     try:
         over_confidence = float(read.get("over_confidence") or 0.0)
     except (TypeError, ValueError):
         over_confidence = 0.0
-    h2h_text = str(h2h_score or "").strip()
+    h2h_text = _replace_team_aliases(h2h_score, name_aliases).strip()
     source_references = read.get("source_references") or {}
     if isinstance(source_references, dict) and not h2h_text:
         h2h_text = next(
             (
-                str(source_references.get(key) or "").strip()
+                _replace_team_aliases(source_references.get(key) or "", name_aliases).strip()
                 for key in ("对赛成绩", "对战历史", "交战历史")
                 if str(source_references.get(key) or "").strip()
             ),
@@ -480,7 +502,7 @@ def _lean_cell(row: dict, *, h2h_score: str = "") -> str:
     )
     if over_tendency and (over_confidence > 0 or h2h_table):
         over_conf = f" {over_confidence * 100:.0f}%" if over_confidence > 0 else ""
-        over_reason = str(read.get("over_reason") or "").strip()
+        over_reason = _replace_team_aliases(read.get("over_reason") or "", name_aliases).strip()
         tooltip_sections = []
         if over_reason:
             tooltip_sections.append(
@@ -1703,6 +1725,7 @@ def render_query_html(
             )
             if match_no and h2h:
                 h2h_by_match[match_no] = h2h
+    name_aliases: dict[str, str] = {}
     if db_path:
         from .store import list_team_name_aliases
 
@@ -1820,7 +1843,13 @@ def render_query_html(
                 <div class="line-pair"><span class="k">即</span>{_esc(row.get("current_line") or "无数据")}</div>
                 {_line_delta_html(row)}
               </td>
-              <td class="lean-cell">{_lean_cell(row, h2h_score=h2h_by_match.get(match_no, ""))}</td>
+              <td class="lean-cell">{
+                _lean_cell(
+                    row,
+                    h2h_score=h2h_by_match.get(match_no, ""),
+                    name_aliases=name_aliases,
+                )
+              }</td>
 
               <td class="total-cell">
                 {_total_goals_html(row.get('payload_json') or '')}
