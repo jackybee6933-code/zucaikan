@@ -343,9 +343,48 @@ def _print_query_rows(rows: list[dict]) -> None:
         )
 
 
+def _fetch_live_issue_score_html(issue: str, expected_match_count: int = 14) -> str:
+    from . import cdp_profile
+    from .cdp import CdpPage
+    from .pipeline import LIVE_ISSUE_SCORE_URL
+
+    owned_process_before = cdp_profile._CHROME_PROC
+    error = cdp_profile.ensure_cdp_chrome()
+    if error:
+        raise RuntimeError(error)
+    started_here = owned_process_before is None and cdp_profile._CHROME_PROC is not None
+    page = None
+    try:
+        page = CdpPage()
+        page.goto(
+            LIVE_ISSUE_SCORE_URL.format(issue=issue),
+            timeout_ms=25_000,
+            wait_until="domcontentloaded",
+        )
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            table_html, row_count = page.evaluate(
+                "() => [document.querySelector('#table_match')?.outerHTML || '', "
+                "document.querySelectorAll('#table_match tr.revamp-match-row').length]"
+            )
+            if table_html and row_count >= expected_match_count:
+                return table_html
+            time.sleep(0.5)
+        raise RuntimeError(
+            f"{issue} 期比分表未完整加载（{row_count}/{expected_match_count} 场）"
+        )
+    finally:
+        try:
+            if page is not None:
+                page.close()
+        finally:
+            if started_here:
+                cdp_profile.shutdown_cdp_chrome()
+
+
 def _refresh_scores(db_path: Path, issue: str, cache_dir: Path | None) -> dict:
     """抓取最终比分写回 DB，返回统计摘要（不打印，CLI 与查询页共用）。"""
-    from .pipeline import collect_sfc_matches, LIVE_DETAIL_URL, extract_match_score, _parse_detail_ids
+    from .pipeline import collect_sfc_matches, parse_live_issue_scores
     from .http import Fetcher
 
     fetcher = Fetcher(cache_dir=cache_dir)
@@ -353,20 +392,20 @@ def _refresh_scores(db_path: Path, issue: str, cache_dir: Path | None) -> dict:
         matches, actual = collect_sfc_matches(issue, fetcher)
     except Exception as exc:
         return {"issue": issue, "error": f"无法抓取 {issue} 场次列表: {exc}"}
-    scores: dict[str, str] = {}
     errors: list[str] = []
-    for row in matches:
-        try:
-            # 赛前缓存的详情页会一直显示 0 - 0，必须踢掉重抓才能拿到赛后比分
-            cache_key = f"detail:{row['fixture_id']}"
-            fetcher.cache.evict(cache_key)
-            html = fetcher.fetch(
-                LIVE_DETAIL_URL.format(fixture_id=row["fixture_id"]),
-                cache_key=cache_key,
-            )
-            scores[str(row["match_no"])] = extract_match_score(html)
-        except Exception as exc:
-            errors.append(f"  {row['match_no']} 场次比分抓取失败: {exc}")
+    try:
+        issue_html = _fetch_live_issue_score_html(actual, len(matches))
+        fixture_scores = parse_live_issue_scores(issue_html)
+        scores = {
+            str(row["match_no"]): fixture_scores[row["fixture_id"]]
+            for row in matches
+            if row.get("fixture_id") in fixture_scores
+        }
+        if not scores:
+            errors.append(f"  {actual} 期比分页未解析到已完赛场次")
+    except Exception as exc:
+        scores = {}
+        errors.append(f"  {actual} 期比分页抓取失败: {exc}")
     # 只写非空比分：空串意味着未开赛或抓取失败，写回会冲掉已有真比分
     filled_scores = {no: s for no, s in scores.items() if s}
     updated = update_match_scores(db_path, actual, filled_scores)

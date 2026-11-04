@@ -26,7 +26,14 @@ class FetchBlockSyncTests(unittest.TestCase):
         self.assertIn('const fetchIssueStorageKey = "fetch-issue-input"', html)
         self.assertIn("fetchIssueInput.value = savedIssue", html)
         self.assertIn("sessionStorage.removeItem(fetchIssueStorageKey)", html)
-        self.assertEqual(html.count("reloadQueryWithIssue(issue)"), 4)
+        self.assertEqual(html.count("reloadQueryWithIssue(issue)"), 3)
+
+    def test_ai_analysis_progress_resumes_after_query_navigation(self):
+        html = query_report._FETCH_BLOCK
+        self.assertIn('fetch("/ai-analyze-status").then((r) => r.json())', html)
+        self.assertIn("if (!s.running) return;", html)
+        self.assertIn("_pollAiAnalyze(\"\")", html)
+        self.assertIn("if (refreshIssue && s.result && !s.error)", html)
 
 
 if __name__ == "__main__":

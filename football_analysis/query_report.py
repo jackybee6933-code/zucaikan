@@ -797,6 +797,30 @@ _FETCH_BLOCK = \
     }
     const aiBtn = document.getElementById("ai-analyze-btn");
     const aiStatus = document.getElementById("ai-analyze-status");
+    let aiPolling = false;
+    function _pollAiAnalyze(refreshIssue) {
+      if (aiPolling) return;
+      aiPolling = true;
+      const poll = setInterval(async () => {
+        try {
+          const r = await fetch("/ai-analyze-status");
+          const s = await r.json();
+          if (s.running) {
+            aiBtn.disabled = true;
+            aiStatus.textContent = "AI 分析 " + s.issue + " 中...";
+            _renderAiProgress(s);
+            return;
+          }
+          clearInterval(poll);
+          aiPolling = false;
+          aiBtn.disabled = false;
+          aiStatus.textContent = s.error || s.result || "完成";
+          _renderAiProgress(null);
+          aiStatus.scrollIntoView({ block: "nearest" });
+          if (refreshIssue && s.result && !s.error) reloadQueryWithIssue(refreshIssue);
+        } catch (e) { /* 轮询瞬时失败，下个 tick 重试 */ }
+      }, 2000);
+    }
     if (aiBtn) {
       aiBtn.addEventListener("click", async () => {
         const issue = new URLSearchParams(new FormData(fetchForm)).get("issue") || "";
@@ -817,24 +841,15 @@ _FETCH_BLOCK = \
           aiStatus.textContent = "请求失败：" + e;
           return;
         }
-        const poll = setInterval(async () => {
-          try {
-            const r = await fetch("/ai-analyze-status");
-            const s = await r.json();
-            if (s.running) {
-              aiStatus.textContent = "AI 分析 " + s.issue + " 中...";
-              _renderAiProgress(s);
-              return;
-            }
-            clearInterval(poll);
-            aiBtn.disabled = false;
-            aiStatus.textContent = s.error || s.result || "完成";
-            _renderAiProgress(null);
-            aiStatus.scrollIntoView({ block: "nearest" });
-            if (s.result && !s.error) reloadQueryWithIssue(issue);
-          } catch (e) { /* 轮询瞬时失败，下一 tick 重试 */ }
-        }, 2000);
+        _pollAiAnalyze(issue);
       });
+      fetch("/ai-analyze-status").then((r) => r.json()).then((s) => {
+        if (!s.running) return;
+        aiBtn.disabled = true;
+        aiStatus.textContent = "AI 分析 " + s.issue + " 中...";
+        _renderAiProgress(s);
+        _pollAiAnalyze("");
+      }).catch(() => {});
     }
     if (fetchForm) {
       fetchForm.addEventListener("submit", async (e) => {

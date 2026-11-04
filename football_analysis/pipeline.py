@@ -30,6 +30,35 @@ from .team import TEAM_PAGE_URL, parse_team_recent_html
 
 
 LIVE_DETAIL_URL = "https://live.500.com/detail.php?fid={fixture_id}&r=1"
+LIVE_ISSUE_SCORE_URL = "https://live.500.com/zucai.php?e={issue}"
+
+
+def parse_live_issue_scores(html: str) -> dict[str, str]:
+    """Return completed full-time scores indexed by 500 fixture ID."""
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table", id="table_match")
+    if table is None:
+        return {}
+
+    scores: dict[str, str] = {}
+    for row in table.select("tr.revamp-match-row"):
+        fixture_match = re.fullmatch(r"a(\d+)", row.get("id", ""))
+        if not fixture_match:
+            continue
+        status = row.select_one("td.revamp-status")
+        if status is None or status.get_text(" ", strip=True) not in {"完", "完场"}:
+            continue
+        score_cell = row.select_one("td.revamp-score")
+        if score_cell is None:
+            continue
+        home = score_cell.select_one(".clt1")
+        away = score_cell.select_one(".clt3")
+        home_score = home.get_text(strip=True) if home else ""
+        away_score = away.get_text(strip=True) if away else ""
+        if not home_score.isdigit() or not away_score.isdigit():
+            continue
+        scores[fixture_match.group(1)] = f"{home_score} - {away_score}"
+    return scores
 
 
 def collect_sfc_matches(issue: str, fetcher: Fetcher) -> tuple[list[dict], str]:
@@ -165,6 +194,7 @@ def analyze_issue(
 
     if needs_detail:
         detail_htmls: dict[str, str] = {}
+        detail_errors: dict[str, Exception] = {}
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {
                 executor.submit(
@@ -176,13 +206,22 @@ def analyze_issue(
             }
             for future in as_completed(future_map):
                 fixture_id = future_map[future]
-                detail_htmls[fixture_id] = future.result()
+                try:
+                    detail_htmls[fixture_id] = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    detail_errors[fixture_id] = exc
         for row in enriched:
+            fixture_id = row["fixture_id"]
+            if fixture_id in detail_errors:
+                row["warnings"].append(
+                    f"详情页抓取失败：{detail_errors[fixture_id]}"
+                )
+                continue
             if row.get("home_id") and row.get("away_id"):
                 pass
             try:
                 home_id, away_id, home_name, away_name = _parse_detail_ids(
-                    detail_htmls[row["fixture_id"]], row["fixture_id"]
+                    detail_htmls[fixture_id], fixture_id
                 )
                 row["home_id"] = home_id
                 row["away_id"] = away_id
@@ -192,8 +231,9 @@ def analyze_issue(
                 row["warnings"].append(f"详情页未取到球队：{exc}")
 
         for row in enriched:
-            if row.get("fixture_id") in detail_htmls:
-                row["final_score"] = extract_match_score(detail_htmls[row["fixture_id"]])
+            fixture_id = row.get("fixture_id")
+            if fixture_id in detail_htmls:
+                row["final_score"] = extract_match_score(detail_htmls[fixture_id])
 
     _attach_titan_h2h(enriched, actual_issue, fetcher, max_workers=max_workers)
     _attach_odds_movement(
