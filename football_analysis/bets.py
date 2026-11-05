@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import math
 import re
 import sqlite3
@@ -236,8 +237,11 @@ def market_options(match: dict) -> dict[str, dict]:
 
 
 def _find_match(db_path: str | Path, issue: str, match_no: str) -> dict | None:
+    movement = _latest_matches(db_path, issue).get(str(match_no))
     for item in rebuild_analyses_from_db(Path(db_path), issue):
         if str(item.get("match_no") or "") == str(match_no):
+            if movement:
+                item["team_read"] = movement.get("team_read") or ""
             return item
     return None
 
@@ -331,11 +335,24 @@ def _bet_view(row: dict, match: dict | None, now: datetime) -> dict:
     market = str(row.get("market") or "")
     selection = str(row.get("selection") or "")
     rec_side = str(row.get("rec_side") or "")
+    model_side = _popup_model_side(match, market)
+    model_alignment = (
+        "none" if not model_side
+        else "follow" if model_side == selection
+        else "deviate"
+    )
     return {
         **row,
         "market_label": MARKET_LABELS.get(market, market),
         "selection_label": SELECTION_LABELS.get(market, {}).get(selection, selection),
         "rec_side_label": SELECTION_LABELS.get(market, {}).get(rec_side, rec_side),
+        "model_tendency_label": SELECTION_LABELS.get(market, {}).get(model_side, ""),
+        "model_alignment": model_alignment,
+        "model_alignment_label": {
+            "follow": "\u8ddf\u968f",
+            "deviate": "\u504f\u79bb",
+            "none": "\u65e0\u660e\u786e\u503e\u5411",
+        }[model_alignment],
         "status": status,
         "status_label": status_label,
         "result_label": result_label or status_label,
@@ -345,6 +362,32 @@ def _bet_view(row: dict, match: dict | None, now: datetime) -> dict:
         "can_edit": not locked,
         "can_delete": not locked,
     }
+
+
+def _popup_model_side(match: dict | None, market: str) -> str:
+    raw = (match or {}).get("team_read") or ""
+    if isinstance(raw, dict):
+        read = raw
+    else:
+        try:
+            read = json.loads(str(raw))
+        except (json.JSONDecodeError, TypeError):
+            return ""
+    if not isinstance(read, dict):
+        return ""
+    if market == "asian":
+        tendency = str(read.get("tendency") or "")
+        return {
+            "\u4e3b\u961f\u8d62\u76d8": "home",
+            "\u5ba2\u961f\u8d62\u76d8": "away",
+        }.get(tendency, "")
+    if market == "total":
+        tendency = str(read.get("over_tendency") or "")
+        return {
+            "\u5927\u7403": "over",
+            "\u5c0f\u7403": "under",
+        }.get(tendency, "")
+    return ""
 
 
 def list_bets(
@@ -415,23 +458,11 @@ def summarize_bets(bets: list[dict]) -> dict:
         market: _subset_stats([bet for bet in bets if bet.get("market") == market])
         for market in ("asian", "total")
     }
-    stats["follows"] = {
-        "follow": _subset_stats(
-            [bet for bet in bets if int(bet.get("follows_recommendation") or 0)]
-        ),
-        "deviate": _subset_stats(
-            [
-                bet for bet in bets
-                if not int(bet.get("follows_recommendation") or 0)
-                and bet.get("rec_action") in ("主推", "轻仓")
-            ]
-        ),
-        "none": _subset_stats(
-            [
-                bet for bet in bets
-                if bet.get("rec_action") not in ("主推", "轻仓")
-            ]
-        ),
+    stats["model_alignment"] = {
+        alignment: _subset_stats(
+            [bet for bet in bets if bet.get("model_alignment") == alignment]
+        )
+        for alignment in ("follow", "deviate", "none")
     }
     return stats
 
@@ -463,16 +494,10 @@ def export_bets_csv(
     writer = csv.writer(output)
     writer.writerow([
         "期号", "场次", "联赛", "开赛", "主队", "客队", "市场", "方向",
-        "盘口", "水位", "积分", "理由", "模型动作", "模型方向", "是否跟随",
+        "盘口", "水位", "积分", "理由", "盘口弹窗倾向", "方向对比",
         "状态", "结果", "收益", "最终比分", "创建时间", "更新时间",
     ])
     for bet in bets:
-        if int(bet.get("follows_recommendation") or 0):
-            follow = "跟随"
-        elif bet.get("rec_action") in ("主推", "轻仓"):
-            follow = "偏离"
-        else:
-            follow = "无推荐"
         writer.writerow([
             bet.get("issue", ""),
             bet.get("match_no", ""),
@@ -486,9 +511,8 @@ def export_bets_csv(
             bet.get("water", 0),
             f"{int(float(bet.get('stake') or 0))}",
             bet.get("reason", ""),
-            bet.get("rec_action", ""),
-            bet.get("rec_side_label", ""),
-            follow,
+            bet.get("model_tendency_label", "") or "无明确倾向",
+            bet.get("model_alignment_label", "无明确倾向"),
             bet.get("status_label", ""),
             bet.get("result_label", ""),
             f"{float(bet.get('profit') or 0):.2f}",
@@ -534,9 +558,14 @@ def bet_options(
         "match": {
             "league": str(match.get("league") or ""),
             "match_time": str(match.get("match_time") or ""),
-            "home_team": str(match.get("home_team") or ""),
-            "away_team": str(match.get("away_team") or ""),
+            "home_team": str(
+                match.get("home_team_cantonese") or match.get("home_team") or ""
+            ),
+            "away_team": str(
+                match.get("away_team_cantonese") or match.get("away_team") or ""
+            ),
             "final_score": str(match.get("final_score") or ""),
+            "team_read": match.get("team_read") or "",
         },
         "kickoff_at": kickoff.isoformat(timespec="minutes") if kickoff else "",
         "locked": locked,

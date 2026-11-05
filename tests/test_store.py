@@ -4,7 +4,7 @@ from pathlib import Path
 
 from football_analysis import __version__
 from football_analysis.browser_report import render_browser_html
-from football_analysis.query_report import render_query_html
+from football_analysis.query_report import _match_teams_html, render_query_html
 from football_analysis.store import latest_captured_at, list_issues, list_leagues, query_movements, save_issue_movements, update_match_scores
 from football_analysis.store import rebuild_analyses_from_db
 
@@ -65,11 +65,11 @@ class MovementStoreTests(unittest.TestCase):
             row = query_movements(db, issue="26154")
             html = render_query_html(row, issues=list_issues(db), issue="26154", db_path=str(db))
 
-        home = html.index('class="match-team"><strong class="team-name">主隊</strong>')
+        home = html.index('class="match-team"><a class="team-link" href="https://liansai.500.com/team/123/" target="_blank" rel="noopener"><strong class="team-name">主隊</strong></a>')
         home_badge = html.index("teamsignnew_123.png", home)
         vs = html.index('class="team-vs">vs</span>', home_badge)
         away_badge = html.index("teamsignnew_456.png", vs)
-        away = html.index('<strong class="team-name">客隊</strong>', away_badge)
+        away = html.index('<a class="team-link" href="https://liansai.500.com/team/456/" target="_blank" rel="noopener"><strong class="team-name">客隊</strong></a>', away_badge)
         self.assertLess(home, home_badge)
         self.assertLess(home_badge, vs)
         self.assertLess(vs, away_badge)
@@ -86,6 +86,31 @@ class MovementStoreTests(unittest.TestCase):
         self.assertIn(".match-team { display: inline-flex; flex: 1 1 0;", html)
         self.assertIn(".match-teams > .match-team:first-child { justify-content: flex-end; text-align: right; }", html)
         self.assertIn(".match-teams > .match-team:last-child { justify-content: flex-start; text-align: left; }", html)
+
+    def test_match_team_without_numeric_id_is_not_linked(self):
+        rendered = _match_teams_html({
+            "home_team": "主队",
+            "away_team": "客队",
+            "payload_json": '{"home_id":"", "away_id":"unknown"}',
+        })
+        self.assertNotIn('class="team-link"', rendered)
+        self.assertIn('<strong class="team-name">主队</strong>', rendered)
+        self.assertIn('<strong class="team-name">客队</strong>', rendered)
+
+    def test_pending_score_is_regular_weight_and_finished_score_stays_bold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "test.sqlite"
+            pending = _item("1", "主队", "客队", attention=False, level="稳定", reason="")
+            finished = _item("2", "主队甲", "客队乙", attention=False, level="稳定", reason="")
+            finished["final_score"] = "2 - 1"
+            save_issue_movements(db, [pending, finished], "26154", "https://trade.500.com/sfc/")
+            rows = query_movements(db, issue="26154")
+            rendered = render_query_html(rows, issues=list_issues(db), issue="26154", db_path=str(db))
+
+        self.assertIn('<td class="score-cell score-pending">未开赛</td>', rendered)
+        self.assertIn('<td class="score-cell">2 - 1</td>', rendered)
+        self.assertIn(".score-cell.score-pending { font-weight: 400; }", rendered)
+        self.assertIn(".score-cell { min-width: 56px; white-space: nowrap; font-weight: 600;", rendered)
 
     def test_kind_filter_returns_only_matching_movement(self):
         with tempfile.TemporaryDirectory() as tmp:

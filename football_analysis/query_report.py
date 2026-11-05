@@ -295,11 +295,14 @@ def _match_teams_html(row: dict) -> str:
                 f'alt="{escaped_name}队徽" loading="lazy" decoding="async" '
                 f'referrerpolicy="no-referrer">'
             )
-        contents = (
-            f'<strong class="team-name">{escaped_name}</strong>{icon}'
-            if home
-            else f'{icon}<strong class="team-name">{escaped_name}</strong>'
-        )
+        name_html = f'<strong class="team-name">{escaped_name}</strong>'
+        if re.fullmatch(r"\d+", raw_id):
+            name_html = (
+                f'<a class="team-link" href="https://liansai.500.com/team/{raw_id}/" '
+                f'target="_blank" rel="noopener">'
+                f'{name_html}</a>'
+            )
+        contents = name_html + icon if home else icon + name_html
         return f'<span class="match-team">{contents}</span>'
 
     return (
@@ -425,6 +428,31 @@ def _h2h_table_html(text: str, *, league_color: str = "") -> str:
     )
 
 
+def _popup_team_names(row: dict) -> dict[str, str]:
+    try:
+        payload = json.loads(str(row.get("payload_json") or "{}"))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    names = {}
+    for side in ("home", "away"):
+        original = str(row.get(f"{side}_team") or "")
+        cantonese = str(payload.get(f"{side}_team_cantonese") or "")
+        if original and cantonese and original != cantonese:
+            names[original] = cantonese
+    return names
+
+
+def _popup_team_names_text(value: str, names: dict[str, str]) -> str:
+    if not names:
+        return value
+    pattern = re.compile(
+        "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
+    )
+    return pattern.sub(lambda match: names[match.group()], value)
+
+
 def _lean_cell(
     row: dict,
     *,
@@ -436,6 +464,7 @@ def _lean_cell(
         read = json.loads(str(row.get("team_read") or "") or "{}")
     except (json.JSONDecodeError, TypeError):
         read = {}
+    team_names = _popup_team_names(row)
     tendency = str(read.get("tendency") or "").strip()
     factors = read.get("factors") or []
     if isinstance(factors, str):
@@ -453,14 +482,16 @@ def _lean_cell(
         except (TypeError, ValueError):
             confidence = 0.0
         conf = f" {confidence * 100:.0f}%" if confidence > 0 else ""
-        reason = str(read.get("reason") or "").strip()
+        reason = _popup_team_names_text(
+            str(read.get("reason") or "").strip(), team_names
+        )
         tooltip_sections = []
         source_references = read.get("source_references") or {}
         reference_sections = []
         if isinstance(source_references, dict):
             for key, value in source_references.items():
                 key_text = str(key).strip()
-                value_text = str(value or "").strip()
+                value_text = _popup_team_names_text(str(value or "").strip(), team_names)
                 if (
                     not key_text or not value_text
                     or key_text in ("对赛成绩", "对战历史", "交战历史")
@@ -494,7 +525,10 @@ def _lean_cell(
         if factors:
             tooltip_sections.append(
                 '<section class="ai-tip-section"><h4>重点因素</h4><ul>'
-                + "".join(f"<li>{_esc(factor)}</li>" for factor in factors)
+                + "".join(
+                    f"<li>{_esc(_popup_team_names_text(factor, team_names))}</li>"
+                    for factor in factors
+                )
                 + "</ul></section>"
             )
         tooltip_sections.extend(
@@ -524,12 +558,14 @@ def _lean_cell(
         over_confidence = float(read.get("over_confidence") or 0.0)
     except (TypeError, ValueError):
         over_confidence = 0.0
-    h2h_text = str(h2h_score or "").strip()
+    h2h_text = _popup_team_names_text(str(h2h_score or "").strip(), team_names)
     source_references = read.get("source_references") or {}
     if isinstance(source_references, dict) and not h2h_text:
         h2h_text = next(
             (
-                str(source_references.get(key) or "").strip()
+                _popup_team_names_text(
+                    str(source_references.get(key) or "").strip(), team_names
+                )
                 for key in ("对赛成绩", "对战历史", "交战历史")
                 if str(source_references.get(key) or "").strip()
             ),
@@ -541,7 +577,9 @@ def _lean_cell(
     )
     if over_tendency and (over_confidence > 0 or h2h_table):
         over_conf = f" {over_confidence * 100:.0f}%" if over_confidence > 0 else ""
-        over_reason = str(read.get("over_reason") or "").strip()
+        over_reason = _popup_team_names_text(
+            str(read.get("over_reason") or "").strip(), team_names
+        )
         tooltip_sections = []
         if over_reason:
             tooltip_sections.append(
@@ -1875,6 +1913,7 @@ def render_query_html(
                 f'data-issue="{_esc(issue_value)}" data-match-no="{_esc(match_no)}" '
             f'>投注</button>{more}</span></td>'
             )
+        score_class = "score-cell" if row.get("final_score") else "score-cell score-pending"
         table_rows.append(
             f"""
             <tr>
@@ -1888,7 +1927,7 @@ def render_query_html(
                 {_match_teams_html(row)}
 
               </td>
-              <td class="score-cell">{_esc(row.get("final_score") or "未开赛")}</td>
+              <td class="{score_class}">{_esc(row.get("final_score") or "未开赛")}</td>
               <td class="type-cell">{_kind_badge(str(row.get("kind") or ""), muted=_kind_muted(row))}{_split_html(row, f'splitpop-{row_idx}')}</td>
               <td class="line-change">
                 <div class="line-pair"><span class="k">初</span>{_esc(row.get("initial_line") or "无数据")}</div>
@@ -1920,7 +1959,7 @@ def render_query_html(
     roi = float(bet_stats.get("roi") or 0)
     asian_stats = (bet_stats.get("markets") or {}).get("asian", {})
     total_stats = (bet_stats.get("markets") or {}).get("total", {})
-    follow_stats = (bet_stats.get("follows") or {})
+    alignment_stats = (bet_stats.get("model_alignment") or {})
     export_issue = quote_from_bytes(issue.encode("utf-8")) if issue else ""
     export_link = (
         f'<a class="report-btn" href="/bets.csv?issue={export_issue}">导出 CSV</a>'
@@ -1931,9 +1970,9 @@ def render_query_html(
         f"净收益 {asian_stats.get('profit', 0):+.2f} · 命中率 {asian_stats.get('hit_rate', 0):.1f}%",
         f"大小球 {total_stats.get('bets', 0)} 注 · 已结算 {total_stats.get('settled', 0)} · "
         f"净收益 {total_stats.get('profit', 0):+.2f} · 命中率 {total_stats.get('hit_rate', 0):.1f}%",
-        f"跟随模型 {follow_stats.get('follow', {}).get('bets', 0)} 注 · "
-        f"偏离模型 {follow_stats.get('deviate', {}).get('bets', 0)} 注 · "
-        f"无推荐 {follow_stats.get('none', {}).get('bets', 0)} 注",
+        f"跟随弹窗倾向 {alignment_stats.get('follow', {}).get('bets', 0)} 注 · "
+        f"偏离弹窗倾向 {alignment_stats.get('deviate', {}).get('bets', 0)} 注 · "
+        f"无明确倾向 {alignment_stats.get('none', {}).get('bets', 0)} 注",
     )
     bet_table_rows = []
     for bet in bets:
@@ -1943,13 +1982,13 @@ def render_query_html(
             if status == "settled"
             else "-"
         )
-        rec_action = str(bet.get("rec_action") or "")
-        rec_side = str(bet.get("rec_side_label") or "")
-        rec_text = " ".join(part for part in (rec_action, rec_side) if part) or "无推荐"
-        if int(bet.get("follows_recommendation") or 0):
-            rec_text += " · 跟随"
-        elif rec_action in ("主推", "轻仓"):
-            rec_text += " · 偏离"
+        model_tendency = str(bet.get("model_tendency_label") or "")
+        alignment_label = str(bet.get("model_alignment_label") or "无明确倾向")
+        rec_text = (
+            f"{model_tendency} · {alignment_label}"
+            if model_tendency
+            else "无明确倾向"
+        )
         bet_table_rows.append(
             f"""
             <tr id="bet-row-{int(bet.get('id') or 0)}">
@@ -2104,6 +2143,8 @@ def render_query_html(
     .match-teams > .match-team:first-child {{ justify-content: flex-end; text-align: right; }}
     .match-teams > .match-team:last-child {{ justify-content: flex-start; text-align: left; }}
     .match-teams .team-name {{ display: inline; overflow-wrap: anywhere; }}
+    .match-teams .team-link {{ color: inherit; text-decoration: none; }}
+    .match-teams .team-link:hover {{ text-decoration: underline; }}
     .match-meta {{ white-space: nowrap; }}
     .team-badge {{ display: block; flex: 0 0 20px; width: 20px; height: 20px; object-fit: contain; }}
     .team-vs {{ color: var(--muted); }}
@@ -2148,6 +2189,7 @@ def render_query_html(
     .ai-tip-result-win {{ color: #dc2626; font-weight: 700; }}
     .ai-tip-result-loss {{ color: #16a34a; font-weight: 700; }}
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}
+    .score-cell.score-pending {{ font-weight: 400; }}
     .alert-table {{ table-layout: fixed; }}
     .alert-table .issue-cell {{ width: 6%; white-space: nowrap; }}
     .alert-table .match-cell {{ width: 27%; }}

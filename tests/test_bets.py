@@ -118,6 +118,25 @@ class BetOptionsTests(unittest.TestCase):
             options["markets"]["total"]["recommendation"]["default"], ""
         )
 
+    def test_options_prefer_cantonese_team_names(self):
+        item = _item()
+        item["home_team_cantonese"] = "主队粤语名"
+        item["away_team_cantonese"] = "客队粤语名"
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _seed(tmp, item)
+            options = bet_options(db, ISSUE, "1", now=NOW)
+
+        self.assertEqual(options["match"]["home_team"], "主队粤语名")
+        self.assertEqual(options["match"]["away_team"], "客队粤语名")
+
+    def test_options_fall_back_to_original_team_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _seed(tmp)
+            options = bet_options(db, ISSUE, "1", now=NOW)
+
+        self.assertEqual(options["match"]["home_team"], "主队")
+        self.assertEqual(options["match"]["away_team"], "客队")
+
 
 class BetLifecycleTests(unittest.TestCase):
     def test_create_update_and_delete_before_kickoff(self):
@@ -206,6 +225,47 @@ class BetSettlementTests(unittest.TestCase):
 
 
 class BetStatsTests(unittest.TestCase):
+    def test_model_alignment_uses_the_popup_tendency(self):
+        item = _item()
+        item["team_read"] = {
+            "tendency": "主队赢盘",
+            "over_tendency": "大球",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _seed(tmp, item)
+            created = create_bet(db, ISSUE, "1", "asian", "home", 10, now=NOW)
+            create_bet(db, ISSUE, "1", "total", "over", 10, now=NOW)
+            bets = list_bets(db, issue=ISSUE, now=NOW)
+            stats = summarize_bets(bets)
+
+        self.assertEqual(created["model_alignment"], "follow")
+        self.assertEqual(
+            {bet["market"]: bet["model_alignment"] for bet in bets},
+            {"asian": "follow", "total": "follow"},
+        )
+        self.assertEqual(stats["model_alignment"]["follow"]["bets"], 2)
+        self.assertEqual(stats["model_alignment"]["deviate"]["bets"], 0)
+
+    def test_model_alignment_marks_opposite_and_observer_as_deviate_or_none(self):
+        item = _item()
+        item["team_read"] = {
+            "tendency": "客队赢盘",
+            "over_tendency": "观望",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _seed(tmp, item)
+            create_bet(db, ISSUE, "1", "asian", "home", 10, now=NOW)
+            create_bet(db, ISSUE, "1", "total", "over", 10, now=NOW)
+            bets = list_bets(db, issue=ISSUE, now=NOW)
+            stats = summarize_bets(bets)
+
+        self.assertEqual(
+            {bet["market"]: bet["model_alignment"] for bet in bets},
+            {"asian": "deviate", "total": "none"},
+        )
+        self.assertEqual(stats["model_alignment"]["deviate"]["bets"], 1)
+        self.assertEqual(stats["model_alignment"]["none"]["bets"], 1)
+
     def test_summary_trend_and_csv(self):
         item = _item(asian_line=-0.75, total_line=2.25)
         with tempfile.TemporaryDirectory() as tmp:
@@ -227,12 +287,12 @@ class BetStatsTests(unittest.TestCase):
         self.assertEqual(stats["hits"], 1)
         self.assertEqual(stats["decided"], 2)
         self.assertAlmostEqual(stats["hit_rate"], 50.0)
-        self.assertEqual(stats["follows"]["follow"]["bets"], 1)
-        self.assertEqual(stats["follows"]["none"]["bets"], 1)
+        self.assertEqual(stats["model_alignment"]["follow"]["bets"], 0)
+        self.assertEqual(stats["model_alignment"]["none"]["bets"], 2)
         self.assertEqual(trend[0]["issue"], ISSUE)
         self.assertIn("期号,场次", csv_text)
-        self.assertIn("跟随", csv_text)
-        self.assertIn("无推荐", csv_text)
+        self.assertIn("盘口弹窗倾向", csv_text)
+        self.assertIn("无明确倾向", csv_text)
         self.assertIn("理由", csv_text)
         self.assertIn("客队反击效率更高", csv_text)
 
@@ -254,7 +314,13 @@ class KickoffTests(unittest.TestCase):
 class BetRenderTests(unittest.TestCase):
     def test_static_page_is_read_only_and_serve_page_has_dialog(self):
         with tempfile.TemporaryDirectory() as tmp:
-            db = _seed(tmp)
+            item = _item()
+            item["team_read"] = {
+                "tendency": "主队赢盘",
+                "reason": "主队赢盘理由",
+                "over_tendency": "小球",
+            }
+            db = _seed(tmp, item)
             create_bet(
                 db, ISSUE, "1", "asian", "away", 10,
                 reason="客队阵容完整", now=NOW
@@ -299,6 +365,13 @@ class BetRenderTests(unittest.TestCase):
         self.assertIn("bet-open", serve_html)
         self.assertIn("bet-more", serve_html)
         self.assertIn('id="bets-section"', serve_html)
+        bet = bets[0]
+        self.assertIn(
+            f'{bet["model_tendency_label"]} · {bet["model_alignment_label"]}',
+            serve_html,
+        )
+        self.assertIn("跟随弹窗倾向", serve_html)
+        self.assertIn("偏离弹窗倾向", serve_html)
         self.assertIn("data-bet-tip", serve_html)
         self.assertIn("10 积分", serve_html)
         self.assertIn(".bets-table tbody tr:nth-child(even) td", serve_html)

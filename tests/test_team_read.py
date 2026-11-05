@@ -484,6 +484,46 @@ class ShujuTextTests(unittest.TestCase):
 
 
 class StoreAndReportTests(unittest.TestCase):
+    def test_handicap_and_total_popups_use_cantonese_team_names(self):
+        h2h = (
+            "League | 2026-04-23 | Home 2:2 Away | 0:0 | 平 | odds | line | 赢 | 大 | note"
+        )
+        item = _analysis(
+            home_team="Home",
+            away_team="Away",
+            payload_json=json.dumps({
+                "home_team_cantonese": "\u7cb5\u8bed\u4e3b\u961f",
+                "away_team_cantonese": "\u7cb5\u8bed\u5ba2\u961f",
+            }, ensure_ascii=False),
+            team_read=json.dumps({
+                "tendency": "\u4e3b\u961f\u8d62\u76d8",
+                "confidence": 0.6,
+                "reason": "Home \u7403\u961f\u7684\u7403\u5458\u56de\u5f52",
+                "factors": ["Away \u9632\u5b88\u7403\u5458\u505c\u8d5b"],
+                "over_tendency": "\u5c0f\u7403",
+                "over_confidence": 0.55,
+                "over_reason": "Home \u653b\u51fb\u4eba\u5458\u4e0d\u6574",
+                "source_references": {
+                    "\u63a8\u4ecb": "Home \u8fd1\u51b5\u8f83\u597d",
+                    "\u5bf9\u8d5b\u6210\u7ee9": h2h,
+                },
+            }, ensure_ascii=False),
+        )
+        rendered = _lean_cell(item)
+        soup = BeautifulSoup(rendered, "html.parser")
+        popups = [
+            trigger.select_one("template").decode_contents()
+            for trigger in soup.select(".model-lean-tip")
+        ]
+
+        self.assertEqual(len(popups), 2)
+        self.assertIn("\u7cb5\u8bed\u4e3b\u961f", popups[0])
+        self.assertIn("\u7cb5\u8bed\u5ba2\u961f", popups[0])
+        self.assertIn("\u7cb5\u8bed\u4e3b\u961f", popups[1])
+        self.assertIn("\u7cb5\u8bed\u5ba2\u961f", popups[1])
+        self.assertNotIn("Home", rendered)
+        self.assertNotIn("Away", rendered)
+
     def test_legacy_low_confidence_direction_is_preserved_on_render(self):
         rendered = _lean_cell(_analysis(team_read=json.dumps({
             "tendency": "\u5ba2\u961f\u8d62\u76d8",
