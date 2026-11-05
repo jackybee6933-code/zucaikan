@@ -582,14 +582,11 @@ class StoreAndReportTests(unittest.TestCase):
                     "交战历史": h2h,
                 },
             }, ensure_ascii=False)),
-            name_aliases={"伯恩茅斯": "般茅", "利兹联": "列斯聯"},
         )
-        self.assertIn("般茅状态较好", rendered)
-        self.assertIn("般茅近期表现稳定", rendered)
-        self.assertIn("列斯聯防线偏弱", rendered)
-        self.assertIn("<td>般茅</td><td>2:2</td><td>列斯聯</td>", rendered)
-        self.assertNotIn("伯恩茅斯", rendered)
-        self.assertNotIn("利兹联", rendered)
+        self.assertIn("伯恩茅斯状态较好", rendered)
+        self.assertIn("伯恩茅斯近期表现稳定", rendered)
+        self.assertIn("利兹联防线偏弱", rendered)
+        self.assertIn("<td>伯恩茅斯</td><td>2:2</td><td>利兹联</td>", rendered)
 
     def test_ai_tooltip_trigger_is_limited_to_display_text(self):
         h2h = (

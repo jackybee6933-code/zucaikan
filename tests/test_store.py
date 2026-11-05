@@ -5,7 +5,7 @@ from pathlib import Path
 from football_analysis import __version__
 from football_analysis.browser_report import render_browser_html
 from football_analysis.query_report import render_query_html
-from football_analysis.store import latest_captured_at, list_issues, list_leagues, list_team_name_aliases, query_movements, save_issue_movements, update_match_scores, upsert_team_name_aliases
+from football_analysis.store import latest_captured_at, list_issues, list_leagues, query_movements, save_issue_movements, update_match_scores
 from football_analysis.store import rebuild_analyses_from_db
 
 
@@ -51,33 +51,41 @@ def _item(match_no: str, home: str, away: str, *, attention: bool, level: str, r
 
 
 class MovementStoreTests(unittest.TestCase):
-    def test_team_name_aliases_change_display_without_mutating_source_rows(self):
+    def test_match_cell_places_badges_outside_each_team_name(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = Path(tmp) / "test.sqlite"
-            rows = [
-                _item("1", "布伦特", "勒沃库森", attention=False, level="稳定", reason=""),
-            ]
-            save_issue_movements(db, rows, "26154", "https://trade.500.com/sfc/")
-            upsert_team_name_aliases(
-                db,
-                {"布伦特": "宾福特", "勒沃库森": "利华古逊"},
-            )
+            item = _item("1", "主队", "客队", attention=False, level="稳定", reason="")
+            item.update({
+                "home_id": "123",
+                "away_id": "456",
+                "home_team_cantonese": "主隊",
+                "away_team_cantonese": "客隊",
+            })
+            save_issue_movements(db, [item], "26154", "https://trade.500.com/sfc/")
+            row = query_movements(db, issue="26154")
+            html = render_query_html(row, issues=list_issues(db), issue="26154", db_path=str(db))
 
-            queried = query_movements(db, issue="26154")
-            html = render_query_html(
-                queried,
-                issues=list_issues(db),
-                issue="26154",
-                db_path=str(db),
-            )
-
-            self.assertEqual(queried[0]["home_team"], "布伦特")
-            self.assertIn("宾福特 vs 利华古逊", html)
-            self.assertNotIn("布伦特 vs 勒沃库森", html)
-            self.assertEqual(
-                list_team_name_aliases(db),
-                {"布伦特": "宾福特", "勒沃库森": "利华古逊"},
-            )
+        home = html.index('class="match-team"><strong class="team-name">主隊</strong>')
+        home_badge = html.index("teamsignnew_123.png", home)
+        vs = html.index('class="team-vs">vs</span>', home_badge)
+        away_badge = html.index("teamsignnew_456.png", vs)
+        away = html.index('<strong class="team-name">客隊</strong>', away_badge)
+        self.assertLess(home, home_badge)
+        self.assertLess(home_badge, vs)
+        self.assertLess(vs, away_badge)
+        self.assertLess(away_badge, away)
+        self.assertEqual(html.count('referrerpolicy="no-referrer"'), 2)
+        head = html.index('class="match-head">')
+        meta = html.index('class="muted match-meta">', head)
+        teams = html.index('class="match-teams">')
+        self.assertLess(head, meta)
+        self.assertLess(meta, teams)
+        self.assertLess(html.index("欧冠", meta), html.index("09-10 00:45", meta))
+        self.assertIn(".match-meta { white-space: nowrap; }", html)
+        self.assertIn(".match-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px;", html)
+        self.assertIn(".match-team { display: inline-flex; flex: 1 1 0;", html)
+        self.assertIn(".match-teams > .match-team:first-child { justify-content: flex-end; text-align: right; }", html)
+        self.assertIn(".match-teams > .match-team:last-child { justify-content: flex-start; text-align: left; }", html)
 
     def test_kind_filter_returns_only_matching_movement(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -131,9 +139,17 @@ class MovementStoreTests(unittest.TestCase):
             all_rows = query_movements(db, latest_only=False)
             self.assertEqual(len(all_rows), 4)
             html = render_query_html(latest, issues=issues, issue="26121", db_path=str(db))
-            self.assertIn("巴萨 vs 费耶诺德", html)
+            self.assertIn(">巴萨</strong>", html)
+            self.assertIn(">费耶诺德</strong>", html)
+            self.assertIn('class="team-vs">vs</span>', html)
             self.assertIn(f"足彩分析系统{__version__}", html)
             self.assertNotIn("足彩分析系统1.3.27", html)
+            self.assertIn('<img class="app-logo" src="data:', html)
+            title = html.index('<h1 class="page-title">')
+            self.assertLess(
+                html.index('class="app-logo"', title),
+                html.index("足彩分析系统", title),
+            )
             self.assertIn("降盘", html)
             self.assertNotIn("退盘", html)
             self.assertIn("AI分析", html)
@@ -411,5 +427,6 @@ class LeagueColorTests(unittest.TestCase):
             save_issue_movements(db, [item], "26121", "https://trade.500.com/sfc/")
             html = render_query_html(query_movements(db, latest_only=True), issues=[], latest_only=True)
             self.assertIn(".alert-table .issue-cell { width: 6%;", html)
-            self.assertIn(".alert-table .match-cell { width: 20%;", html)
+            self.assertIn(".alert-table .match-cell { width: 27%;", html)
+            self.assertIn(".alert-table .lean-cell { width: 15%;", html)
 

@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 
 from .h2h import fetch_issue_schedule, fetch_titan_h2h
 from .h2h import match_no_to_tian_match
+from .cantonese import fetch_cantonese_matches
 from .http import Fetcher
 from .jczq import JCZQ_URL, parse_jczq_html
 from .model import build_model_input, predict_match
@@ -109,6 +110,12 @@ def analyze_issue(
 ) -> tuple[list[dict], str, str]:
     fetcher = fetcher or Fetcher()
     matches, actual_issue = collect_sfc_matches(issue, fetcher)
+    cantonese_names: dict[str, tuple[str, str]] = {}
+    cantonese_error = ""
+    try:
+        cantonese_names = fetch_cantonese_matches(actual_issue)
+    except Exception as exc:  # noqa: BLE001
+        cantonese_error = f"粤语队名抓取失败：{exc}"
     cache_current_sources = bool(issue)
 
     jczq_error = ""
@@ -270,6 +277,11 @@ def analyze_issue(
         )
         analysis["final_score"] = row.get("final_score", "")
         analysis["fixture_id"] = str(row.get("fixture_id") or "")
+        canto_names = cantonese_names.get(str(row.get("fixture_id") or ""))
+        if canto_names:
+            analysis["home_team_cantonese"], analysis["away_team_cantonese"] = canto_names
+        if cantonese_error:
+            analysis.setdefault("warnings", []).append(cantonese_error)
         results.append(analysis)
     if team_read and results:
         # 大模型读球队资料给倾向（只展示，不进概率/门禁）；没有 key 时静默跳过。

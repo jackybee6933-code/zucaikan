@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import html
+import base64
 import json
 import re
 from datetime import datetime
@@ -22,16 +23,18 @@ from .report_index import build_issue_report_index
 from . import __version__
 
 
+_LOGO_PATH = Path(__file__).resolve().parent / "assets" / "football_logo.jpeg"
+try:
+    _LOGO_DATA_URI = (
+        "data:" + "image/jpeg;base64,"
+        + base64.b64encode(_LOGO_PATH.read_bytes()).decode("ascii")
+    )
+except OSError:
+    _LOGO_DATA_URI = ""
+
+
 def _esc(value: object) -> str:
     return html.escape("" if value is None else str(value), quote=False)
-
-
-def _replace_team_aliases(value: object, aliases: dict[str, str]) -> str:
-    text = "" if value is None else str(value)
-    for original, alias in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
-        if original:
-            text = text.replace(original, alias)
-    return text
 
 
 def _result_markers_html(value: str, *, color_cn_results: bool = False) -> str:
@@ -270,6 +273,44 @@ def _league_badge(league: str, color: str) -> str:
     return f'<span class="league-badge" style="background:{color};">{name}</span>'
 
 
+def _match_teams_html(row: dict) -> str:
+    try:
+        payload = json.loads(str(row.get("payload_json") or "{}"))
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    def team(name: object, team_id: object, *, home: bool) -> str:
+        cantonese_name = payload.get(
+            "home_team_cantonese" if home else "away_team_cantonese"
+        )
+        escaped_name = _esc(cantonese_name or name)
+        raw_id = str(team_id or "")
+        icon = ""
+        if re.fullmatch(r"\d+", raw_id):
+            icon = (
+                f'<img class="team-badge" src="https://www.500cache.com/static/'
+                f'soccerdata/images/TeamPic/teamsignnew_{raw_id}.png?!100.webp" '
+                f'alt="{escaped_name}队徽" loading="lazy" decoding="async" '
+                f'referrerpolicy="no-referrer">'
+            )
+        contents = (
+            f'<strong class="team-name">{escaped_name}</strong>{icon}'
+            if home
+            else f'{icon}<strong class="team-name">{escaped_name}</strong>'
+        )
+        return f'<span class="match-team">{contents}</span>'
+
+    return (
+        '<div class="match-teams">'
+        f'{team(row.get("home_team"), payload.get("home_id"), home=True)}'
+        '<span class="team-vs">vs</span>'
+        f'{team(row.get("away_team"), payload.get("away_id"), home=False)}'
+        '</div>'
+    )
+
+
 def _kind_badge(kind: str, *, muted: bool = False) -> str:
     if kind == "退盘":
         kind = "降盘"
@@ -388,10 +429,8 @@ def _lean_cell(
     row: dict,
     *,
     h2h_score: str = "",
-    name_aliases: dict[str, str] | None = None,
 ) -> str:
     """AI分析列：球队资料的亚盘赢盘倾向 + 大小球倾向（主行/次行）。"""
-    name_aliases = name_aliases or {}
     parts: list[str] = []
     try:
         read = json.loads(str(row.get("team_read") or "") or "{}")
@@ -404,7 +443,7 @@ def _lean_cell(
     if not isinstance(factors, list):
         factors = []
     factors = [
-        _replace_team_aliases(factor, name_aliases).strip()
+        str(factor).strip()
         for factor in factors
         if str(factor).strip()
     ]
@@ -414,14 +453,14 @@ def _lean_cell(
         except (TypeError, ValueError):
             confidence = 0.0
         conf = f" {confidence * 100:.0f}%" if confidence > 0 else ""
-        reason = _replace_team_aliases(read.get("reason") or "", name_aliases).strip()
+        reason = str(read.get("reason") or "").strip()
         tooltip_sections = []
         source_references = read.get("source_references") or {}
         reference_sections = []
         if isinstance(source_references, dict):
             for key, value in source_references.items():
                 key_text = str(key).strip()
-                value_text = _replace_team_aliases(value, name_aliases).strip()
+                value_text = str(value or "").strip()
                 if (
                     not key_text or not value_text
                     or key_text in ("对赛成绩", "对战历史", "交战历史")
@@ -437,7 +476,7 @@ def _lean_cell(
                 heading_text = (
                     "足彩推荐"
                     if key_text == "推介"
-                    else _replace_team_aliases(key_text, name_aliases)
+                    else key_text
                 )
                 heading = "" if key_text == "心水推荐" else f"<h4>{_esc(heading_text)}</h4>"
                 reference_sections.append(
@@ -480,17 +519,17 @@ def _lean_cell(
             f'<div class="model-lean"><span class="model-lean-tip"{tip_attrs}>'
             f'{_esc(tendency)}{_esc(conf)}{tooltip}</span></div>'
         )
-    over_tendency = _replace_team_aliases(read.get("over_tendency") or "", name_aliases).strip()
+    over_tendency = str(read.get("over_tendency") or "").strip()
     try:
         over_confidence = float(read.get("over_confidence") or 0.0)
     except (TypeError, ValueError):
         over_confidence = 0.0
-    h2h_text = _replace_team_aliases(h2h_score, name_aliases).strip()
+    h2h_text = str(h2h_score or "").strip()
     source_references = read.get("source_references") or {}
     if isinstance(source_references, dict) and not h2h_text:
         h2h_text = next(
             (
-                _replace_team_aliases(source_references.get(key) or "", name_aliases).strip()
+                str(source_references.get(key) or "").strip()
                 for key in ("对赛成绩", "对战历史", "交战历史")
                 if str(source_references.get(key) or "").strip()
             ),
@@ -502,7 +541,7 @@ def _lean_cell(
     )
     if over_tendency and (over_confidence > 0 or h2h_table):
         over_conf = f" {over_confidence * 100:.0f}%" if over_confidence > 0 else ""
-        over_reason = _replace_team_aliases(read.get("over_reason") or "", name_aliases).strip()
+        over_reason = str(read.get("over_reason") or "").strip()
         tooltip_sections = []
         if over_reason:
             tooltip_sections.append(
@@ -1748,16 +1787,6 @@ def render_query_html(
             )
             if match_no and h2h:
                 h2h_by_match[match_no] = h2h
-    name_aliases: dict[str, str] = {}
-    if db_path:
-        from .store import list_team_name_aliases
-
-        name_aliases = list_team_name_aliases(db_path)
-        for items in (rows, analyses, bets):
-            for item in items:
-                for field in ("home_team", "away_team"):
-                    name = str(item.get(field) or "")
-                    item[field] = name_aliases.get(name, name)
     fetch_block = _FETCH_BLOCK.replace(
         "{_esc(__version__)}", _esc(__version__)
     )
@@ -1854,9 +1883,9 @@ def render_query_html(
                 <div class="match-head">
                   <span class="cell-no">{_esc(row.get("match_no"))}</span>
                   {_badge(str(row.get("level") or "无数据"))}
+                  <span class="muted match-meta">{_league_badge(row.get("league"), row.get("league_color"))} · {_esc(row.get("match_time"))}</span>
                 </div>
-                <strong>{_esc(row.get("home_team"))} vs {_esc(row.get("away_team"))}</strong>
-                <div class="muted">{_league_badge(row.get("league"), row.get("league_color"))} · {_esc(row.get("match_time"))}</div>
+                {_match_teams_html(row)}
 
               </td>
               <td class="score-cell">{_esc(row.get("final_score") or "未开赛")}</td>
@@ -1870,7 +1899,6 @@ def render_query_html(
                 _lean_cell(
                     row,
                     h2h_score=h2h_by_match.get(match_no, ""),
-                    name_aliases=name_aliases,
                 )
               }</td>
 
@@ -2034,6 +2062,8 @@ def render_query_html(
     body {{ margin: 0; background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 14px; }}
     .page {{ max-width: 1360px; margin: 0 auto; padding: 26px 20px 54px; }}
     h1 {{ margin: 4px 0 6px; font-size: 28px; }}
+    .page-title {{ display: flex; align-items: center; gap: 10px; }}
+    .app-logo {{ width: 40px; height: 40px; object-fit: contain; }}
     .meta, .muted {{ color: var(--muted); }}
     .data-freshness {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); font-size: 12px; }}
     .data-freshness strong {{ color: var(--ink); }}
@@ -2069,7 +2099,15 @@ def render_query_html(
     th {{ background: #f8fafc; color: #475569; white-space: nowrap; }}
     .match-cell {{ min-width: 220px; white-space: normal; overflow: hidden; }}
     .match-cell strong {{ display: block; white-space: normal; }}
-    .match-head {{ display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }}
+    .match-teams {{ display: flex; align-items: center; gap: 6px; }}
+    .match-team {{ display: inline-flex; flex: 1 1 0; min-width: 0; align-items: center; gap: 4px; }}
+    .match-teams > .match-team:first-child {{ justify-content: flex-end; text-align: right; }}
+    .match-teams > .match-team:last-child {{ justify-content: flex-start; text-align: left; }}
+    .match-teams .team-name {{ display: inline; overflow-wrap: anywhere; }}
+    .match-meta {{ white-space: nowrap; }}
+    .team-badge {{ display: block; flex: 0 0 20px; width: 20px; height: 20px; object-fit: contain; }}
+    .team-vs {{ color: var(--muted); }}
+    .match-head {{ display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 4px; }}
 .time-cell {{ white-space: nowrap; color: #475569; }}
 .total-cell {{ white-space: normal; font-size: 13px; }}
 .line-delta.delta-hot {{ color: #fff; background: var(--red); border-radius: 4px; padding: 1px 6px; display: inline-block; }}
@@ -2112,11 +2150,11 @@ def render_query_html(
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}
     .alert-table {{ table-layout: fixed; }}
     .alert-table .issue-cell {{ width: 6%; white-space: nowrap; }}
-    .alert-table .match-cell {{ width: 20%; }}
+    .alert-table .match-cell {{ width: 27%; }}
     .alert-table .score-cell {{ width: 8%; }}
     .alert-table .type-cell {{ width: 8%; }}
     .alert-table .line-change {{ width: 18%; }}
-    .alert-table .lean-cell {{ width: 22%; }}
+    .alert-table .lean-cell {{ width: 15%; }}
     .alert-table .total-cell {{ width: 10%; }}
 .report-btn {{ background: var(--green); color: #fff; margin-left: 8px; }}
 .report-btn:disabled {{ background: #cbd5e1; cursor: not-allowed; }}
@@ -2264,7 +2302,10 @@ def render_query_html(
 </head>
 <body>
   <div class="page">
-    <h1>足彩分析系统{_esc(__version__)}</h1>
+    <h1 class="page-title">
+      {f'<img class="app-logo" src="{_LOGO_DATA_URI}" alt="">' if _LOGO_DATA_URI else ''}
+      <span>足彩分析系统{_esc(__version__)}</span>
+    </h1>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}</div>
     {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
     {f'<div class="meta">{bet_chip}</div>' if bet_chip else ''}

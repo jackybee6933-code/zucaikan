@@ -32,6 +32,10 @@ class DetailPageFailureTests(unittest.TestCase):
             mock.patch.object(pipeline, "parse_jczq_html", return_value={}),
             mock.patch.object(pipeline, "parse_odds_xml", return_value={}),
             mock.patch.object(pipeline, "load_odds_pages_raw", return_value={}),
+             mock.patch.object(
+                 pipeline, "fetch_cantonese_matches",
+                 return_value={"1425920": ("主隊", "客隊")},
+             ),
             mock.patch.object(pipeline, "_attach_titan_h2h"),
             mock.patch.object(pipeline, "_attach_odds_movement"),
             mock.patch.object(pipeline, "_fetch_team_records", return_value={}),
@@ -48,6 +52,8 @@ class DetailPageFailureTests(unittest.TestCase):
 
         self.assertEqual(issue, "26158")
         self.assertEqual(len(analyses), 1)
+        self.assertEqual(analyses[0]["home_team_cantonese"], "主隊")
+        self.assertEqual(analyses[0]["away_team_cantonese"], "客隊")
         self.assertTrue(
             any("详情页抓取失败" in warning for warning in analyses[0]["warnings"])
         )

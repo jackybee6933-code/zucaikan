@@ -111,6 +111,7 @@ class AutoLatestTests(unittest.TestCase):
                 "collect_sfc_matches",
                 return_value=([row], issue or "26121"),
             ),
+             mock.patch.object(pipeline, "fetch_cantonese_matches", return_value={}),
             mock.patch.object(pipeline, "_attach_titan_h2h"),
             mock.patch.object(pipeline, "_attach_odds_movement"),
             mock.patch.object(pipeline, "_fetch_team_records", return_value={}),

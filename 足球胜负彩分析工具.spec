@@ -5,7 +5,7 @@ a = Analysis(
     ['run.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('football_analysis/assets/football_logo.jpeg', 'football_analysis/assets')],
     hiddenimports=['football_analysis.cdp', 'football_analysis.cdp_profile',
                    'football_analysis.scrape_odds_pages', 'updater'],
     hookspath=[],
