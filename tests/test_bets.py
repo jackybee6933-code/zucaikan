@@ -227,6 +227,7 @@ class BetSettlementTests(unittest.TestCase):
 class BetStatsTests(unittest.TestCase):
     def test_model_alignment_uses_the_popup_tendency(self):
         item = _item()
+        item["odds_analysis"]["total_goals"]["action"] = "轻仓"
         item["team_read"] = {
             "tendency": "主队赢盘",
             "over_tendency": "大球",
@@ -245,6 +246,49 @@ class BetStatsTests(unittest.TestCase):
         )
         self.assertEqual(stats["model_alignment"]["follow"]["bets"], 2)
         self.assertEqual(stats["model_alignment"]["deviate"]["bets"], 0)
+
+    def test_popup_tendency_is_independent_of_recommendation_action(self):
+        item = _item()
+        item["odds_analysis"]["asian_handicap"]["action"] = "观望"
+        item["odds_analysis"]["total_goals"]["action"] = "观望"
+        item["team_read"] = {
+            "tendency": "客队赢盘",
+            "over_tendency": "大球",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _seed(tmp, item)
+            create_bet(db, ISSUE, "1", "asian", "away", 10, now=NOW)
+            create_bet(db, ISSUE, "1", "total", "over", 10, now=NOW)
+            bets = list_bets(db, issue=ISSUE, now=NOW)
+            stats = summarize_bets(bets)
+
+        self.assertEqual(
+            {bet["market"]: bet["model_alignment"] for bet in bets},
+            {"asian": "follow", "total": "follow"},
+        )
+        self.assertEqual(
+            {bet["market"]: bet["model_alignment_label"] for bet in bets},
+            {"asian": "跟随", "total": "跟随"},
+        )
+        self.assertEqual(stats["model_alignment"]["follow"]["bets"], 2)
+        self.assertEqual(stats["model_alignment"]["none"]["bets"], 0)
+
+    def test_model_observer_still_has_no_alignment(self):
+        item = _item()
+        item["team_read"] = {
+            "tendency": "观望",
+            "over_tendency": "观望",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _seed(tmp, item)
+            create_bet(db, ISSUE, "1", "asian", "away", 10, now=NOW)
+            create_bet(db, ISSUE, "1", "total", "under", 10, now=NOW)
+            bets = list_bets(db, issue=ISSUE, now=NOW)
+
+        self.assertEqual(
+            {bet["market"]: bet["model_alignment"] for bet in bets},
+            {"asian": "none", "total": "none"},
+        )
 
     def test_model_alignment_marks_opposite_and_observer_as_deviate_or_none(self):
         item = _item()

@@ -520,7 +520,7 @@ def _lean_cell(
         )
         if reason:
             tooltip_sections.append(
-                f'<section class="ai-tip-section"><h4>模型理由</h4><p>{_esc(reason)}</p></section>'
+                f'<section class="ai-tip-section"><h4>模型理由</h4><p class="ai-tip-model-reason">{_esc(reason)}</p></section>'
             )
         if factors:
             tooltip_sections.append(
@@ -583,7 +583,7 @@ def _lean_cell(
         tooltip_sections = []
         if over_reason:
             tooltip_sections.append(
-                f'<section class="ai-tip-section"><h4>模型理由</h4><p>{_esc(over_reason)}</p></section>'
+                f'<section class="ai-tip-section"><h4>模型理由</h4><p class="ai-tip-model-reason">{_esc(over_reason)}</p></section>'
             )
         if h2h_table:
             tooltip_sections.append(
@@ -2167,6 +2167,7 @@ def render_query_html(
     .ai-tip-section + .ai-tip-section {{ margin-top: 9px; padding-top: 8px; border-top: 1px solid #e2e8f0; }}
     .ai-tip-section h4 {{ margin: 0 0 3px; color: #475569; font-size: 13px; font-weight: 700; }}
     .ai-tip-section p {{ margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }}
+    .ai-tip-model-reason {{ color: #2563eb; }}
     .ai-tip-section ul {{ margin: 3px 0 0; padding-left: 18px; }}
     .ai-tip-recommendation {{ margin-top: 0; padding: 10px 11px; border: 1px solid #bfdbfe; border-radius: 6px; background: #eff6ff; }}
     .ai-tip-recommendation h4 {{ margin-bottom: 5px; color: #1d4ed8; font-size: 13px; }}

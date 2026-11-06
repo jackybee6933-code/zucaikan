@@ -597,7 +597,11 @@ class StoreAndReportTests(unittest.TestCase):
         self.assertIn('data-ai-tip tabindex="0"', rendered)
         self.assertIn('<template class="ai-tip-content">', rendered)
         self.assertIn('<div class="ai-tip-title">AI分析依据</div>', rendered)
-        self.assertIn('<section class="ai-tip-section"><h4>模型理由</h4><p>模型理由</p></section>', rendered)
+        self.assertIn(
+            '<section class="ai-tip-section"><h4>模型理由</h4>'
+            '<p class="ai-tip-model-reason">模型理由</p></section>',
+            rendered,
+        )
         self.assertIn('<section class="ai-tip-section ai-tip-recommendation"><h4>足彩推荐</h4><div class="ai-tip-recommendation-text"><p>主队赢盘</p></div></section>', rendered)
         self.assertNotIn('title="', rendered)
         self.assertNotIn("对赛成绩", rendered)
@@ -677,10 +681,17 @@ class StoreAndReportTests(unittest.TestCase):
         self.assertEqual(len(triggers), 2)
         handicap_popup = triggers[0].select_one("template").decode_contents()
         over_popup = triggers[1].select_one("template").decode_contents()
-        self.assertIn(f"<h4>模型理由</h4><p>{reason}</p>", handicap_popup)
+        self.assertIn(
+            f'<h4>模型理由</h4><p class="ai-tip-model-reason">{reason}</p>',
+            handicap_popup,
+        )
         self.assertIn("盘口重点因素", handicap_popup)
         self.assertNotIn(over_reason, handicap_popup)
-        self.assertIn(f"<h4>模型理由</h4><p>{over_reason}</p>", over_popup)
+        self.assertIn(
+            f'<h4>模型理由</h4><p class="ai-tip-model-reason">{over_reason}</p>',
+            over_popup,
+        )
+        self.assertIn(".ai-tip-model-reason { color: #2563eb; }", render_query_html([], issues=[]))
         self.assertIn("对赛往绩", over_popup)
         self.assertIn("<td>Home</td><td>2:2</td><td>Away</td>", over_popup)
         self.assertNotIn(reason, over_popup)
@@ -700,7 +711,10 @@ class StoreAndReportTests(unittest.TestCase):
         trigger = soup.select_one("[data-ai-tip]")
         self.assertIsNotNone(trigger)
         popup = trigger.select_one("template").decode_contents()
-        self.assertIn(f"<h4>模型理由</h4><p>{reason}</p>", popup)
+        self.assertIn(
+            f'<h4>模型理由</h4><p class="ai-tip-model-reason">{reason}</p>',
+            popup,
+        )
         self.assertNotIn("h2h-table", popup)
         soup.select_one("template").decompose()
         self.assertEqual(soup.get_text(" ", strip=True), "大球 60%")

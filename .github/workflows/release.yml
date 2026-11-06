@@ -4,16 +4,25 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "已有的版本 tag，例如 v1.18"
+        required: true
+        type: string
 
 jobs:
-  release:
+  build:
     runs-on: windows-latest
     env:
       PYTHONUTF8: "1"
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -21,19 +30,92 @@ jobs:
       - run: pyinstaller --clean --noconfirm "足球胜负彩分析工具.spec"
       - run: pyinstaller --clean --noconfirm "足球更新器.spec"
       - run: choco install innosetup --no-progress -y
-      - run: iscc /DAppVersion=${{ github.ref_name }} "football_analysis.iss"
+      - run: iscc /DAppVersion=${{ env.RELEASE_TAG }} "football_analysis.iss"
       - run: python tools/make_release.py
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ env.RELEASE_TAG }}
       - run: python tools/create_latest_manifest.py
         env:
-          VERSION: ${{ github.ref_name }}
-      - uses: softprops/action-gh-release@v2
+          VERSION: ${{ env.RELEASE_TAG }}
+      - name: Stage release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
+          Copy-Item dist/football_analysis.exe release-assets/
+          Copy-Item dist/updater.exe release-assets/
+          Copy-Item dist/football_analysis_full.zip release-assets/
+          Copy-Item dist/football_analysis_setup.exe release-assets/
+          Copy-Item dist/latest.json release-assets/
+      - uses: actions/upload-artifact@v4
         with:
-          files: |
-            dist/football_analysis.exe
-            dist/updater.exe
-            dist/football_analysis_full.zip
-            dist/football_analysis_setup.exe
-            dist/latest.json
-          generate_release_notes: true
+          name: release-assets-${{ env.RELEASE_TAG }}
+          path: release-assets
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    runs-on: windows-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-assets-${{ env.RELEASE_TAG }}
+          path: release-assets
+      - name: Create release if needed
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $maxAttempts = 5
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            & gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              exit 0
+            }
+
+            & gh release create $env:RELEASE_TAG `
+              --repo $env:GITHUB_REPOSITORY `
+              --verify-tag `
+              --generate-notes
+            if ($LASTEXITCODE -eq 0) {
+              exit 0
+            }
+            if ($attempt -eq $maxAttempts) {
+              throw "Failed to ensure GitHub Release after $maxAttempts attempts."
+            }
+
+            $delay = [int][math]::Pow(2, $attempt - 1) * 15
+            Write-Host "Release API failed; retrying in $delay seconds (attempt $($attempt + 1)/$maxAttempts)."
+            Start-Sleep -Seconds $delay
+          }
+      - name: Upload release assets with backoff
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $assets = @(
+            "release-assets/football_analysis.exe",
+            "release-assets/updater.exe",
+            "release-assets/football_analysis_full.zip",
+            "release-assets/football_analysis_setup.exe",
+            "release-assets/latest.json"
+          )
+          $maxAttempts = 5
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            & gh release upload $env:RELEASE_TAG @assets `
+              --repo $env:GITHUB_REPOSITORY `
+              --clobber
+            if ($LASTEXITCODE -eq 0) {
+              exit 0
+            }
+            if ($attempt -eq $maxAttempts) {
+              throw "Failed to upload release assets after $maxAttempts attempts."
+            }
+            $delay = [int][math]::Pow(2, $attempt) * 15
+            Write-Host "Upload failed; retrying in $delay seconds (attempt $($attempt + 1)/$maxAttempts)."
+            Start-Sleep -Seconds $delay
+          }
