@@ -86,6 +86,10 @@ class QueryServerTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls.live_links_patcher = mock.patch(
+            "football_analysis.query_app.get_live_links", return_value={}
+        )
+        cls.live_links_mock = cls.live_links_patcher.start()
         cls.tmp = tempfile.TemporaryDirectory()
         root = Path(cls.tmp.name)
         cls.db = root / "test.sqlite"
@@ -119,6 +123,7 @@ class QueryServerTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
+        cls.live_links_patcher.stop()
 
     # --- 基础页面 ---
 
@@ -291,6 +296,8 @@ class QueryServerTests(unittest.TestCase):
     def test_query_page_has_refresh_odds_button(self):
         status, body = _get(self.base + "/")
         self.assertEqual(status, 200)
+        self.assertIn('<th class="live-cell">直播</th>', body)
+        self.assertNotIn("超清直播", body)
         self.assertIn("refresh-odds-btn", body)
         self.assertIn("action-icon", body)
         self.assertIn('id="icon-refresh"', body)
@@ -311,6 +318,29 @@ class QueryServerTests(unittest.TestCase):
         self.assertGreater(ai_at, refresh_at)
         ai_tag = body[ai_at:body.find(">", ai_at)]
         self.assertNotIn("margin-left", ai_tag)
+
+    def test_query_page_has_refresh_live_button_after_ai(self):
+        status, body = _get(self.base + "/")
+        self.assertEqual(status, 200)
+        ai_at = body.find('id="ai-analyze-btn"')
+        live_at = body.find('id="refresh-live-btn"')
+        self.assertGreater(live_at, ai_at)
+        self.assertIn("/refresh-live-status", body)
+        self.assertIn('location.search).get("issue")', body)
+        live_tag = body[live_at:body.find("</button>", live_at)]
+        self.assertIn('src="data:image/gif;base64,', live_tag)
+        self.assertIn('alt=""', live_tag)
+        self.assertNotIn('use href="#icon-refresh"', live_tag)
+
+    def test_query_get_does_not_fetch_live_links(self):
+        get_live = self.live_links_mock
+        get_live.reset_mock()
+        try:
+            status, _ = _get(self.base + f"/?issue={ISSUE}")
+            self.assertEqual(status, 200)
+            get_live.assert_not_called()
+        finally:
+            get_live.reset_mock()
 
     def test_query_page_has_settings_button_without_filter_checkboxes(self):
         status, body = _get(self.base + "/")
@@ -644,6 +674,45 @@ class QueryServerTests(unittest.TestCase):
         self.assertIn("running", payload)
         self.assertFalse(payload["running"])
 
+    def test_refresh_live_requires_issue_and_has_json_status(self):
+        status, _ = _post(self.base + "/refresh-live", {})
+        self.assertEqual(status, 400)
+        status, body = _get(self.base + "/refresh-live-status")
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(body)["running"])
+
+    def test_refresh_live_runs_forced_refresh_and_updates_query(self):
+        links = { (ISSUE, "1"): "http://huakangsy.cn/play/3003947_1.html" }
+        get_live = self.live_links_mock
+        get_live.reset_mock(return_value=True)
+        get_live.return_value = links
+        try:
+            status, _ = _post(self.base + "/refresh-live", {"issue": ISSUE})
+            self.assertEqual(status, 202)
+            payload = _wait_idle(self.base, "/refresh-live-status")
+            self.assertIn("匹配 1 场", payload["result"])
+            get_live.assert_called_once()
+            self.assertEqual(get_live.call_args.args[1], ISSUE)
+            self.assertTrue(get_live.call_args.kwargs["force"])
+            status, body = _get(self.base + f"/?issue={ISSUE}")
+            self.assertEqual(status, 200)
+            self.assertIn("http://huakangsy.cn/play/3003947_1.html", body)
+        finally:
+            get_live.reset_mock()
+
+    def test_refresh_live_failure_clears_running_and_reports_error(self):
+        get_live = self.live_links_mock
+        get_live.reset_mock(side_effect=True)
+        get_live.side_effect = RuntimeError("源站不可用")
+        try:
+            status, _ = _post(self.base + "/refresh-live", {"issue": ISSUE})
+            self.assertEqual(status, 202)
+            payload = _wait_idle(self.base, "/refresh-live-status")
+            self.assertFalse(payload["running"])
+            self.assertIn("源站不可用", payload["error"])
+        finally:
+            get_live.reset_mock(side_effect=True)
+
     def test_ai_analyze_unknown_issue_reports_hint(self):
         from football_analysis.store import connect, default_db_path
 
@@ -701,6 +770,7 @@ class QueryServerTests(unittest.TestCase):
 
                 for path, payload in (
                     ("/refresh-odds", {"issue": ISSUE}),
+                    ("/refresh-live", {"issue": ISSUE}),
                     ("/fetch", {"issue": ISSUE}),
                     ("/review", {"issue": ISSUE}),
                 ):
@@ -783,6 +853,10 @@ class BetServerTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls.live_links_patcher = mock.patch(
+            "football_analysis.query_app.get_live_links", return_value={}
+        )
+        cls.live_links_patcher.start()
         cls.tmp = tempfile.TemporaryDirectory()
         root = Path(cls.tmp.name)
         cls.db = root / "bets.sqlite"
@@ -855,6 +929,7 @@ class BetServerTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.tmp.cleanup()
+        cls.live_links_patcher.stop()
 
     def setUp(self):
         from football_analysis.bets import _connect

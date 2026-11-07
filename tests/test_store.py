@@ -452,6 +452,7 @@ class LeagueColorTests(unittest.TestCase):
             save_issue_movements(db, [item], "26121", "https://trade.500.com/sfc/")
             html = render_query_html(query_movements(db, latest_only=True), issues=[], latest_only=True)
             self.assertIn(".alert-table .issue-cell { width: 6%;", html)
-            self.assertIn(".alert-table .match-cell { width: 27%;", html)
+            self.assertIn(".alert-table .match-cell { width: 25%;", html)
+            self.assertIn(".live-cell { width: 4%;", html)
             self.assertIn(".alert-table .lean-cell { width: 15%;", html)
 

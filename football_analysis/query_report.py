@@ -32,6 +32,19 @@ try:
 except OSError:
     _LOGO_DATA_URI = ""
 
+_LIVE_ICON_PATH = Path(__file__).resolve().parent / "assets" / "football_ball.gif"
+try:
+    _LIVE_ICON_DATA_URI = (
+        "data:image/png;base64,"
+        + base64.b64encode(_LIVE_ICON_PATH.read_bytes()).decode("ascii")
+    )
+except OSError:
+    _LIVE_ICON_DATA_URI = ""
+
+_LIVE_ICON_DATA_URI = "data:" + "image/gif;base64," + base64.b64encode(
+    _LIVE_ICON_PATH.read_bytes()
+).decode("ascii") if _LIVE_ICON_PATH.is_file() else ""
+
 
 def _esc(value: object) -> str:
     return html.escape("" if value is None else str(value), quote=False)
@@ -747,9 +760,11 @@ _FETCH_BLOCK = \
       <button type="submit" class="action-primary"><svg class="action-icon" aria-hidden="true"><use href="#icon-download"></use></svg>获取比赛</button>
       <button type="button" id="refresh-odds-btn" class="action-secondary"><svg class="action-icon" aria-hidden="true"><use href="#icon-refresh"></use></svg>刷新盘口</button>
       <button type="button" id="ai-analyze-btn" class="action-ai" title="读 500 数据分析页球队资料，大模型给出亚盘赢盘倾向（只展示，不改推荐）"><svg class="action-icon" aria-hidden="true"><use href="#icon-sparkles"></use></svg>AI 分析</button>
+      <button type="button" id="refresh-live-btn" class="action-secondary"><img class="action-icon live-refresh-icon" src="{_LIVE_ICON_DATA_URI}" alt="">刷新直播</button>
       <span id="fetch-status" class="muted"></span>
       <span id="refresh-odds-status" class="muted"></span>
       <span id="ai-analyze-status" class="muted"></span>
+      <span id="refresh-live-status" class="muted"></span>
       <div id="refresh-odds-progress" style="display:none;flex:1 0 100%;margin:4px 0 0;height:4px;background:#e5e7eb;border-radius:2px;overflow:hidden">
         <div id="refresh-odds-progress-bar" style="height:100%;width:0;background:#2563eb;transition:width .3s"></div>
       </div>
@@ -927,6 +942,60 @@ _FETCH_BLOCK = \
         _renderAiProgress(s);
         _pollAiAnalyze("");
       }).catch(() => {});
+    }
+    const refreshLiveBtn = document.getElementById("refresh-live-btn");
+    const refreshLiveStatus = document.getElementById("refresh-live-status");
+    let refreshLivePolling = false;
+    function pollRefreshLive(refreshIssue) {
+      if (refreshLivePolling) return;
+      refreshLivePolling = true;
+      const poll = setInterval(async () => {
+        try {
+          const response = await fetch("/refresh-live-status");
+          const state = await response.json();
+          if (state.running) {
+            refreshLiveBtn.disabled = true;
+            refreshLiveStatus.textContent = "刷新直播 " + state.issue + " 中...";
+            return;
+          }
+          clearInterval(poll);
+          refreshLivePolling = false;
+          refreshLiveBtn.disabled = false;
+          refreshLiveStatus.textContent = state.error || state.result || "完成";
+          if (refreshIssue && state.issue === refreshIssue && state.result && !state.error) {
+            reloadQueryWithIssue(refreshIssue);
+          }
+        } catch (e) { /* 轮询瞬时失败，下个 tick 重试 */ }
+      }, 1000);
+    }
+    if (refreshLiveBtn) {
+      refreshLiveBtn.addEventListener("click", async () => {
+        const issue = new URLSearchParams(location.search).get("issue")
+          || new URLSearchParams(new FormData(fetchForm)).get("issue")
+          || "";
+        if (!issue) { refreshLiveStatus.textContent = "请先选择期号"; return; }
+        refreshLiveBtn.disabled = true;
+        refreshLiveStatus.textContent = "直播链接刷新中...";
+        try {
+          const response = await fetch("/refresh-live", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({issue})
+          });
+          const started = await response.json();
+          if (!response.ok) throw new Error(started.error || "启动刷新失败");
+          if (started.status === "busy") {
+            refreshLiveBtn.disabled = false;
+            refreshLiveStatus.textContent =
+              started.task + " " + started.issue + " 正在运行，请完成后重试";
+            return;
+          }
+          pollRefreshLive(issue);
+        } catch (e) {
+          refreshLiveBtn.disabled = false;
+          refreshLiveStatus.textContent = "请求失败：" + (e.message || String(e));
+        }
+      });
     }
     if (fetchForm) {
       fetchForm.addEventListener("submit", async (e) => {
@@ -1782,6 +1851,7 @@ def render_query_html(
     analyses: list[dict] = [],
     source_url: str = "",
     report_links: dict[str, str] | None = None,
+    live_links: dict[tuple[str, str], str] | None = None,
     leagues: list[str] | None = None,
     bets: list[dict] | None = None,
     bet_stats: dict | None = None,
@@ -1790,6 +1860,7 @@ def render_query_html(
 ) -> str:
     from .browser_report import render_browser_html
     report_links = report_links or {}
+    live_links = live_links or {}
     rows = [dict(row) for row in rows]
     analyses = [dict(item) for item in analyses]
     leagues = leagues or []
@@ -1827,7 +1898,7 @@ def render_query_html(
                 h2h_by_match[match_no] = h2h
     fetch_block = _FETCH_BLOCK.replace(
         "{_esc(__version__)}", _esc(__version__)
-    )
+    ).replace("{_LIVE_ICON_DATA_URI}", _LIVE_ICON_DATA_URI)
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     freshness = _data_freshness(
         rows,
@@ -1914,6 +1985,14 @@ def render_query_html(
             f'>投注</button>{more}</span></td>'
             )
         score_class = "score-cell" if row.get("final_score") else "score-cell score-pending"
+        live_url = live_links.get((issue_value, match_no), "")
+        live_cell = (
+            f'<a class="live-link" href="{html.escape(live_url, quote=True)}" target="_blank" '
+            f'rel="noopener noreferrer" title="打开直播页面">'
+            f'<img src="{_LIVE_ICON_DATA_URI}" alt="直播"></a>'
+            if live_url and _LIVE_ICON_DATA_URI
+            else '<span class="live-unavailable" title="暂未匹配到直播">-</span>'
+        )
         table_rows.append(
             f"""
             <tr>
@@ -1927,6 +2006,7 @@ def render_query_html(
                 {_match_teams_html(row)}
 
               </td>
+              <td class="live-cell">{live_cell}</td>
               <td class="{score_class}">{_esc(row.get("final_score") or "未开赛")}</td>
               <td class="type-cell">{_kind_badge(str(row.get("kind") or ""), muted=_kind_muted(row))}{_split_html(row, f'splitpop-{row_idx}')}</td>
               <td class="line-change">
@@ -2118,8 +2198,10 @@ def render_query_html(
     .query-toolbar {{ gap: 9px; }}
     .query-toolbar input, .query-toolbar select {{ border-radius: 6px; }}
     .query-toolbar > button {{ min-height: 36px; padding: 0 13px; border-radius: 6px; font-weight: 500; transition: background .15s, border-color .15s, color .15s, box-shadow .15s; }}
+    .query-toolbar > a {{ display: inline-flex; min-height: 34px; align-items: center; justify-content: center; padding: 0 13px; border: 1px solid var(--line); border-radius: 6px; font-weight: 500; text-decoration: none; transition: background .15s, border-color .15s, color .15s; }}
     .action-icon-sprite {{ position: absolute; width: 0; height: 0; overflow: hidden; }}
     .query-toolbar .action-icon {{ display: inline-block; flex: 0 0 15px; width: 15px; height: 15px; margin-right: 6px; line-height: 1; }}
+    .query-toolbar .live-refresh-icon {{ object-fit: contain; }}
     .query-toolbar > button:focus-visible {{ outline: 3px solid rgba(37, 99, 235, .22); outline-offset: 1px; }}
     .query-toolbar .action-primary {{ background: var(--blue); color: #fff; border-color: var(--blue); }}
     .query-toolbar .action-primary:hover {{ background: var(--blue-dark); border-color: var(--blue-dark); }}
@@ -2129,6 +2211,8 @@ def render_query_html(
     .query-toolbar .action-ai:hover {{ background: var(--indigo-dark); border-color: var(--indigo-dark); }}
     .query-toolbar .action-neutral {{ background: #f8fafc; color: var(--ink); border-color: var(--line); }}
     .query-toolbar .action-neutral:hover {{ background: #fff; color: var(--blue); border-color: var(--blue); }}
+    .query-toolbar > a:hover {{ background: #fff; color: var(--blue); border-color: var(--blue); }}
+    .query-toolbar > a:focus-visible {{ outline: 3px solid rgba(37, 99, 235, .22); outline-offset: 1px; }}
     .query-toolbar .action-ghost {{ background: transparent; color: var(--muted); border-color: transparent; }}
     .query-toolbar .action-ghost:hover {{ background: #f8fafc; color: var(--ink); border-color: var(--line); }}
     .query-toolbar > button:disabled {{ background: #e2e8f0; color: #64748b; border-color: #cbd5e1; cursor: not-allowed; }}
@@ -2191,12 +2275,16 @@ def render_query_html(
     .ai-tip-result-loss {{ color: #16a34a; font-weight: 700; }}
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}
     .score-cell.score-pending {{ font-weight: 400; }}
+    .live-cell {{ width: 4%; text-align: center; }}
+    .live-link {{ display: inline-flex; width: 24px; height: 24px; align-items: center; justify-content: center; }}
+    .live-link img {{ display: block; width: 10px; height: 10px; object-fit: contain; }}
+    .live-unavailable {{ color: #94a3b8; }}
     .alert-table {{ table-layout: fixed; }}
     .alert-table .issue-cell {{ width: 6%; white-space: nowrap; }}
-    .alert-table .match-cell {{ width: 27%; }}
+    .alert-table .match-cell {{ width: 25%; }}
     .alert-table .score-cell {{ width: 8%; }}
     .alert-table .type-cell {{ width: 8%; }}
-    .alert-table .line-change {{ width: 18%; }}
+    .alert-table .line-change {{ width: 16%; }}
     .alert-table .lean-cell {{ width: 15%; }}
     .alert-table .total-cell {{ width: 10%; }}
 .report-btn {{ background: var(--green); color: #fff; margin-left: 8px; }}
@@ -2457,7 +2545,7 @@ def render_query_html(
       <table class="alert-table">
         <thead>
           <tr>
-            <th class="issue-cell">期号</th><th class="match-cell">比赛</th><th class="score-cell">比分</th><th class="type-cell">类型</th><th class="line-change">盘口变化</th><th class="lean-cell">AI分析</th><th class="total-cell">大小球</th><th class="bet-cell">操作</th>
+            <th class="issue-cell">期号</th><th class="match-cell">比赛</th><th class="live-cell">直播</th><th class="score-cell">比分</th><th class="type-cell">类型</th><th class="line-change">盘口变化</th><th class="lean-cell">AI分析</th><th class="total-cell">大小球</th><th class="bet-cell">操作</th>
           </tr>
         </thead>
         <tbody>
