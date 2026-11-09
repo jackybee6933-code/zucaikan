@@ -1,10 +1,14 @@
 import unittest
+import json
+import tempfile
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from football_analysis.live_links import (
     HOME_URL,
     _collect_links,
     _fetch,
+    load_cached_live_links,
     parse_league_links,
     parse_match_links,
     live_links,
@@ -33,6 +37,53 @@ class LiveLinkParserTests(unittest.TestCase):
                 ("26135", "1"): "https://example.test/new"
             })
         collect.assert_called_once_with(rows, "26135")
+
+    def test_fresh_disk_cache_is_reused(self):
+        now = 1_800_000_000
+        with tempfile.TemporaryDirectory() as cache_dir:
+            path = Path(cache_dir) / "live_links_26135.json"
+            path.write_text(json.dumps({
+                "issue": "26135",
+                "fetched_at": now - 3599,
+                "links": {"1": "https://example.test/live"},
+            }), encoding="utf-8")
+            with (
+                patch("football_analysis.live_links.time.time", return_value=now),
+                patch("football_analysis.live_links._collect_links") as collect,
+            ):
+                self.assertEqual(
+                    live_links(self.rows, "26135", cache_dir=cache_dir),
+                    {("26135", "1"): "https://example.test/live"},
+                )
+            collect.assert_not_called()
+
+    def test_expired_cache_is_refreshed_and_persisted(self):
+        now = 1_800_000_000
+        fresh = {"1": "https://example.test/new"}
+        with tempfile.TemporaryDirectory() as cache_dir:
+            path = Path(cache_dir) / "live_links_26135.json"
+            path.write_text(json.dumps({
+                "issue": "26135",
+                "fetched_at": now - 3600,
+                "links": {"1": "https://example.test/old"},
+            }), encoding="utf-8")
+            with (
+                patch("football_analysis.live_links.time.time", return_value=now),
+                patch(
+                    "football_analysis.live_links._collect_links",
+                    return_value=fresh,
+                ) as collect,
+            ):
+                result = live_links(self.rows, "26135", cache_dir=cache_dir)
+                cached, expired, exists = load_cached_live_links(
+                    self.rows, "26135", cache_dir
+                )
+
+            self.assertEqual(result, {("26135", "1"): fresh["1"]})
+            self.assertEqual(cached, result)
+            self.assertFalse(expired)
+            self.assertTrue(exists)
+            collect.assert_called_once_with(self.rows, "26135")
 
     def test_homepage_fixture_title_maps_to_match_detail(self):
         page = """

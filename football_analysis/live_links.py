@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import re
 import threading
 import time
+from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 import requests
@@ -10,7 +12,7 @@ from bs4 import BeautifulSoup
 
 
 HOME_URL = "http://huakangsy.cn/zuqiu/"
-_CACHE_SECONDS = 300
+_CACHE_SECONDS = 60 * 60
 _cache_lock = threading.Lock()
 _cache_expires = 0.0
 _cache_links: dict[str, dict[str, str]] = {}
@@ -157,13 +159,48 @@ def _collect_links(rows: list[dict], issue: str) -> dict[str, str]:
     }
 
 
+def load_cached_live_links(
+    rows: list[dict], issue: str, cache_dir: str | Path
+) -> tuple[dict[tuple[str, str], str], bool, bool]:
+    """Load per-issue links; return links, expired, and cache-exists."""
+    if not issue.isdigit():
+        return {}, False, False
+
+    path = Path(cache_dir) / f"live_links_{issue}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        fetched_at = float(payload["fetched_at"])
+        found = payload["links"]
+        if payload.get("issue") != issue or not isinstance(found, dict):
+            return {}, False, False
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return {}, False, False
+
+    links = {
+        (issue, str(row.get("match_no") or "")): found[str(row.get("match_no") or "")]
+        for row in rows
+        if str(row.get("match_no") or "") in found
+        and isinstance(found[str(row.get("match_no") or "")], str)
+    }
+    expired = time.time() - fetched_at >= _CACHE_SECONDS
+    return links, expired, True
+
+
 def live_links(
-    rows: list[dict], issue: str, *, force: bool = False
+    rows: list[dict],
+    issue: str,
+    *,
+    force: bool = False,
+    cache_dir: str | Path | None = None,
 ) -> dict[tuple[str, str], str]:
     """Return Huakang match-detail URLs keyed by normalized home/away names."""
     global _cache_expires
     now = time.monotonic()
     with _cache_lock:
+        if not force and cache_dir is not None:
+            cached, expired, exists = load_cached_live_links(rows, issue, cache_dir)
+            if exists and not expired:
+                return cached
         if not force and now < _cache_expires and issue in _cache_links:
             found = _cache_links[issue]
             return {
@@ -175,6 +212,21 @@ def live_links(
     with _cache_lock:
         _cache_links[issue] = found
         _cache_expires = time.monotonic() + _CACHE_SECONDS
+        if cache_dir is not None and issue.isdigit():
+            path = Path(cache_dir) / f"live_links_{issue}.json"
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = path.with_suffix(".json.tmp")
+                temporary.write_text(
+                    json.dumps(
+                        {"issue": issue, "fetched_at": time.time(), "links": found},
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+                temporary.replace(path)
+            except OSError:
+                pass
         return {
             (issue, str(row.get("match_no") or "")): found[str(row.get("match_no") or "")]
             for row in rows

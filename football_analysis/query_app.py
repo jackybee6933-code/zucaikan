@@ -30,7 +30,10 @@ from .backup import build_backup_bytes, restore_backup_bytes
 from .http import Fetcher
 from .llm import test_endpoint
 from .llm_settings import public_settings, save_settings
-from .live_links import live_links as get_live_links
+from .live_links import (
+    live_links as get_live_links,
+    load_cached_live_links,
+)
 from .open_browser import open_in_chrome
 from .pipeline import analyze_issue
 from .report_index import build_issue_report_index
@@ -557,6 +560,8 @@ def serve_query(
     ai_state: dict = {"running": False, "issue": "", "result": "", "error": ""}
     refresh_live_state: dict = {"running": False, "issue": "", "result": "", "error": ""}
     live_links_by_issue: dict[str, dict[tuple[str, str], str]] = {}
+    auto_live_refresh_at: dict[str, float] = {}
+    auto_live_refresh_lock = threading.Lock()
     task_lock = threading.Lock()
     active_task: dict | None = None
 
@@ -739,7 +744,7 @@ def serve_query(
     def _do_refresh_live(issue: str) -> None:
         try:
             rows = query_movements(db_path, issue=issue, latest_only=True)
-            links = get_live_links(rows, issue, force=True)
+            links = get_live_links(rows, issue, force=True, cache_dir=cache_dir)
             live_links_by_issue[issue] = links
             refresh_live_state["result"] = (
                 f"{issue} 直播链接已刷新，匹配 {len(links)} 场"
@@ -942,7 +947,28 @@ def serve_query(
                     attention_only=attention_only,
                     latest_only=latest_only,
                 )
-                match_live_links = live_links_by_issue.get(issue, {})
+                cached_links, expired, cache_exists = load_cached_live_links(
+                    rows, issue, cache_dir
+                )
+                if cache_exists:
+                    match_live_links = cached_links
+                    live_links_by_issue[issue] = cached_links
+                    if expired:
+                        now = time.monotonic()
+                        with auto_live_refresh_lock:
+                            last_attempt = auto_live_refresh_at.get(issue, 0.0)
+                            if now - last_attempt >= 60 * 60:
+                                busy = _start_background_task(
+                                    "刷新直播",
+                                    issue,
+                                    refresh_live_state,
+                                    _do_refresh_live,
+                                    issue,
+                                )
+                                if busy is None:
+                                    auto_live_refresh_at[issue] = now
+                else:
+                    match_live_links = live_links_by_issue.get(issue, {})
                 analyses = rebuild_analyses_from_db(Path(db_path), issue)
                 source_url = (analyses[0].get("source_url") or "") if analyses else ""
                 html = render_query_html(

@@ -895,6 +895,7 @@ def clean_cache(
     keep: int = 3,
     dry_run: bool = False,
     now: float | None = None,
+    automatic: bool = False,
 ) -> dict:
     """Remove disposable cache files while retaining the newest odds artifacts."""
     if keep < 0:
@@ -914,7 +915,7 @@ def clean_cache(
     now = time.time() if now is None else now
     odds_files: list[tuple[int, Path]] = []
     for path in root.iterdir():
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
             continue
         match = _ODDS_CACHE_RE.fullmatch(path.name)
         if match:
@@ -932,13 +933,25 @@ def clean_cache(
     result["kept_odds"] = [path.name for _, path in sorted(odds_files, reverse=True)[:keep]]
 
     def remove(path: Path) -> None:
+        try:
+            size = path.stat().st_size
+            if not dry_run:
+                path.unlink()
+        except OSError as exc:
+            if not automatic:
+                raise
+            result["skipped"].append(f"{path.name}: {exc}")
+            return
         result["deleted_files"] += 1
-        result["deleted_bytes"] += path.stat().st_size
-        if not dry_run:
-            path.unlink()
+        result["deleted_bytes"] += size
 
     for path in root.iterdir():
-        if not path.is_file():
+        if path.is_symlink() or not path.is_file():
+            continue
+        if automatic:
+            if re.fullmatch(r"[0-9a-f]{20}\.raw", path.name):
+                if now - path.stat().st_mtime >= 7 * 24 * 3600:
+                    remove(path)
             continue
         if path.suffix == ".raw":
             remove(path)
@@ -980,6 +993,32 @@ def clean_cache(
             remove(path)
 
     return result
+
+
+def auto_clean_cache(cache_dir: str | Path) -> None:
+    """Check on startup; remove raw pages older than seven days once a day."""
+    root = Path(cache_dir)
+    if root.is_symlink() or not root.is_dir():
+        return
+    marker = root / ".last_auto_cleanup"
+    if marker.is_symlink():
+        return
+    now = time.time()
+    try:
+        last = float(marker.read_text(encoding="utf-8"))
+        if 0 <= now - last < 24 * 3600:
+            return
+    except (OSError, ValueError):
+        pass
+    try:
+        result = clean_cache(root, automatic=True, now=now)
+        marker.write_text(str(now), encoding="utf-8")
+    except OSError as exc:
+        print(f"缓存自动清理未完成，将在下次启动重试：{exc}")
+        return
+    if result["deleted_files"]:
+        size_mb = result["deleted_bytes"] / 1024 / 1024
+        print(f"缓存自动清理：{result['deleted_files']} 个过期文件，{size_mb:.2f} MB")
 
 
 def _run_cache(args: argparse.Namespace) -> int:
@@ -1108,6 +1147,7 @@ def _run_analyze_then_serve(parser: argparse.ArgumentParser) -> int:
     db_path = _app_root() / "data" / "football_analysis.sqlite"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     cache_dir = _default_cache_dir()
+    auto_clean_cache(cache_dir)
     args = parser.parse_args(
         [
             "analyze",
@@ -1154,6 +1194,7 @@ def _run_analyze_then_serve(parser: argparse.ArgumentParser) -> int:
 def _run_query(args: argparse.Namespace) -> int:
     db_path = _resolve_db_path(args.db_path)
     if args.serve:
+        auto_clean_cache(_default_cache_dir())
         serve_query(db_path, port=args.port, open_browser=not args.no_open, reports_dir=Path(args.output_dir))
         return 0
     rows = query_movements(

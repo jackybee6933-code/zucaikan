@@ -63,6 +63,10 @@ python run.py backup
 python run.py backup --restore --file data/backups/backup_YYYYMMDD_HHMMSS.zip
 ```
 
+程序启动分析或查询服务时会检查缓存，每 24 小时最多自动清理一次，只删除超过 7 天的
+原始页面缓存（20 位哈希文件名的 `.raw` 文件）。盘口产物、直播链接、抓取断点、
+数据库和报告均保留。程序未运行时不清理，长期运行时在下次启动检查。
+
 `cache --clean` 会删除旧的 `.raw` 页面缓存和过期断点文件，并按期号保留最新 N 期
 
 `backup` 默认将 SQLite 与 AI 接入点设置写入 `data/backups/`。恢复前会自动生成
