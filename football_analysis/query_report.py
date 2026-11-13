@@ -89,6 +89,7 @@ def _recommendation_html(value: str) -> str:
     handicap_matches = list(
         re.finditer(r"盘路(?:赢输|输赢)\s*[-—:：]\s*([WDL1/\-]+)", records_text)
     )
+    parts = []
     if (
         len(form_matches) >= 2
         and len(handicap_matches) >= 2
@@ -104,6 +105,20 @@ def _recommendation_html(value: str) -> str:
             f"近况走势 - {form_matches[1].group(1)}",
             f"盘路赢输 - {handicap_matches[1].group(1)}",
         ]
+    else:
+        table_match = re.fullmatch(
+            r"球队\s+近况走势\s+盘路(?:赢输|输赢)\s+"
+            r"(.+?)\s+([WDL]+)\s+([WDL1/\-]+)\s+"
+            r"(.+?)\s+([WDL]+)\s+([WDL1/\-]+)",
+            records_text,
+        )
+        if table_match:
+            home, home_form, home_handicap, away, away_form, away_handicap = table_match.groups()
+            parts = [
+                home, f"近况走势 - {home_form}", f"盘路赢输 - {home_handicap}",
+                away, f"近况走势 - {away_form}", f"盘路赢输 - {away_handicap}",
+            ]
+    if parts:
         grid = (
             '<div class="ai-tip-recommendation-grid">'
             + "".join(
@@ -398,7 +413,7 @@ def _h2h_table_html(text: str, *, league_color: str = "") -> str:
             r"^\d+(?:\.\d+)?\s*([\u4e00-\u9fff][\u4e00-\u9fff/\uff0f\s]*)\s*\d+(?:\.\d+)?$",
             r"\1", asian,
         ).strip()
-        score_match = re.search(r"(?:[Uu]\d{2})?(\d+)\s*:\s*(\d+)", teams)
+        score_match = re.search(r"(?:[Uu]\d{2})?(\d+)\s*[:-]\s*(\d+)", teams)
         if not score_match:
             continue
         full_score = f"{score_match.group(1)}:{score_match.group(2)}"

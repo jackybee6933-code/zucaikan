@@ -1,13 +1,18 @@
 import unittest
 import json
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import requests
+
 from football_analysis.live_links import (
     HOME_URL,
+    _collect_crzb_links,
     _collect_links,
     _fetch,
+    _fetch_crzb_json,
     load_cached_live_links,
     parse_league_links,
     parse_match_links,
@@ -201,6 +206,7 @@ class LiveLinkParserTests(unittest.TestCase):
     def test_collects_match_from_popular_league_page_using_issue_match_number(self):
         rows = [{
             "issue": "26161",
+            "league": "德甲",
             "match_no": "5",
             "home_team": "粤语主队",
             "away_team": "粤语客队",
@@ -325,6 +331,200 @@ class LiveLinkParserTests(unittest.TestCase):
             body,
         )
         self.assertIn('alt="直播"', body)
+
+
+class CrzbLiveLinkTests(unittest.TestCase):
+    def setUp(self):
+        self.rows = [{
+            "match_no": "13", "home_team": "斯洛文尼", "away_team": "瑞士",
+            "match_time": "11-14 03:45",
+        }]
+        self.match = {
+            "tournament_id": 2981508,
+            "home_name_zh": "斯洛文尼亚", "away_name_zh": "瑞士",
+            "match_time_int": int(datetime(
+                2026, 11, 14, 3, 45, tzinfo=timezone(timedelta(hours=8))
+            ).timestamp()),
+            "is_zb": 1,
+        }
+        self.anchors = {"more": [{
+            "tournament_id": 2981508, "tournament_type": 1, "member_id": 1700,
+        }]}
+
+    def test_api_uses_site_headers_and_returns_data(self):
+        response = Mock()
+        response.json.return_value = {"code": 200, "data": [self.match]}
+        with patch("football_analysis.live_links.requests.get", return_value=response) as get:
+            self.assertEqual(_fetch_crzb_json("/web/web_football_score_list"), [self.match])
+        response.raise_for_status.assert_called_once_with()
+        self.assertEqual(get.call_args.args[0],
+                         "https://www.crzb.com/api/web/web_football_score_list")
+        self.assertEqual(get.call_args.kwargs["headers"]["site"], "crzb")
+        self.assertEqual(get.call_args.kwargs["headers"]["timezone"], "UTC+8")
+
+    def test_api_errors_and_invalid_payloads_are_rejected(self):
+        for payload in ({"code": 500, "data": []}, {"code": 200, "data": None}, []):
+            response = Mock()
+            response.json.return_value = payload
+            with self.subTest(payload=payload), patch(
+                "football_analysis.live_links.requests.get", return_value=response,
+            ), self.assertRaises(ValueError):
+                _fetch_crzb_json("/web/web_football_score_list")
+
+    def test_matches_abbreviation_and_uses_returned_anchor(self):
+        with patch("football_analysis.live_links._fetch_crzb_json", side_effect=[
+            [self.match], self.anchors,
+        ]) as fetch:
+            self.assertEqual(_collect_crzb_links(self.rows), {
+                "13": "https://www.crzb.com/detail/1/2981508/1700",
+            })
+        self.assertIn("get_public_anchor?tournament_id=2981508", fetch.call_args.args[0])
+
+    def test_rejects_youth_reverse_fixture_and_different_date(self):
+        for changes in (
+            {"home_name_zh": "斯洛文尼亚U21", "away_name_zh": "瑞士U21"},
+            {"home_name_zh": "瑞士", "away_name_zh": "斯洛文尼亚"},
+            {"match_time_int": self.match["match_time_int"] - 86400},
+            {"is_zb": 0},
+        ):
+            with self.subTest(changes=changes), patch(
+                "football_analysis.live_links._fetch_crzb_json",
+                return_value=[{**self.match, **changes}],
+            ) as fetch:
+                self.assertEqual(_collect_crzb_links(self.rows), {})
+                self.assertEqual(fetch.call_count, 1)
+
+    def test_no_link_without_a_valid_anchor_for_this_match(self):
+        for anchors in ({"more": []}, {"more": [{
+            "tournament_id": 999, "tournament_type": 1, "member_id": 1700,
+        }]}, {"more": [{
+            "tournament_id": 2981508, "tournament_type": 2, "member_id": 1700,
+        }]}):
+            with self.subTest(anchors=anchors), patch(
+                "football_analysis.live_links._fetch_crzb_json",
+                side_effect=[[self.match], anchors],
+            ):
+                self.assertEqual(_collect_crzb_links(self.rows), {})
+
+    def test_one_failed_anchor_does_not_drop_other_matches(self):
+        rows = self.rows + [{"match_no": "10", "home_team": "荷兰", "away_team": "希腊"}]
+        other = {**self.match, "tournament_id": 2981461,
+                 "home_name_zh": "荷兰", "away_name_zh": "希腊"}
+        with patch("football_analysis.live_links._fetch_crzb_json", side_effect=[
+            [self.match, other], requests.Timeout(), {"more": [{
+                "tournament_id": 2981461, "tournament_type": 1, "member_id": 1753,
+            }]},
+        ]):
+            self.assertEqual(_collect_crzb_links(rows), {
+                "10": "https://www.crzb.com/detail/1/2981461/1753",
+            })
+
+    def test_falls_back_when_old_provider_is_unavailable_and_500_fails(self):
+        with (
+            patch("football_analysis.live_links._fetch", side_effect=requests.Timeout()),
+            patch("football_analysis.cantonese.fetch_mandarin_matches", side_effect=RuntimeError()),
+            patch("football_analysis.live_links._collect_crzb_links", return_value={"13": "new"}) as fallback,
+        ):
+            self.assertEqual(_collect_links(self.rows, "26163"), {"13": "new"})
+        fallback.assert_called_once_with(self.rows)
+
+    def test_only_fills_missing_matches_and_preserves_old_links(self):
+        rows = [{**self.rows[0], "league": "英超"}, {
+            "match_no": "10", "home_team": "荷兰", "away_team": "希腊", "league": "欧国联",
+        }]
+        with (
+            patch("football_analysis.cantonese.fetch_mandarin_matches", return_value={}),
+            patch("football_analysis.live_links._collect_huakang_links", return_value={"13": "old"}),
+            patch("football_analysis.live_links._collect_crzb_links", return_value={"10": "new"}) as fallback,
+        ):
+            self.assertEqual(_collect_links(rows, "26163"), {"13": "old", "10": "new"})
+        fallback.assert_called_once_with([rows[1]])
+
+    def test_crzb_keeps_full_database_names_when_500_returns_short_names(self):
+        with (
+            patch("football_analysis.cantonese.fetch_mandarin_matches", return_value={
+                "13": ("斯洛文", "瑞士"),
+            }),
+            patch("football_analysis.live_links._collect_huakang_links", return_value={}),
+            patch("football_analysis.live_links._fetch_crzb_json", side_effect=[
+                [self.match], self.anchors,
+            ]),
+        ):
+            self.assertEqual(_collect_links(self.rows, "26163"), {
+                "13": "https://www.crzb.com/detail/1/2981508/1700",
+            })
+
+    def test_new_provider_failure_preserves_existing_links(self):
+        rows = [{"match_no": "1", "league": "英超"}] + self.rows
+        with (
+            patch("football_analysis.cantonese.fetch_mandarin_matches", return_value={}),
+            patch("football_analysis.live_links._collect_huakang_links", return_value={"1": "old"}),
+            patch("football_analysis.live_links._fetch_crzb_json", side_effect=requests.Timeout()),
+        ):
+            self.assertEqual(_collect_links(rows, "26163"), {"1": "old"})
+
+
+class LiveSourceRoutingTests(unittest.TestCase):
+    def test_non_big_five_go_directly_to_crzb_without_500_or_old_site(self):
+        for league in ("欧国联", "欧冠", "英足总杯", "英冠", "国际友谊", "日职", "", None):
+            rows = [{"match_no": "1", "league": league}]
+            with (
+                self.subTest(league=league),
+                patch("football_analysis.cantonese.fetch_mandarin_matches") as mandarin,
+                patch("football_analysis.live_links._collect_huakang_links") as old,
+                patch("football_analysis.live_links._collect_crzb_links", return_value={"1": "crzb"}) as crzb,
+            ):
+                self.assertEqual(_collect_links(rows, "26163"), {"1": "crzb"})
+            old.assert_not_called()
+            mandarin.assert_not_called()
+            crzb.assert_called_once_with(rows)
+
+    def test_each_big_five_league_keeps_old_provider_and_name_conversion(self):
+        for league in ("英超", "西甲", "德甲", "意甲", "法甲"):
+            rows = [{"match_no": "1", "league": league,
+                     "home_team": "原主队", "away_team": "原客队"}]
+            with (
+                self.subTest(league=league),
+                patch("football_analysis.cantonese.fetch_mandarin_matches", return_value={
+                    "1": ("转换主队", "转换客队"),
+                }) as mandarin,
+                patch("football_analysis.live_links._collect_huakang_links", return_value={"1": "old"}) as old,
+                patch("football_analysis.live_links._collect_crzb_links") as crzb,
+            ):
+                self.assertEqual(_collect_links(rows, "26163"), {"1": "old"})
+            mandarin.assert_called_once_with("26163")
+            old.assert_called_once_with([{
+                **rows[0], "home_team": "转换主队", "away_team": "转换客队",
+            }])
+            crzb.assert_not_called()
+
+    def test_mixed_issue_uses_crzb_for_other_leagues_and_missing_big_five(self):
+        rows = [
+            {"match_no": "1", "league": "英超"},
+            {"match_no": "2", "league": "欧国联"},
+            {"match_no": "3", "league": "意甲"},
+        ]
+        with (
+            patch("football_analysis.cantonese.fetch_mandarin_matches", return_value={}),
+            patch("football_analysis.live_links._collect_huakang_links", return_value={"1": "old"}) as old,
+            patch("football_analysis.live_links._collect_crzb_links", return_value={"2": "new2", "3": "new3"}) as crzb,
+        ):
+            self.assertEqual(_collect_links(rows, "26163"), {
+                "1": "old", "2": "new2", "3": "new3",
+            })
+        old.assert_called_once_with([rows[0], rows[2]])
+        crzb.assert_called_once_with(rows[1:])
+
+    def test_non_big_five_failure_does_not_fall_back_to_old_provider(self):
+        rows = [{"match_no": "1", "league": "欧国联"}]
+        with (
+            patch("football_analysis.live_links._fetch_crzb_json", side_effect=requests.Timeout()),
+            patch("football_analysis.live_links._collect_huakang_links") as old,
+            patch("football_analysis.cantonese.fetch_mandarin_matches") as mandarin,
+        ):
+            self.assertEqual(_collect_links(rows, "26163"), {})
+        old.assert_not_called()
+        mandarin.assert_not_called()
 
 
 if __name__ == "__main__":

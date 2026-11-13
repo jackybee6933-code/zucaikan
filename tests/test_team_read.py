@@ -888,6 +888,37 @@ class StoreAndReportTests(unittest.TestCase):
             rendered,
         )
 
+    def test_recommendation_records_with_shared_headers_render_as_rows(self):
+        for home, away, form, handicap in (
+            ("捷克 (主)", "西班牙", "LLLLLD", "LLWW1/LW"),
+            ("Home United (主)", "Away City", "WWDLWD", "1/WLLLLL"),
+        ):
+            with self.subTest(home=home):
+                rendered = _lean_cell(_analysis(team_read=json.dumps({
+                    "tendency": "主队赢盘",
+                    "confidence": 0.6,
+                    "source_references": {
+                        "心水推荐": (
+                            f"球队 近况走势 盘路赢输 {home} {form} LWLLLL "
+                            f"{away} WWWWDW {handicap} 推介 - {away} 贏 "
+                            f"对赛成绩 - {home} 0胜1和2负 分析正文"
+                        ),
+                    },
+                }, ensure_ascii=False)))
+                soup = BeautifulSoup(rendered, "html.parser")
+                grid = soup.select_one(".ai-tip-recommendation-grid")
+                self.assertIsNotNone(grid)
+                self.assertEqual(
+                    [cell.get_text(types=None) for cell in grid.find_all("div", recursive=False)],
+                    [home, f"近况走势 - {form}", "盘路赢输 - LWLLLL",
+                     away, "近况走势 - WWWWDW", f"盘路赢输 - {handicap}"],
+                )
+                self.assertIsNotNone(grid.select_one(".ai-tip-result-win"))
+                self.assertIsNotNone(grid.select_one(".ai-tip-result-loss"))
+                self.assertEqual(
+                    soup.select_one(".ai-tip-recommendation-analysis").get_text(types=None), "分析正文"
+                )
+
     def test_ai_tooltip_uses_one_font_size(self):
         rendered = render_query_html([], issues=[], issue="", leagues=[])
         self.assertIn(".ai-tip-section h4 { margin: 0 0 3px; color: #475569; font-size: 13px;", rendered)
@@ -1053,6 +1084,19 @@ class StoreAndReportTests(unittest.TestCase):
                 )
                 self.assertIn("<span>总进球 22</span>", rendered)
 
+    def test_h2h_accepts_hyphen_scores_and_skips_unfinished_matches(self):
+        rendered = _h2h_table_html(
+            "欧国联 | 2026-11-13 | 亚美尼亚1-1塞浦路斯 | VS | 平 | odds | line | 赢 | 小 | \n"
+            "欧国联 | 2026-10-03 | [3]塞浦路斯2-0亚美尼亚[2] | 2-0 | 负 | odds | line | 输 | 小 | -\n"
+            "友谊赛 | 2023-03-28 | 亚美尼亚2-2塞浦路斯 | 0-1 | 平 | odds | line | 输 | 大 | -\n"
+            "青年赛 | 2023-01-01 | HomeU2112-10AwayU21 | 5-4 | 胜 | odds | line | 赢 | 大 | -"
+        )
+        self.assertIn("<td>塞浦路斯</td><td>2:0</td><td>亚美尼亚</td>", rendered)
+        self.assertIn("<td>亚美尼亚</td><td>2:2</td><td>塞浦路斯</td>", rendered)
+        self.assertIn("<td>HomeU21</td><td>12:10</td><td>AwayU21</td>", rendered)
+        self.assertIn("<span>3 场交锋</span><span>总进球 28</span>", rendered)
+        self.assertNotIn("2026-11-13", rendered)
+
     def test_query_uses_cached_h2h_for_existing_over_read(self):
         with tempfile.TemporaryDirectory() as tmp:
             cache_dir = Path(tmp)
@@ -1065,7 +1109,7 @@ class StoreAndReportTests(unittest.TestCase):
                                 "## Home VS Away 对战历史\n"
                                 "赛事 | 比赛日期 | 主队比分客队 | 半场 | 赛果 | 平均欧指 | 让球指数 | 盘路 | 大小 | 备注\n"
                                 "英超 | 2026-10-31 | Home VS Away | VS | - | odds | line | - | - | -\n"
-                                "英超 | 2026-04-13 | Home 2:0 Away | 1:0 | 胜 | odds-hidden | line-hidden | 赢 | 大 | note-hidden"
+                                "英超 | 2026-04-13 | Home 2-0 Away | 1-0 | 胜 | odds-hidden | line-hidden | 赢 | 大 | note-hidden"
                             ),
                         }
                     },

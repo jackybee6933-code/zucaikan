@@ -4,6 +4,7 @@ import json
 import re
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -12,6 +13,8 @@ from bs4 import BeautifulSoup
 
 
 HOME_URL = "http://huakangsy.cn/zuqiu/"
+CRZB_URL = "https://www.crzb.com"
+BIG_FIVE_LEAGUES = frozenset(("英超", "西甲", "德甲", "意甲", "法甲"))
 _CACHE_SECONDS = 60 * 60
 _cache_lock = threading.Lock()
 _cache_expires = 0.0
@@ -32,6 +35,8 @@ _TEAM_ALIAS_GROUPS = (
     ("加泰", "赫塔菲", "赫塔费"),
     ("斯图加", "史特加", "斯图加特"),
     ("不来梅", "雲達不萊梅", "云达不莱梅"),
+    ("斯洛文尼", "斯洛文尼亚"),
+    ("哈萨克", "哈薩克", "哈萨克斯坦"),
 )
 _TEAM_ALIASES = {
     _normalize(alias): frozenset(_normalize(name) for name in group)
@@ -112,38 +117,19 @@ def _fetch(url: str) -> str:
     return response.text
 
 
-def _collect_links(rows: list[dict], issue: str) -> dict[str, str]:
+def _collect_huakang_links(rows: list[dict]) -> dict[str, str]:
     try:
         home_html = _fetch(HOME_URL)
     except requests.RequestException:
         return {}
-    try:
-        from .cantonese import fetch_mandarin_matches
-
-        mandarin_matches = fetch_mandarin_matches(issue)
-    except Exception:
-        return {}
-
-    mandarin_rows = [
-        {
-            **row,
-            "home_team": mandarin_matches.get(str(row.get("match_no") or ""), ("", ""))[0],
-            "away_team": mandarin_matches.get(str(row.get("match_no") or ""), ("", ""))[1],
-        }
-        for row in rows
-        if str(row.get("match_no") or "") in mandarin_matches
-    ]
-    if not mandarin_rows:
-        return {}
-
     links: dict[tuple[str, str], str] = {}
     for league_url in parse_league_links(home_html, HOME_URL):
         try:
             league_html = _fetch(league_url)
         except requests.RequestException:
             continue
-        links.update(parse_match_links(league_html, league_url, mandarin_rows))
-        if len(links) == len(mandarin_rows):
+        links.update(parse_match_links(league_html, league_url, rows))
+        if len(links) == len(rows):
             break
     return {
         str(row.get("match_no") or ""):
@@ -151,12 +137,120 @@ def _collect_links(rows: list[dict], issue: str) -> dict[str, str]:
             _normalize(str(row.get("home_team") or "")),
             _normalize(str(row.get("away_team") or "")),
         ), "")
-        for row in mandarin_rows
+        for row in rows
         if links.get((
             _normalize(str(row.get("home_team") or "")),
             _normalize(str(row.get("away_team") or "")),
         ))
     }
+
+
+def _fetch_crzb_json(path: str) -> list | dict:
+    response = requests.get(
+        CRZB_URL + "/api" + path,
+        timeout=8,
+        headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/142.0.0.0 Safari/537.36",
+            "Referer": CRZB_URL + "/score/football/lives",
+            "Accept": "application/json",
+            "webclienttype": "web", "clientType": "web", "ad-channel": "crzb",
+            "channel": "channel_crzb", "site": "crzb", "timezone": "UTC+8",
+        },
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if (not isinstance(payload, dict) or payload.get("code") != 200
+            or not isinstance(payload.get("data"), (dict, list))):
+        raise ValueError("超人直播接口未返回有效数据")
+    return payload.get("data")
+
+
+def _same_team(team: str, *names: str) -> bool:
+    normalized = _normalize(team)
+    aliases = _TEAM_ALIASES.get(normalized, {normalized})
+    return bool(normalized) and any(_normalize(name) in aliases for name in names)
+
+
+def _collect_crzb_links(rows: list[dict]) -> dict[str, str]:
+    try:
+        matches = _fetch_crzb_json("/web/web_football_score_list")
+    except (requests.RequestException, ValueError):
+        return {}
+    if not isinstance(matches, list):
+        return {}
+
+    links: dict[str, str] = {}
+    for row in rows:
+        for match in matches:
+            if not isinstance(match, dict) or str(match.get("is_zb")) != "1":
+                continue
+            if not all(_same_team(
+                str(row.get(f"{side}_team") or ""),
+                str(match.get(f"{side}_name_zh") or ""),
+                str(match.get(f"{side}_name_zht") or ""),
+            ) for side in ("home", "away")):
+                continue
+            if row.get("match_time"):
+                try:
+                    kickoff = datetime.fromtimestamp(
+                        int(match["match_time_int"]), timezone(timedelta(hours=8))
+                    )
+                except (KeyError, ValueError, TypeError, OSError, OverflowError):
+                    continue
+                if kickoff.strftime("%m-%d %H:%M") != row["match_time"]:
+                    continue
+            match_id = str(match.get("tournament_id") or "")
+            if not match_id.isdigit():
+                continue
+            try:
+                data = _fetch_crzb_json(
+                    f"/web/get_public_anchor?tournament_id={match_id}&type=1&tournament_type=1"
+                )
+            except (requests.RequestException, ValueError):
+                continue
+            anchors = data.get("more", []) if isinstance(data, dict) else []
+            if not isinstance(anchors, list):
+                continue
+            for anchor in anchors:
+                if not isinstance(anchor, dict):
+                    continue
+                member_id = str(anchor.get("member_id") or "")
+                if (str(anchor.get("tournament_id")) == match_id
+                        and str(anchor.get("tournament_type")) == "1"
+                        and member_id.isdigit()):
+                    links[str(row.get("match_no") or "")] = (
+                        f"{CRZB_URL}/detail/1/{match_id}/{member_id}"
+                    )
+                    break
+            if str(row.get("match_no") or "") in links:
+                break
+    return links
+
+
+def _collect_links(rows: list[dict], issue: str) -> dict[str, str]:
+    big_five_rows = [
+        row for row in rows if str(row.get("league") or "").strip() in BIG_FIVE_LEAGUES
+    ]
+    links: dict[str, str] = {}
+    if big_five_rows:
+        try:
+            from .cantonese import fetch_mandarin_matches
+
+            mandarin_matches = fetch_mandarin_matches(issue)
+        except Exception:
+            mandarin_matches = {}
+        match_rows = [
+            {**row, "home_team": names[0], "away_team": names[1]}
+            if (names := mandarin_matches.get(str(row.get("match_no") or ""))) else row
+            for row in big_five_rows
+        ]
+        links = _collect_huakang_links(match_rows)
+    missing = [row for row in rows if str(row.get("match_no") or "") not in links]
+    if missing:
+        links.update(_collect_crzb_links(missing))
+    return links
 
 
 def load_cached_live_links(
@@ -193,7 +287,7 @@ def live_links(
     force: bool = False,
     cache_dir: str | Path | None = None,
 ) -> dict[tuple[str, str], str]:
-    """Return Huakang match-detail URLs keyed by normalized home/away names."""
+    """Return live-room URLs keyed by issue and match number."""
     global _cache_expires
     now = time.monotonic()
     with _cache_lock:
