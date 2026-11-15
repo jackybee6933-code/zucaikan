@@ -682,7 +682,10 @@ class QueryServerTests(unittest.TestCase):
         self.assertFalse(json.loads(body)["running"])
 
     def test_refresh_live_runs_forced_refresh_and_updates_query(self):
-        links = { (ISSUE, "1"): "http://huakangsy.cn/play/3003947_1.html" }
+        links = {(ISSUE, "1"): [
+            {"name": "主播甲", "url": "https://www.crtv0.live/detail/1/2981508/1700"},
+            {"name": "主播乙", "url": "https://www.crtv0.live/detail/1/2981508/1701"},
+        ]}
         get_live = self.live_links_mock
         get_live.reset_mock(return_value=True)
         get_live.return_value = links
@@ -691,12 +694,15 @@ class QueryServerTests(unittest.TestCase):
             self.assertEqual(status, 202)
             payload = _wait_idle(self.base, "/refresh-live-status")
             self.assertIn("匹配 1 场", payload["result"])
+            self.assertIn("2 个直播入口", payload["result"])
             get_live.assert_called_once()
             self.assertEqual(get_live.call_args.args[1], ISSUE)
             self.assertTrue(get_live.call_args.kwargs["force"])
             status, body = _get(self.base + f"/?issue={ISSUE}")
             self.assertEqual(status, 200)
-            self.assertIn("http://huakangsy.cn/play/3003947_1.html", body)
+            self.assertIn("https://www.crtv0.live/detail/1/2981508/1700", body)
+            self.assertIn("https://www.crtv0.live/detail/1/2981508/1701", body)
+            self.assertIn('id="live-dialog"', body)
         finally:
             get_live.reset_mock()
 
@@ -727,13 +733,32 @@ class QueryServerTests(unittest.TestCase):
         get_live.reset_mock(side_effect=True)
         get_live.side_effect = RuntimeError("源站不可用")
         try:
-            status, _ = _post(self.base + "/refresh-live", {"issue": ISSUE})
-            self.assertEqual(status, 202)
-            payload = _wait_idle(self.base, "/refresh-live-status")
+            with mock.patch("football_analysis.query_app.task_log") as log:
+                status, _ = _post(self.base + "/refresh-live", {"issue": ISSUE})
+                self.assertEqual(status, 202)
+                payload = _wait_idle(self.base, "/refresh-live-status")
+                self.assertIn("开始", log.call_args_list[0].args[1])
+                self.assertIn("失败", log.call_args_list[-1].args[1])
+                self.assertIn("源站不可用", log.call_args_list[-1].args[1])
             self.assertFalse(payload["running"])
             self.assertIn("源站不可用", payload["error"])
         finally:
             get_live.reset_mock(side_effect=True)
+
+    def test_background_actions_log_start_and_final_result(self):
+        for endpoint, name, worker in (
+            ("refresh-odds", "刷新盘口", "run_refresh_odds"),
+            ("ai-analyze", "AI 分析", "run_ai_analyze"),
+        ):
+            with self.subTest(endpoint=endpoint), mock.patch(
+                f"football_analysis.query_app.{worker}", return_value="跳过：测试结果"
+            ), mock.patch("football_analysis.query_app.task_log") as log:
+                status, _ = _post(self.base + "/" + endpoint, {"issue": ISSUE})
+                self.assertEqual(status, 202)
+                payload = _wait_idle(self.base, "/" + endpoint + "-status")
+                self.assertFalse(payload["running"])
+                self.assertEqual(log.call_args_list[0].args, (name, f"{ISSUE} 开始"))
+                self.assertIn("跳过：测试结果", log.call_args_list[-1].args[1])
 
     def test_ai_analyze_unknown_issue_reports_hint(self):
         from football_analysis.store import connect, default_db_path

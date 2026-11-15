@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import quote_from_bytes
 
 from .bets import parse_kickoff, summarize_bets
+from .live_links import LiveLink, live_sources
 from .odds_pages import (
     COMPANY_NAMES,
     PAGES_META_FILENAME,
@@ -1851,6 +1852,33 @@ _BET_BLOCK = """
 """
 
 
+_LIVE_BLOCK = """
+<dialog id="live-dialog" aria-labelledby="live-dialog-title">
+  <div class="live-dialog-head">
+    <strong id="live-dialog-title"></strong>
+    <button type="button" id="live-close" class="icon-btn" title="关闭" aria-label="关闭"><svg class="settings-icon" aria-hidden="true"><use href="#icon-x"></use></svg></button>
+  </div>
+  <div id="live-anchor-list"></div>
+</dialog>
+<script>
+(function () {
+  var dialog = document.getElementById("live-dialog");
+  var list = document.getElementById("live-anchor-list");
+  document.querySelectorAll(".live-open").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var template = document.getElementById(button.dataset.sources);
+      list.replaceChildren(template.content.cloneNode(true));
+      document.getElementById("live-dialog-title").textContent = button.dataset.match;
+      dialog.showModal();
+    });
+  });
+  document.getElementById("live-close").addEventListener("click", function () { dialog.close(); });
+  dialog.addEventListener("click", function (event) { if (event.target === dialog) dialog.close(); });
+})();
+</script>
+"""
+
+
 def render_query_html(
     rows: list[dict],
     *,
@@ -1866,7 +1894,7 @@ def render_query_html(
     analyses: list[dict] = [],
     source_url: str = "",
     report_links: dict[str, str] | None = None,
-    live_links: dict[tuple[str, str], str] | None = None,
+    live_links: dict[tuple[str, str], LiveLink] | None = None,
     leagues: list[str] | None = None,
     bets: list[dict] | None = None,
     bet_stats: dict | None = None,
@@ -1954,6 +1982,7 @@ def render_query_html(
     can_bet_ui = bool(port)
     now = datetime.now()
     table_rows = []
+    live_templates = []
     for row_idx, row in enumerate(rows):
         issue_value = str(row.get("issue") or "")
         match_no = str(row.get("match_no") or "")
@@ -2000,12 +2029,28 @@ def render_query_html(
             f'>投注</button>{more}</span></td>'
             )
         score_class = "score-cell" if row.get("final_score") else "score-cell score-pending"
-        live_url = live_links.get((issue_value, match_no), "")
+        sources = live_sources(live_links.get((issue_value, match_no), ""))
+        template_id = f"live-sources-{row_idx}"
+        match_title = f"{row.get('home_team') or ''} vs {row.get('away_team') or ''}"
+        if sources:
+            anchors = []
+            for source in sources:
+                avatar = (
+                    f'<img src="{_esc(source["avatar"])}" alt="" loading="lazy" referrerpolicy="no-referrer">'
+                    if source.get("avatar")
+                    else f'<img src="{_LIVE_ICON_DATA_URI}" alt="">'
+                )
+                anchors.append(
+                    f'<a class="live-anchor" href="{_esc(source["url"])}" target="_blank" '
+                    f'rel="noopener noreferrer">{avatar}<span>{_esc(source["name"])}</span></a>'
+                )
+            live_templates.append(f'<template id="{template_id}">{"".join(anchors)}</template>')
         live_cell = (
-            f'<a class="live-link" href="{html.escape(live_url, quote=True)}" target="_blank" '
-            f'rel="noopener noreferrer" title="打开直播页面">'
-            f'<img src="{_LIVE_ICON_DATA_URI}" alt="直播"></a>'
-            if live_url and _LIVE_ICON_DATA_URI
+            f'<button type="button" class="live-link live-open" data-sources="{template_id}" '
+            f'data-match="{_esc(match_title)}" title="查看 {len(sources)} 个直播入口" '
+            f'aria-label="查看直播入口" aria-haspopup="dialog">'
+            f'<img src="{_LIVE_ICON_DATA_URI}" alt="直播"></button>'
+            if sources and _LIVE_ICON_DATA_URI
             else '<span class="live-unavailable" title="暂未匹配到直播">-</span>'
         )
         table_rows.append(
@@ -2164,6 +2209,7 @@ def render_query_html(
     </section>
     """
     bet_block = _BET_BLOCK if can_bet_ui else ""
+    live_block = "".join(live_templates) + _LIVE_BLOCK
     bet_chip = (
         f'<a class="bet-chip" href="#bets-section">本期投注 {len(bets)} 注 · '
         f'{int(round(total_stake))} 积分 · 净收益 {settled_profit:+.2f}</a>'
@@ -2291,9 +2337,20 @@ def render_query_html(
     .score-cell {{ min-width: 56px; white-space: nowrap; font-weight: 600; color: var(--ink); }}
     .score-cell.score-pending {{ font-weight: 400; }}
     .live-cell {{ width: 4%; text-align: center; }}
-    .live-link {{ display: inline-flex; width: 24px; height: 24px; align-items: center; justify-content: center; }}
+    .live-link {{ display: inline-flex; width: 24px; height: 24px; padding: 0; border: 0; background: transparent; align-items: center; justify-content: center; }}
     .live-link img {{ display: block; width: 10px; height: 10px; object-fit: contain; }}
     .live-unavailable {{ color: #94a3b8; }}
+    #live-dialog {{ box-sizing: border-box; width: min(480px, calc(100vw - 24px)); max-height: calc(100vh - 24px); padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); }}
+    #live-dialog::backdrop {{ background: rgba(15, 23, 42, .45); }}
+    .live-dialog-head {{ display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }}
+    .live-dialog-head strong {{ min-width: 0; font-size: 12px; overflow-wrap: anywhere; }}
+    .live-dialog-head button {{ flex: 0 0 24px; width: 24px; height: 24px; }}
+    #live-anchor-list {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 10px; padding: 4px 14px 8px; }}
+    .live-anchor {{ display: flex; align-items: center; gap: 6px; min-width: 0; padding: 6px 0; font-size: 12px; line-height: 1.35; border-bottom: 1px solid var(--line); color: var(--ink); text-decoration: none; }}
+    .live-anchor:hover {{ color: var(--blue); }}
+    .live-anchor img {{ flex: 0 0 2em; width: 2em; height: 2em; border-radius: 50%; object-fit: cover; }}
+    .live-anchor span {{ overflow-wrap: anywhere; font-size: inherit; }}
+    @media (max-width: 400px) {{ #live-anchor-list {{ grid-template-columns: minmax(0, 1fr); }} }}
     .alert-table {{ table-layout: fixed; }}
     .alert-table .issue-cell {{ width: 6%; white-space: nowrap; }}
     .alert-table .match-cell {{ width: 25%; }}
@@ -2489,7 +2546,10 @@ def render_query_html(
         requestAnimationFrame(() => window.scrollTo(0, 0));
       }}
       if (queryForm) queryForm.addEventListener("submit", function() {{
-        try {{ sessionStorage.setItem("query-scroll-top", "1"); }} catch (e) {{}}
+        try {{
+          sessionStorage.setItem("query-scroll-top", "1");
+          sessionStorage.setItem("fetch-issue-input", queryForm.elements.namedItem("issue").value);
+        }} catch (e) {{}}
         if ("scrollRestoration" in history) history.scrollRestoration = "manual";
         window.scrollTo({{left: 0, top: 0, behavior: "auto"}});
       }});
@@ -2571,6 +2631,7 @@ def render_query_html(
     {bet_panel}
   </div>
   {bet_block}
+  {live_block}
   <div id="split-pop" hidden></div>
   <div id="ai-pop" role="tooltip" hidden></div>
   <script>

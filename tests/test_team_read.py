@@ -260,6 +260,20 @@ class _StubReader:
 
 
 class EnrichTests(unittest.TestCase):
+    def test_manual_analysis_logs_each_match_completion_and_skip(self):
+        items = [_analysis(match_no="1"), _analysis(match_no="2")]
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "football_analysis.llm.task_log"
+        ) as log:
+            count = llm.enrich_team_reads(
+                items, reader=_StubReader(), page_texts=["资料", ""], pace=0,
+                progress_path=Path(tmp) / "progress.json", issue="26163",
+            )
+        self.assertEqual(count, 1)
+        messages = [call.args[1] for call in log.call_args_list]
+        self.assertTrue(any("[1/2]" in text and "完成" in text for text in messages))
+        self.assertTrue(any("第 2 场跳过" in text for text in messages))
+
     def test_skips_without_api_key(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             items = [_analysis(match_no="1")]

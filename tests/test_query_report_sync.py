@@ -28,6 +28,11 @@ class FetchBlockSyncTests(unittest.TestCase):
         self.assertIn("sessionStorage.removeItem(fetchIssueStorageKey)", html)
         self.assertEqual(html.count("reloadQueryWithIssue(issue)"), 3)
 
+    def test_query_submission_copies_selected_issue_to_fetch_input(self):
+        html = query_report.render_query_html([], issues=[])
+        assignment = 'sessionStorage.setItem("fetch-issue-input", queryForm.elements.namedItem("issue").value)'
+        self.assertTrue(assignment in html, assignment)
+
     def test_ai_analysis_progress_resumes_after_query_navigation(self):
         html = query_report._FETCH_BLOCK
         self.assertIn('fetch("/ai-analyze-status").then((r) => r.json())', html)

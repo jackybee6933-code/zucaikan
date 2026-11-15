@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .console import task_log
+
 import json
 import os
 import re
@@ -642,6 +644,9 @@ def enrich_team_reads(
     count = 0
     for index, item in enumerate(analyses):
         _report("llm", index, len(analyses))
+        if progress_path is not None:
+            task_log("AI 分析", f"{issue} [{index + 1}/{len(analyses)}] "
+                     f"第 {item.get('match_no')} 场：开始模型分析")
         if index:
             # 接入点通常是按分钟限流的，14 场连着打必被 429；这里主动留出间隔。
             time.sleep(max(0.0, pace))
@@ -649,6 +654,8 @@ def enrich_team_reads(
         if page_texts and index < len(page_texts):
             page_text = str(page_texts[index] or "")
         if not page_text.strip():
+            if progress_path is not None:
+                task_log("AI 分析", f"{issue} 第 {item.get('match_no')} 场跳过：球队资料为空")
             _report("llm", index + 1, len(analyses))
             continue
         result = reader.read(item, page_text)
@@ -666,6 +673,10 @@ def enrich_team_reads(
                     if str(key).strip() and str(value).strip()
                 }
             count += 1
+        if progress_path is not None:
+            task_log("AI 分析", f"{issue} [{index + 1}/{len(analyses)}] "
+                     f"第 {item.get('match_no')} 场：{'完成' if result else '失败，未生成结果'}")
+        _report("llm", index + 1, len(analyses))
     _report("llm", len(analyses), len(analyses))
     print(f"  球队资料分析：{count}/{len(analyses)} 场已生成倾向")
     return count

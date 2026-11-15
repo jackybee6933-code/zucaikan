@@ -11,16 +11,44 @@ from urllib.parse import urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+from .console import task_log
 
 HOME_URL = "http://huakangsy.cn/zuqiu/"
-CRZB_URL = "https://www.crtv0.live"
-CRZB_BACKUP_URL = "https://crl4.crzbcx8.com"
-CRZB_SECOND_BACKUP_URL = "https://www.crzb.com"
+CRZB_URL = "https://crl4.crzbcx8.com"
+CRZB_BACKUP_URL = "https://www.crzb.com"
+CRZB_SECOND_BACKUP_URL = "https://www.crtv0.live"
 BIG_FIVE_LEAGUES = frozenset(("英超", "西甲", "德甲", "意甲", "法甲"))
 _CACHE_SECONDS = 60 * 60
 _cache_lock = threading.Lock()
 _cache_expires = 0.0
-_cache_links: dict[str, dict[str, str]] = {}
+LiveLink = str | list[dict[str, str]]
+_cache_links: dict[str, dict[str, LiveLink]] = {}
+
+
+def live_sources(value: LiveLink) -> list[dict[str, str]]:
+    """兼容旧单链接缓存，只展示可打开的 HTTP(S) 入口。"""
+    items = [{"name": "直播入口", "url": value}] if isinstance(value, str) else value
+    sources = []
+    seen = set()
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url")
+        try:
+            parsed = urlparse(url) if isinstance(url, str) else None
+            if not parsed or parsed.scheme not in ("http", "https") or not parsed.hostname:
+                continue
+        except ValueError:
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        source = {"name": str(item.get("name") or "直播入口"), "url": url}
+        avatar = item.get("avatar")
+        if isinstance(avatar, str) and avatar.startswith(("https://", "http://")):
+            source["avatar"] = avatar
+        sources.append(source)
+    return sources
 
 
 def _normalize(value: str) -> str:
@@ -174,6 +202,7 @@ def _fetch_crzb_json(path: str) -> list | dict:
             return payload.get("data")
         except (requests.RequestException, ValueError) as exc:
             last_error = exc
+            task_log("刷新直播", f"源站 {base_url} 请求失败，尝试备用：{exc}")
     raise last_error
 
 
@@ -183,16 +212,17 @@ def _same_team(team: str, *names: str) -> bool:
     return bool(normalized) and any(_normalize(name) in aliases for name in names)
 
 
-def _collect_crzb_links(rows: list[dict]) -> dict[str, str]:
+def _collect_crzb_links(rows: list[dict]) -> dict[str, LiveLink]:
     try:
         matches = _fetch_crzb_json("/web/web_football_score_list")
-    except (requests.RequestException, ValueError):
+    except (requests.RequestException, ValueError) as exc:
+        task_log("刷新直播", f"赛程获取失败：{exc}")
         return {}
     if not isinstance(matches, list):
         return {}
 
-    links: dict[str, str] = {}
-    for row in rows:
+    links: dict[str, LiveLink] = {}
+    for index, row in enumerate(rows, 1):
         for match in matches:
             if not isinstance(match, dict) or str(match.get("is_zb")) != "1":
                 continue
@@ -218,33 +248,50 @@ def _collect_crzb_links(rows: list[dict]) -> dict[str, str]:
                 data = _fetch_crzb_json(
                     f"/web/get_public_anchor?tournament_id={match_id}&type=1&tournament_type=1"
                 )
-            except (requests.RequestException, ValueError):
+            except (requests.RequestException, ValueError) as exc:
+                task_log("刷新直播", f"第 {row.get('match_no')} 场主播获取失败：{exc}")
                 continue
-            anchors = data.get("more", []) if isinstance(data, dict) else []
-            if not isinstance(anchors, list):
+            if not isinstance(data, dict):
                 continue
+            more = data.get("more", [])
+            anchors = list(more) if isinstance(more, list) else []
+            default = data.get("data")
+            if isinstance(default, dict):
+                anchors.insert(0, default)
+            sources = []
+            seen = set()
             for anchor in anchors:
                 if not isinstance(anchor, dict):
                     continue
                 member_id = str(anchor.get("member_id") or "")
                 if (str(anchor.get("tournament_id")) == match_id
-                        and str(anchor.get("tournament_type")) == "1"
-                        and member_id.isdigit()):
-                    links[str(row.get("match_no") or "")] = (
-                        f"{CRZB_URL}/detail/1/{match_id}/{member_id}"
-                    )
-                    break
+                        and str(anchor.get("tournament_type", 1 if anchor is default else "")) == "1"
+                        and member_id.isdigit() and member_id not in seen):
+                    seen.add(member_id)
+                    source = {
+                        "name": str(anchor.get("nickname") or anchor.get("username") or f"主播 {member_id}"),
+                        "url": f"{CRZB_URL}/detail/1/{match_id}/{member_id}",
+                    }
+                    avatar = anchor.get("avatar") or anchor.get("face")
+                    if isinstance(avatar, str) and avatar.startswith(("https://", "http://")):
+                        source["avatar"] = avatar
+                    sources.append(source)
+            if sources:
+                links[str(row.get("match_no") or "")] = sources
             if str(row.get("match_no") or "") in links:
                 break
+        count = len(live_sources(links.get(str(row.get("match_no") or ""), "")))
+        task_log("刷新直播", f"[{index}/{len(rows)}] 第 {row.get('match_no')} 场：{count} 个直播入口")
     return links
 
 
-def _collect_links(rows: list[dict], issue: str) -> dict[str, str]:
+def _collect_links(rows: list[dict], issue: str) -> dict[str, LiveLink]:
     big_five_rows = [
         row for row in rows if str(row.get("league") or "").strip() in BIG_FIVE_LEAGUES
     ]
-    links: dict[str, str] = {}
+    links: dict[str, LiveLink] = {}
     if big_five_rows:
+        task_log("刷新直播", f"{issue} 五大联赛 {len(big_five_rows)} 场，先匹配华康直播")
         try:
             from .cantonese import fetch_mandarin_matches
 
@@ -259,13 +306,14 @@ def _collect_links(rows: list[dict], issue: str) -> dict[str, str]:
         links = _collect_huakang_links(match_rows)
     missing = [row for row in rows if str(row.get("match_no") or "") not in links]
     if missing:
+        task_log("刷新直播", f"{issue} 超人直播匹配 {len(missing)} 场，获取全部主播")
         links.update(_collect_crzb_links(missing))
     return links
 
 
 def load_cached_live_links(
     rows: list[dict], issue: str, cache_dir: str | Path
-) -> tuple[dict[tuple[str, str], str], bool, bool]:
+) -> tuple[dict[tuple[str, str], LiveLink], bool, bool]:
     """Load per-issue links; return links, expired, and cache-exists."""
     if not issue.isdigit():
         return {}, False, False
@@ -284,7 +332,7 @@ def load_cached_live_links(
         (issue, str(row.get("match_no") or "")): found[str(row.get("match_no") or "")]
         for row in rows
         if str(row.get("match_no") or "") in found
-        and isinstance(found[str(row.get("match_no") or "")], str)
+        and isinstance(found[str(row.get("match_no") or "")], (str, list))
     }
     expired = time.time() - fetched_at >= _CACHE_SECONDS
     return links, expired, True
@@ -296,8 +344,8 @@ def live_links(
     *,
     force: bool = False,
     cache_dir: str | Path | None = None,
-) -> dict[tuple[str, str], str]:
-    """Return live-room URLs keyed by issue and match number."""
+) -> dict[tuple[str, str], LiveLink]:
+    """Return live-room sources keyed by issue and match number."""
     global _cache_expires
     now = time.monotonic()
     with _cache_lock:

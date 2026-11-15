@@ -27,11 +27,14 @@ from .bets import (
 )
 from . import __version__
 from .backup import build_backup_bytes, restore_backup_bytes
+from .console import task_log
 from .http import Fetcher
 from .llm import test_endpoint
 from .llm_settings import public_settings, save_settings
 from .live_links import (
+    LiveLink,
     live_links as get_live_links,
+    live_sources,
     load_cached_live_links,
 )
 from .open_browser import open_in_chrome
@@ -183,6 +186,7 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     ).fetchone()
     conn.close()
     if row is None or row[0] is None:
+        task_log("AI 分析", f"{issue} 跳过：未入库，请先抓取并入库")
         return f"{issue} 未入库，请先「抓取并入库」再做 AI 分析"
     actual_issue = issue
     run_id = int(row[0])
@@ -210,16 +214,19 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     )
     shuju_age = pages_kind_age_hours(cache_dir, actual_issue, "shuju")
     if shuju_age is not None and shuju_age <= PAGES_STALE_HOURS and has_shuju:
-        pass
+        task_log("AI 分析", f"{issue} 复用 {shuju_age:.1f} 小时前的球队资料，跳过抓取")
     else:
+        task_log("AI 分析", f"{issue} 球队资料缺失或过期，开始抓取 shuju 页")
         cdp_error = _ensure_cdp(CDP_DEFAULT)
         if cdp_error:
+            task_log("AI 分析", f"{issue} 浏览器启动失败：{cdp_error}")
             return cdp_error
         try:
             scrape_error = _run_odds_scraper(actual_issue, cache_dir, CDP_DEFAULT, kinds=["shuju"])
         finally:
             shutdown_cdp_chrome()
         if scrape_error:
+            task_log("AI 分析", f"{issue} 分析页抓取失败：{scrape_error}")
             return f"分析页抓取失败：{scrape_error}"
 
     analyses = rebuild_analyses_from_db(target_db, actual_issue, run_id=run_id)
@@ -255,10 +262,13 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
         references.append(shuju_references(raw, fid))
     needed_pages = sum(1 for t in page_texts if t)
     if needed_pages == 0:
+        task_log("AI 分析", f"{actual_issue} 跳过：无可读球队资料")
         return f"{actual_issue}：500 数据分析页缺失或抓取失败，AI 无资料可读，请先确认单场页产物 cache/odds_pages_{actual_issue}.json 含 shuju 页"
     reader = TeamReader()
     if not reader.enabled:
+        task_log("AI 分析", f"{actual_issue} 跳过：未配置模型接入点")
         return f"{actual_issue}：未配置 LLM_API_KEY（或主备均未配置），AI 分析不可用"
+    task_log("AI 分析", f"{actual_issue} 开始模型分析，可读资料 {needed_pages}/{len(analyses)} 场")
     progress_file = cache_dir / ".ai_scrape_progress"
     enrich_kwargs = {
         "reader": reader,
@@ -270,6 +280,7 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
         enrich_kwargs["source_references"] = references
     count = enrich_team_reads(analyses, **enrich_kwargs)
     if not count:
+        task_log("AI 分析", f"{actual_issue} 模型分析全部失败，未更新结果")
         return f"{actual_issue}：AI 分析全部失败（已读 {needed_pages}/{len(fixture_ids)} 场数据页），AI分析结果未更新"
     # When fixture_ids came from the artifact (not the DB), analyses[i] may not
     # correspond 1:1 with fixture_ids[i] by index — but team_read is still
@@ -280,10 +291,12 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
         for a in analyses
         if a.get("team_read")
     }
+    task_log("AI 分析", f"{actual_issue} 正在写入 {len(team_reads)} 场 AI 结果")
     updated = update_team_reads(
         target_db, actual_issue, team_reads, expected_run_id=run_id
     )
     if updated is None:
+        task_log("AI 分析", f"{actual_issue} 跳过写入：分析期间已有新数据入库")
         return f"{actual_issue}：分析期间已有新数据入库，本次结果未写入，请重新运行 AI 分析"
     return (
         f"{actual_issue}：AI 分析完成 {count}/{len(analyses)} 场"
@@ -388,29 +401,35 @@ def run_refresh_odds(issue: str, *, cdp: str = CDP_DEFAULT, db_path: str | Path 
                 and kickoff > artifact_at
             ]
         if not stale_kickoffs:
+            task_log("刷新盘口", f"{issue} 盘口齐全且新鲜（{age_text:.1f}h），跳过重抓")
             return (
                 f"{issue} \u76d8\u53e3\u4ea7\u7269\u662f {age_text:.1f} \u5c0f\u65f6\u524d\u7684\uff0c"
                 f"\u672a\u8d85 {PAGES_STALE_HOURS:.0f}h \u9608\u503c\uff0c\u8df3\u8fc7\u91cd\u6293"
             )
         refresh_kinds = ["yazhi", "daxiao"]
         earliest = min(stale_kickoffs).strftime("%m-%d %H:%M")
-        print(f"{issue} 盘口产物早于开赛时间 {earliest}，按未来期重抓")
+        task_log("刷新盘口", f"{issue} 盘口产物早于开赛时间 {earliest}，按未来期重抓")
     endpoint = cdp.rstrip("/")
+    task_log("刷新盘口", f"{issue} 开始抓取：{'、'.join(refresh_kinds)}")
     # Require a reachable Chrome debug port before starting the scraper.
     cdp_error = _ensure_cdp(endpoint)
     if cdp_error:
+        task_log("刷新盘口", f"{issue} 浏览器启动失败：{cdp_error}")
         return cdp_error
     try:
         scrape_error = _run_odds_scraper(issue, cache_dir, endpoint, kinds=refresh_kinds)
     finally:
         shutdown_cdp_chrome()
     if scrape_error:
+        task_log("刷新盘口", f"{issue} 抓取失败或暂停：{scrape_error}")
         return scrape_error
     new_age = pages_age_hours(cache_dir, issue)
     if new_age is None:
+        task_log("刷新盘口", f"{issue} 抓取失败：产物未生成")
         return f"{issue} \u4ea7\u7269\u4ecd\u672a\u751f\u6210\uff0c\u8bf7\u67e5\u770b\u540e\u53f0\u65e5\u5fd7"
     # Re-run ingestion so the fresh split data lands in the DB as a new run.
     # LLM 倾向不再随刷新自动跑：「AI 分析」按钮在查询页按需触发（复用最新 run 的数据）。
+    task_log("刷新盘口", f"{issue} 盘口抓取完成，重新分析并入库")
     fetcher = Fetcher(cache_dir=None)
     fetcher.cache.root = cache_dir
     analyses, actual_issue, source_url = analyze_issue(
@@ -559,7 +578,7 @@ def serve_query(
     # State for the background AI-analyze job
     ai_state: dict = {"running": False, "issue": "", "result": "", "error": ""}
     refresh_live_state: dict = {"running": False, "issue": "", "result": "", "error": ""}
-    live_links_by_issue: dict[str, dict[tuple[str, str], str]] = {}
+    live_links_by_issue: dict[str, dict[tuple[str, str], LiveLink]] = {}
     auto_live_refresh_at: dict[str, float] = {}
     auto_live_refresh_lock = threading.Lock()
     task_lock = threading.Lock()
@@ -582,22 +601,34 @@ def serve_query(
     def _start_background_task(
         name: str, issue: str, state: dict, worker: Callable[..., None], *args: object
     ) -> dict | None:
+        logged = name in ("刷新盘口", "刷新直播", "AI 分析")
         task = _claim_task(name, issue)
         if task is not None:
+            if logged:
+                task_log(name, f"{issue} 未重复启动：{task['issue']} {task['name']} 正在进行")
             return task
         task = {"name": name, "issue": issue}
         state.update(running=True, issue=issue, result="", error="")
+        started = time.monotonic()
+        if logged:
+            task_log(name, f"{issue} 开始")
 
         def run() -> None:
             try:
                 worker(*args)
             finally:
+                if logged:
+                    result = state.get("error") or state.get("result") or "任务已结束"
+                    task_log(name, f"{issue} {'失败' if state.get('error') else '结束'}"
+                             f"（{time.monotonic() - started:.1f}s）：{result}")
                 state["running"] = False
                 _release_task(task)
 
         try:
             threading.Thread(target=run, daemon=True).start()
-        except Exception:
+        except Exception as exc:
+            if logged:
+                task_log(name, f"{issue} 任务启动失败：{exc}")
             state["running"] = False
             _release_task(task)
             raise
@@ -746,8 +777,9 @@ def serve_query(
             rows = query_movements(db_path, issue=issue, latest_only=True)
             links = get_live_links(rows, issue, force=True, cache_dir=cache_dir)
             live_links_by_issue[issue] = links
+            source_count = sum(len(live_sources(value)) for value in links.values())
             refresh_live_state["result"] = (
-                f"{issue} 直播链接已刷新，匹配 {len(links)} 场"
+                f"{issue} 直播链接已刷新，匹配 {len(links)} 场、{source_count} 个直播入口"
             )
         except Exception as exc:  # noqa: BLE001
             refresh_live_state["error"] = f"直播刷新失败：{exc}"

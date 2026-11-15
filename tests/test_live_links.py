@@ -351,6 +351,64 @@ class CrzbLiveLinkTests(unittest.TestCase):
             "tournament_id": 2981508, "tournament_type": 1, "member_id": 1700,
         }]}
 
+    def test_collects_all_anchors_and_default_room_without_duplicates(self):
+        first = {**self.anchors["more"][0], "username": "主播甲"}
+        second = {**first, "member_id": 1701, "username": "主播乙"}
+        data = {
+            "data": {"tournament_id": 2981508, "member_id": 133, "nickname": "高清源"},
+            "more": [first, second, first, {**second, "tournament_type": 2},
+                     {**second, "tournament_id": 999}, {**second, "member_id": "bad"}],
+        }
+        with patch("football_analysis.live_links._fetch_crzb_json",
+                   side_effect=[[self.match], data]):
+            links = _collect_crzb_links(self.rows)["13"]
+        self.assertEqual([item["name"] for item in links], ["高清源", "主播甲", "主播乙"])
+        self.assertEqual([item["url"] for item in links], [
+            f"https://crl4.crzbcx8.com/detail/1/2981508/{member}"
+            for member in (133, 1700, 1701)
+        ])
+
+    def test_multi_anchor_cache_round_trip(self):
+        sources = [{"name": "主播甲", "url": "https://www.crtv0.live/detail/1/2981508/1700"},
+                   {"name": "主播乙", "url": "https://www.crtv0.live/detail/1/2981508/1701"}]
+        with tempfile.TemporaryDirectory() as cache_dir, patch(
+            "football_analysis.live_links._collect_links", return_value={"13": sources}
+        ):
+            result = live_links(self.rows, "26163", force=True, cache_dir=cache_dir)
+            cached, expired, exists = load_cached_live_links(self.rows, "26163", cache_dir)
+        self.assertEqual(cached, result)
+        self.assertEqual(cached[("26163", "13")], sources)
+        self.assertFalse(expired)
+        self.assertTrue(exists)
+
+    def test_popup_renders_all_anchors_and_escapes_untrusted_fields(self):
+        body = render_query_html(
+            [{**self.rows[0], "issue": "26163"}], issues=[],
+            live_links={("26163", "13"): [
+                {"name": '<img src=x onerror=alert(1)>', "url": "https://www.crtv0.live/detail/1/2981508/1700"},
+                {"name": "主播乙", "url": "https://www.crtv0.live/detail/1/2981508/1701"},
+                {"name": "恶意", "url": "javascript:alert(1)", "avatar": "javascript:alert(2)"},
+            ]},
+        )
+        self.assertIn('class="live-link live-open"', body)
+        self.assertIn('id="live-dialog"', body)
+        self.assertIn('aria-labelledby="live-dialog-title"', body)
+        self.assertIn("主播乙", body)
+        self.assertIn("https://www.crtv0.live/detail/1/2981508/1701", body)
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", body)
+        self.assertNotIn("<img src=x onerror=alert(1)>", body)
+        self.assertNotIn("javascript:alert", body)
+
+    def test_popup_uses_compact_text_and_relative_avatar_size(self):
+        body = render_query_html([], issues=[])
+        for style in (
+            "font-size: 12px; line-height: 1.35;",
+            "gap: 6px; min-width: 0; padding: 6px 0;",
+            ".live-anchor img { flex: 0 0 2em; width: 2em; height: 2em;",
+            ".live-anchor span { overflow-wrap: anywhere; font-size: inherit; }",
+        ):
+            self.assertTrue(style in body, style)
+
     def test_api_uses_site_headers_and_returns_data(self):
         response = Mock()
         response.json.return_value = {"code": 200, "data": [self.match]}
@@ -358,12 +416,12 @@ class CrzbLiveLinkTests(unittest.TestCase):
             self.assertEqual(_fetch_crzb_json("/web/web_football_score_list"), [self.match])
         response.raise_for_status.assert_called_once_with()
         self.assertEqual(get.call_args.args[0],
-                         "https://www.crtv0.live/api/web/web_football_score_list")
+                         "https://crl4.crzbcx8.com/api/web/web_football_score_list")
         self.assertEqual(get.call_args.kwargs["headers"]["site"], "crzb")
         self.assertEqual(get.call_args.kwargs["headers"]["timezone"], "UTC+8")
         self.assertEqual(
             get.call_args.kwargs["headers"]["Referer"],
-            "https://www.crtv0.live/score/football/lives",
+            "https://crl4.crzbcx8.com/score/football/lives",
         )
 
     def test_api_falls_back_to_backup_host_when_primary_fails(self):
@@ -375,12 +433,12 @@ class CrzbLiveLinkTests(unittest.TestCase):
             self.assertEqual(_fetch_crzb_json("/web/web_football_score_list"), [self.match])
 
         self.assertEqual(get.call_args_list[0].args[0],
-                         "https://www.crtv0.live/api/web/web_football_score_list")
-        self.assertEqual(get.call_args_list[1].args[0],
                          "https://crl4.crzbcx8.com/api/web/web_football_score_list")
+        self.assertEqual(get.call_args_list[1].args[0],
+                         "https://www.crzb.com/api/web/web_football_score_list")
         self.assertEqual(
             get.call_args_list[1].kwargs["headers"]["Referer"],
-            "https://crl4.crzbcx8.com/score/football/lives",
+            "https://www.crzb.com/score/football/lives",
         )
         self.assertEqual(get.call_count, 2)
 
@@ -395,13 +453,13 @@ class CrzbLiveLinkTests(unittest.TestCase):
             self.assertEqual(_fetch_crzb_json("/web/web_football_score_list"), [self.match])
 
         self.assertEqual([call.args[0] for call in get.call_args_list], [
-            "https://www.crtv0.live/api/web/web_football_score_list",
             "https://crl4.crzbcx8.com/api/web/web_football_score_list",
             "https://www.crzb.com/api/web/web_football_score_list",
+            "https://www.crtv0.live/api/web/web_football_score_list",
         ])
         self.assertEqual(
             get.call_args.kwargs["headers"]["Referer"],
-            "https://www.crzb.com/score/football/lives",
+            "https://www.crtv0.live/score/football/lives",
         )
 
     def test_api_empty_primary_data_does_not_try_backups(self):
@@ -428,7 +486,7 @@ class CrzbLiveLinkTests(unittest.TestCase):
             [self.match], self.anchors,
         ]) as fetch:
             self.assertEqual(_collect_crzb_links(self.rows), {
-                "13": "https://www.crtv0.live/detail/1/2981508/1700",
+                "13": [{"name": "主播 1700", "url": "https://crl4.crzbcx8.com/detail/1/2981508/1700"}],
             })
         self.assertIn("get_public_anchor?tournament_id=2981508", fetch.call_args.args[0])
 
@@ -468,7 +526,7 @@ class CrzbLiveLinkTests(unittest.TestCase):
             }]},
         ]):
             self.assertEqual(_collect_crzb_links(rows), {
-                "10": "https://www.crtv0.live/detail/1/2981461/1753",
+                "10": [{"name": "主播 1753", "url": "https://crl4.crzbcx8.com/detail/1/2981461/1753"}],
             })
 
     def test_falls_back_when_old_provider_is_unavailable_and_500_fails(self):
@@ -503,7 +561,7 @@ class CrzbLiveLinkTests(unittest.TestCase):
             ]),
         ):
             self.assertEqual(_collect_links(self.rows, "26163"), {
-                "13": "https://www.crtv0.live/detail/1/2981508/1700",
+                "13": [{"name": "主播 1700", "url": "https://crl4.crzbcx8.com/detail/1/2981508/1700"}],
             })
 
     def test_new_provider_failure_preserves_existing_links(self):
