@@ -358,9 +358,30 @@ class CrzbLiveLinkTests(unittest.TestCase):
             self.assertEqual(_fetch_crzb_json("/web/web_football_score_list"), [self.match])
         response.raise_for_status.assert_called_once_with()
         self.assertEqual(get.call_args.args[0],
-                         "https://www.crzb.com/api/web/web_football_score_list")
+                         "https://crl4.crzbcx8.com/api/web/web_football_score_list")
         self.assertEqual(get.call_args.kwargs["headers"]["site"], "crzb")
         self.assertEqual(get.call_args.kwargs["headers"]["timezone"], "UTC+8")
+        self.assertEqual(
+            get.call_args.kwargs["headers"]["Referer"],
+            "https://crl4.crzbcx8.com/score/football/lives",
+        )
+
+    def test_api_falls_back_to_backup_host_when_primary_fails(self):
+        response = Mock()
+        response.json.return_value = {"code": 200, "data": [self.match]}
+        with patch("football_analysis.live_links.requests.get", side_effect=[
+            requests.Timeout(), response,
+        ]) as get:
+            self.assertEqual(_fetch_crzb_json("/web/web_football_score_list"), [self.match])
+
+        self.assertEqual(get.call_args_list[0].args[0],
+                         "https://crl4.crzbcx8.com/api/web/web_football_score_list")
+        self.assertEqual(get.call_args_list[1].args[0],
+                         "https://www.crzb.com/api/web/web_football_score_list")
+        self.assertEqual(
+            get.call_args_list[1].kwargs["headers"]["Referer"],
+            "https://www.crzb.com/score/football/lives",
+        )
 
     def test_api_errors_and_invalid_payloads_are_rejected(self):
         for payload in ({"code": 500, "data": []}, {"code": 200, "data": None}, []):
@@ -376,7 +397,7 @@ class CrzbLiveLinkTests(unittest.TestCase):
             [self.match], self.anchors,
         ]) as fetch:
             self.assertEqual(_collect_crzb_links(self.rows), {
-                "13": "https://www.crzb.com/detail/1/2981508/1700",
+                "13": "https://crl4.crzbcx8.com/detail/1/2981508/1700",
             })
         self.assertIn("get_public_anchor?tournament_id=2981508", fetch.call_args.args[0])
 
@@ -416,7 +437,7 @@ class CrzbLiveLinkTests(unittest.TestCase):
             }]},
         ]):
             self.assertEqual(_collect_crzb_links(rows), {
-                "10": "https://www.crzb.com/detail/1/2981461/1753",
+                "10": "https://crl4.crzbcx8.com/detail/1/2981461/1753",
             })
 
     def test_falls_back_when_old_provider_is_unavailable_and_500_fails(self):
@@ -451,7 +472,7 @@ class CrzbLiveLinkTests(unittest.TestCase):
             ]),
         ):
             self.assertEqual(_collect_links(self.rows, "26163"), {
-                "13": "https://www.crzb.com/detail/1/2981508/1700",
+                "13": "https://crl4.crzbcx8.com/detail/1/2981508/1700",
             })
 
     def test_new_provider_failure_preserves_existing_links(self):

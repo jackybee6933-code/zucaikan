@@ -13,7 +13,8 @@ from bs4 import BeautifulSoup
 
 
 HOME_URL = "http://huakangsy.cn/zuqiu/"
-CRZB_URL = "https://www.crzb.com"
+CRZB_URL = "https://crl4.crzbcx8.com"
+CRZB_BACKUP_URL = "https://www.crzb.com"
 BIG_FIVE_LEAGUES = frozenset(("英超", "西甲", "德甲", "意甲", "法甲"))
 _CACHE_SECONDS = 60 * 60
 _cache_lock = threading.Lock()
@@ -146,25 +147,33 @@ def _collect_huakang_links(rows: list[dict]) -> dict[str, str]:
 
 
 def _fetch_crzb_json(path: str) -> list | dict:
-    response = requests.get(
-        CRZB_URL + "/api" + path,
-        timeout=8,
-        headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                          "Chrome/142.0.0.0 Safari/537.36",
-            "Referer": CRZB_URL + "/score/football/lives",
-            "Accept": "application/json",
-            "webclienttype": "web", "clientType": "web", "ad-channel": "crzb",
-            "channel": "channel_crzb", "site": "crzb", "timezone": "UTC+8",
-        },
+    last_error: requests.RequestException | ValueError = ValueError(
+        "超人直播接口未返回有效数据"
     )
-    response.raise_for_status()
-    payload = response.json()
-    if (not isinstance(payload, dict) or payload.get("code") != 200
-            or not isinstance(payload.get("data"), (dict, list))):
-        raise ValueError("超人直播接口未返回有效数据")
-    return payload.get("data")
+    for base_url in (CRZB_URL, CRZB_BACKUP_URL):
+        try:
+            response = requests.get(
+                base_url + "/api" + path,
+                timeout=8,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                  "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                  "Chrome/142.0.0.0 Safari/537.36",
+                    "Referer": base_url + "/score/football/lives",
+                    "Accept": "application/json",
+                    "webclienttype": "web", "clientType": "web", "ad-channel": "crzb",
+                    "channel": "channel_crzb", "site": "crzb", "timezone": "UTC+8",
+                },
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if (not isinstance(payload, dict) or payload.get("code") != 200
+                    or not isinstance(payload.get("data"), (dict, list))):
+                raise ValueError("超人直播接口未返回有效数据")
+            return payload.get("data")
+        except (requests.RequestException, ValueError) as exc:
+            last_error = exc
+    raise last_error
 
 
 def _same_team(team: str, *names: str) -> bool:
