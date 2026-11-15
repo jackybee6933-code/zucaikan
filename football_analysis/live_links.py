@@ -13,8 +13,9 @@ from bs4 import BeautifulSoup
 
 
 HOME_URL = "http://huakangsy.cn/zuqiu/"
-CRZB_URL = "https://crl4.crzbcx8.com"
-CRZB_BACKUP_URL = "https://www.crzb.com"
+CRZB_URL = "https://www.crtv0.live"
+CRZB_BACKUP_URL = "https://crl4.crzbcx8.com"
+CRZB_SECOND_BACKUP_URL = "https://www.crzb.com"
 BIG_FIVE_LEAGUES = frozenset(("英超", "西甲", "德甲", "意甲", "法甲"))
 _CACHE_SECONDS = 60 * 60
 _cache_lock = threading.Lock()
@@ -150,7 +151,7 @@ def _fetch_crzb_json(path: str) -> list | dict:
     last_error: requests.RequestException | ValueError = ValueError(
         "超人直播接口未返回有效数据"
     )
-    for base_url in (CRZB_URL, CRZB_BACKUP_URL):
+    for base_url in (CRZB_URL, CRZB_BACKUP_URL, CRZB_SECOND_BACKUP_URL):
         try:
             response = requests.get(
                 base_url + "/api" + path,
