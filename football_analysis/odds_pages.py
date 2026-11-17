@@ -16,6 +16,8 @@ PAGES_META_FILENAME = "odds_pages_{issue}.meta.json"
 # 500 单场页的公司偏好：澳门(5) 主选，威廉(293) 作为备选。
 CID_PREFERENCE = ("5", "293")
 CID_LABELS = {"5": "澳门", "293": "威廉"}
+TITAN_CID_PREFERENCE = ("1", "9")
+TITAN_CID_LABELS = {"1": "澳门", "9": "威廉"}
 
 
 def _water(text: object) -> float:
@@ -166,9 +168,10 @@ def shuju_analysis_text(raw: dict, fixture_id: str) -> str:
     return "\n".join(kept)[:9000]
 
 
-def _pick_company(rows: list[list]) -> list | None:
+def _pick_company(rows: list[list], *, titan: bool = False) -> list | None:
     by_cid = {str(row[0]): row for row in rows}
-    for cid in CID_PREFERENCE:
+    preference = TITAN_CID_PREFERENCE if titan else CID_PREFERENCE
+    for cid in preference:
         if cid in by_cid:
             return by_cid[cid]
     return rows[0] if rows else None
@@ -198,36 +201,44 @@ def parse_odds_pages(raw: dict) -> dict[str, dict]:
         if not isinstance(page, dict) or _status(page) not in PAGE_STATUSES:
             continue
         fixture_id, _, kind = str(key).partition("|")
+        titan = kind.startswith("titan_")
+        market_kind = kind.removeprefix("titan_")
         rows = _shifted(page.get("rows") or [])
-        row = _pick_company(rows)
+        row = _pick_company(rows, titan=titan)
         if not fixture_id or row is None:
             continue
         slot = result.setdefault(fixture_id, {})
         # 报告来源仍用已确认的中文名（澳门/威廉），行内打码名只用于分歧弹窗。
-        name = CID_LABELS.get(str(row[0])) or (str(row[1]) if len(row) > 1 and row[1] else "")
+        labels = TITAN_CID_LABELS if titan else CID_LABELS
+        name = labels.get(str(row[0])) or (str(row[1]) if len(row) > 1 and row[1] else "")
         text = _line_text(row[3])
-        if kind == "yazhi":
-            line = handicap_line_to_float(text)
-            slot.update(
-                {
-                    "asian_line_text": text,
-                    "asian_home_line": line,
-                    "asian_line_display": fmt_handicap(line) if text else "",
-                    "asian_home_water": _water(row[2]),
-                    "asian_away_water": _water(row[4]),
-                    "asian_company": name,
-                }
-            )
-        elif kind == "daxiao":
-            slot.update(
-                {
-                    "total_line_text": text,
-                    "total_line": total_line_to_float(text),
-                    "over_water": _water(row[2]),
-                    "under_water": _water(row[4]),
-                    "total_company": name,
-                }
-            )
+        if market_kind == "yazhi":
+            values = {
+                "asian_line_text": text,
+                "asian_home_line": handicap_line_to_float(text),
+                "asian_line_display": fmt_handicap(handicap_line_to_float(text)) if text else "",
+                "asian_home_water": _water(row[2]),
+                "asian_away_water": _water(row[4]),
+                "asian_company": name,
+            }
+            if titan:
+                if not slot.get("asian_line_text"):
+                    slot.update(values)
+            else:
+                slot.update(values)
+        elif market_kind == "daxiao":
+            values = {
+                "total_line_text": text,
+                "total_line": total_line_to_float(text),
+                "over_water": _water(row[2]),
+                "under_water": _water(row[4]),
+                "total_company": name,
+            }
+            if titan:
+                if not slot.get("total_line_text"):
+                    slot.update(values)
+            else:
+                slot.update(values)
     return result
 
 
@@ -280,6 +291,8 @@ def _company_rows(rows: list[list]) -> list[dict]:
         cur_text = _line_text(row[3])
         if not init_text and not cur_text:
             continue
+        if not init_text and not cur_text:
+            continue
         cid = str(row[0])
         name = str(row[1]) if len(row) > 1 and row[1] else COMPANY_NAMES.get(cid, "")
         out.append(
@@ -327,13 +340,17 @@ def build_pages_movements(raw: dict, teams_by_fixture: dict | None = None) -> di
     result: dict[str, dict] = {}
     for key, page in (raw or {}).items():
         fixture_id, _, kind = str(key).partition("|")
+        titan = kind.startswith("titan_")
+        market_kind = kind.removeprefix("titan_")
         rows = _shifted(page.get("rows") or [])
-        row = _pick_company(rows)
+        row = _pick_company(rows, titan=titan)
         if not fixture_id or row is None:
             continue
         init_text = _line_text(row[6])
         cur_text = _line_text(row[3])
-        if kind == "yazhi":
+        if market_kind == "yazhi":
+            if titan and fixture_id in result and (result[fixture_id].get("asian") or {}).get("available"):
+                continue
             init_line = handicap_line_to_float(init_text)
             cur_line = handicap_line_to_float(cur_text)
             slot = result.setdefault(fixture_id, {})
@@ -354,7 +371,9 @@ def build_pages_movements(raw: dict, teams_by_fixture: dict | None = None) -> di
                     "away_water": _water(row[4]),
                 },
             }
-        elif kind == "daxiao":
+        elif market_kind == "daxiao":
+            if titan and fixture_id in result and (result[fixture_id].get("total") or {}).get("available"):
+                continue
             slot = result.setdefault(fixture_id, {})
             slot["total"] = {
                 "available": True,
@@ -378,9 +397,19 @@ def build_pages_movements(raw: dict, teams_by_fixture: dict | None = None) -> di
         rows = _shifted(page.get("rows") or [])
         if not fixture_id or len(rows) < 2:
             continue
-        if kind == "yazhi":
+        titan = kind.startswith("titan_")
+        market_kind = kind.removeprefix("titan_")
+        if market_kind == "yazhi":
+            if titan and fixture_id in splits and any(
+                block.get("market") == "亚盘" for block in splits[fixture_id]
+            ):
+                continue
             block = _split_block(rows, "亚盘", handicap_line_to_float)
-        elif kind == "daxiao":
+        elif market_kind == "daxiao":
+            if titan and fixture_id in splits and any(
+                block.get("market") == "大小球" for block in splits[fixture_id]
+            ):
+                continue
             block = _split_block(rows, "大小球", total_line_to_float)
         else:
             continue
@@ -393,7 +422,12 @@ def build_pages_movements(raw: dict, teams_by_fixture: dict | None = None) -> di
         payload["teams"] = (teams_by_fixture or {}).get(fixture_id)
         analysis = analyze_prematch_movement(payload)
         # 这份盘口来自 500 单场页（澳门/威廉），不是赛前指数
-        analysis["source"] = "odds_pages"
+        source_names = set()
+        if any("|titan_" not in str(key) for key in (raw or {}) if str(key).startswith(f"{fixture_id}|")):
+            source_names.add("odds_pages")
+        if any("|titan_" in str(key) for key in (raw or {}) if str(key).startswith(f"{fixture_id}|")):
+            source_names.add("titan007")
+        analysis["source"] = "+".join(sorted(source_names)) or "odds_pages"
         analysis["split"] = splits.get(fixture_id, [])
         analysed[fixture_id] = analysis
     return analysed

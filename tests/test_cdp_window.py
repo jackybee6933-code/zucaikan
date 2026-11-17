@@ -32,12 +32,17 @@ class RevealWindowTests(unittest.TestCase):
 
         self.assertEqual(
             [call[0] for call in calls],
-            ["Browser.getWindowForTarget", "Browser.setWindowBounds"],
+            [
+                "Browser.getWindowForTarget",
+                "Browser.setWindowBounds",
+                "Browser.setWindowBounds",
+            ],
         )
         self.assertEqual(calls[0][1], {"targetId": "T1"})
         self.assertEqual(calls[1][1]["windowId"], 7)
-        bounds = calls[1][1]["bounds"]
-        self.assertEqual(bounds["windowState"], "normal")
+        self.assertEqual(calls[1][1]["bounds"], {"windowState": "normal"})
+        bounds = calls[2][1]["bounds"]
+        self.assertEqual(calls[2][1]["windowId"], 7)
         self.assertGreater(bounds["left"], 0)
         self.assertGreater(bounds["top"], 0)
 

@@ -153,6 +153,23 @@ class FixtureIdFallbackTests(unittest.TestCase):
         self.assertIn("本次结果未写入", result)
         self.assertEqual(captured["run_id"], 1)
 
+    def test_artifact_status_is_updated_before_model_analysis(self):
+        raw = _raw_shuju(1)
+        patches, _ = self._patch_all(raw, _analyses(1))
+        events: list[str] = []
+
+        def mark_progress(_cache, _issue, **fields):
+            if fields.get("phase") == "artifact_ready":
+                events.append("artifact_ready")
+
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], \
+             mock.patch("football_analysis.query_app._write_ai_progress", side_effect=mark_progress), \
+             mock.patch("football_analysis.query_app.task_log", side_effect=lambda *_args: None):
+            result = run_ai_analyze("26135", db_path=self.db)
+
+        self.assertIn("AI 分析完成 1/1 场", result)
+        self.assertEqual(events, ["artifact_ready"])
+
 
 class StaleProgressSnapshotTests(unittest.TestCase):
     """AI 分析入口也要在动手前清掉上一轮留下的进度快照（同样的 issue 匹配）。"""

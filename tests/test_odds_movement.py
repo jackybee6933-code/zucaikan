@@ -387,5 +387,44 @@ class PagesFallbackWithoutTitanIdTests(unittest.TestCase):
                 pages_raw=None,
             )
         self.assertNotIn("odds_movement", rows[0])
+
+
+class TitanPagesFallbackTests(unittest.TestCase):
+    def test_titan_market_fills_missing_500_market(self):
+        rows = [
+            {
+                "fixture_id": "9",
+                "titan_match_id": "3001",
+                "home_name": "home",
+                "away_name": "away",
+            }
+        ]
+        pages = {
+            "9|yazhi": {
+                "status": "ok",
+                "rows": [
+                    ["5", "0.90", "半球", "0.96", "0.88", "半球", "0.98"],
+                ],
+            },
+            "9|titan_daxiao": {
+                "status": "ok",
+                "rows": [
+                    ["1", "澳*", "0.88", "2.5", "0.92", "0.95", "2.5/3", "0.85"],
+                ],
+            },
+        }
+        with mock.patch.object(pipeline, "fetch_nowscore_movement") as fetch:
+            pipeline._attach_odds_movement(
+                rows,
+                fetcher=mock.MagicMock(),
+                max_workers=1,
+                pages_raw=pages,
+            )
+        fetch.assert_not_called()
+        movement = rows[0]["odds_movement"]
+        self.assertEqual(movement["source"], "odds_pages+titan007")
+        self.assertTrue(movement["asian"]["available"])
+        self.assertTrue(movement["total"]["available"])
+        self.assertEqual(movement["total"]["current"]["line_text"], "2.5")
 if __name__ == "__main__":
     unittest.main()

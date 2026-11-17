@@ -194,11 +194,22 @@ def reveal_window(
     """把目标标签页所在窗口从屏幕外挪回可见区域；失败返回 False。"""
     try:
         window = _browser_command(endpoint, "Browser.getWindowForTarget", {"targetId": target_id})
+        window_id = window["windowId"]
+        # Chrome 在窗口仍处于最小化/后台状态时，和位置一起设置 bounds
+        # 偶尔只接受命令却不移动窗口；先恢复 normal，再单独设置位置。
         _browser_command(
             endpoint,
             "Browser.setWindowBounds",
             {
-                "windowId": window["windowId"],
+                "windowId": window_id,
+                "bounds": {"windowState": "normal"},
+            },
+        )
+        _browser_command(
+            endpoint,
+            "Browser.setWindowBounds",
+            {
+                "windowId": window_id,
                 "bounds": {
                     "left": left,
                     "top": top,
@@ -285,7 +296,10 @@ class CdpPage:
 
     def reveal_window(self) -> bool:
         """让窗口回到屏幕上（默认在屏幕外，只有验证页需要人工勾选时才露脸）。"""
-        return reveal_window(self.endpoint, self.target_id)
+        moved = reveal_window(self.endpoint, self.target_id)
+        if moved:
+            self.bring_to_front()
+        return moved
 
     def close(self) -> None:
         self.ws.close()

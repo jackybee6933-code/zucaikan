@@ -25,7 +25,13 @@ from .odds_pages import (
     shuju_analysis_text,
     shuju_references,
 )
-from .sfc import ISSUE_URL, TRADE_URL, parse_sfc_html
+from .sfc import (
+    ISSUE_URL,
+    LIVE_ISSUE_URL,
+    TRADE_URL,
+    parse_live_sfc_html,
+    parse_sfc_html,
+)
 from .sfc import extract_match_score
 from .team import TEAM_PAGE_URL, parse_team_recent_html
 
@@ -65,18 +71,49 @@ def parse_live_issue_scores(html: str) -> dict[str, str]:
 def collect_sfc_matches(issue: str, fetcher: Fetcher) -> tuple[list[dict], str]:
     auto_latest = not bool(issue)
     url = TRADE_URL if auto_latest else ISSUE_URL.format(issue=issue)
-    html = fetcher.fetch(
-        url,
-        cache_key=f"sfc:{url}",
-        use_cache=not auto_latest,
-    )
-    rows = parse_sfc_html(html, source_url=url)
-    if not rows:
-        raise RuntimeError("没有解析到任何胜负彩场次")
-    actual_issue = rows[0].get("issue") or issue
-    if not actual_issue:
-        raise RuntimeError("未能从当前胜负彩页面识别期号")
-    return rows, actual_issue
+    primary_error: Exception | None = None
+    try:
+        html = fetcher.fetch(
+            url,
+            cache_key=f"sfc:{url}",
+            use_cache=not auto_latest,
+        )
+        rows = parse_sfc_html(html, source_url=url)
+        actual_issue = rows[0].get("issue") if rows else ""
+        if not rows:
+            raise RuntimeError("没有解析到任何胜负彩场次")
+        if issue and actual_issue and actual_issue != issue:
+            raise RuntimeError(f"主源返回期号 {actual_issue}，不是请求的 {issue}")
+        actual_issue = actual_issue or issue
+        if not actual_issue:
+            raise RuntimeError("未能从当前胜负彩页面识别期号")
+        return rows, actual_issue
+    except Exception as exc:  # noqa: BLE001
+        primary_error = exc
+
+    if auto_latest:
+        raise RuntimeError(f"主源胜负彩页面不可用：{primary_error}") from primary_error
+
+    live_url = LIVE_ISSUE_URL.format(issue=issue)
+    try:
+        live_html = fetcher.fetch(
+            live_url,
+            cache_key=f"live_sfc:{live_url}",
+            use_cache=True,
+        )
+        rows = parse_live_sfc_html(
+            live_html,
+            issue=issue,
+            source_url=live_url,
+        )
+        if not rows:
+            raise RuntimeError("备用源没有解析到任何胜负彩场次")
+        return rows, issue
+    except Exception as fallback_error:  # noqa: BLE001
+        raise RuntimeError(
+            f"主源和备用源均未抓到 {issue} 期比赛："
+            f"主源：{primary_error}；备用源：{fallback_error}"
+        ) from fallback_error
 
 
 def _parse_detail_ids(html: str, fixture_id: str) -> tuple[str, str, str, str]:

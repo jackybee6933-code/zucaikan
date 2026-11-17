@@ -10,6 +10,7 @@ from .odds import fmt_handicap, handicap_line_to_float, parse_floats, split_csv
 
 TRADE_URL = "https://trade.500.com/sfc/"
 ISSUE_URL = "https://trade.500.com/sfc/?expect={issue}"
+LIVE_ISSUE_URL = "https://live.500.com/zucai.php?e={issue}"
 ANALYSIS_URL = "https://odds.500.com/fenxi/shuju-{fixture_id}.shtml"
 
 
@@ -109,6 +110,111 @@ def parse_sfc_html(html: str, source_url: str = "") -> list[dict]:
                 "asian_line_text": asian_line_text,
                 "asian_home_line": home_line,
                 "asian_line_display": fmt_handicap(home_line) if asian_line_text else "",
+            }
+        )
+    return rows
+
+
+def parse_live_sfc_html(
+    html: str,
+    issue: str = "",
+    source_url: str = "",
+) -> list[dict]:
+    """Parse the live.500.com fallback page into the SFC row shape."""
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table", id="table_match")
+    if table is None:
+        raise RuntimeError("未找到备用源胜负彩对阵表 table_match")
+
+    if not issue:
+        title = soup.find("title")
+        title_text = title.get_text(" ", strip=True) if title else ""
+        issue_match = re.search(r"(\d+)期", title_text)
+        issue = issue_match.group(1) if issue_match else ""
+
+    rows: list[dict] = []
+    for row in table.find_all("tr", attrs={"fid": True}):
+        cells = row.find_all("td", recursive=False)
+        fixture_id = str(row.get("fid") or "")
+        if len(cells) < 8 or not fixture_id:
+            continue
+
+        team_cells = row.find_all("td", class_="p_lr01")
+        home_node = team_cells[0].find("a") if len(team_cells) > 0 else None
+        away_node = team_cells[1].find("a") if len(team_cells) > 1 else None
+        home_team = home_node.get_text(" ", strip=True) if home_node else ""
+        away_team = away_node.get_text(" ", strip=True) if away_node else ""
+        if not home_team or not away_team:
+            continue
+
+        data_cell = cells[6]
+        line_node = data_cell.find(attrs={"data-ao": True}) or data_cell.find(
+            attrs={"data-pb": True}
+        )
+        line_text = ""
+        if line_node:
+            line_text = str(
+                line_node.get("data-ao") or line_node.get("data-pb") or ""
+            ).strip()
+            if line_text == "-":
+                line_text = str(line_node.get("data-pb") or "").strip()
+
+        analysis_link = row.find("a", href=re.compile(r"shuju-\d+\.shtml"))
+        analysis_href = str(analysis_link.get("href") or "") if analysis_link else ""
+        if analysis_href.startswith("//"):
+            analysis_href = f"https:{analysis_href}"
+        elif analysis_href.startswith("/"):
+            analysis_href = f"https://odds.500.com{analysis_href}"
+        if not analysis_href:
+            analysis_href = ANALYSIS_URL.format(fixture_id=fixture_id)
+
+        europe_values = [
+            float(value.get_text(strip=True))
+            for value in cells[-1].find_all("span")
+            if re.fullmatch(r"\d+(?:\.\d+)?", value.get_text(strip=True))
+        ]
+        status = cells[4].get_text(" ", strip=True) if len(cells) > 4 else ""
+        score_home = data_cell.select_one(".clt1")
+        score_away = data_cell.select_one(".clt3")
+        final_score = ""
+        if status in {"完", "完场"} and score_home and score_away:
+            home_score = score_home.get_text(strip=True)
+            away_score = score_away.get_text(strip=True)
+            if home_score.isdigit() and away_score.isdigit():
+                final_score = f"{home_score} - {away_score}"
+
+        league_cell = row.find("td", class_="ssbox_01")
+        league = league_cell.get_text(" ", strip=True) if league_cell else ""
+        league_color = str(league_cell.get("bgcolor") or "") if league_cell else ""
+        if league_color and not league_color.startswith("#"):
+            league_color = f"#{league_color}"
+
+        rows.append(
+            {
+                "issue": issue,
+                "source_url": source_url or (LIVE_ISSUE_URL.format(issue=issue) if issue else ""),
+                "fixture_id": fixture_id,
+                "analysis_url": analysis_href,
+                "match_no": cells[0].get_text(strip=True),
+                "league": league,
+                "league_color": league_color,
+                "match_time": cells[3].get_text(" ", strip=True),
+                "home_team": home_team,
+                "away_team": away_team,
+                "final_score": final_score,
+                "europe_home": europe_values[0] if len(europe_values) > 0 else 0.0,
+                "europe_draw": europe_values[1] if len(europe_values) > 1 else 0.0,
+                "europe_away": europe_values[2] if len(europe_values) > 2 else 0.0,
+                "bet_home_pct": 0.0,
+                "bet_draw_pct": 0.0,
+                "bet_away_pct": 0.0,
+                "asian_home_water": 0.0,
+                "asian_away_water": 0.0,
+                "asian_line_text": line_text,
+                "asian_home_line": handicap_line_to_float(line_text),
+                "asian_line_display": fmt_handicap(handicap_line_to_float(line_text))
+                if line_text
+                else "",
             }
         )
     return rows

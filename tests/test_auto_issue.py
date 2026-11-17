@@ -7,9 +7,11 @@ from football_analysis import pipeline
 from football_analysis.http import Fetcher, PageCache
 from football_analysis.sfc import (
     ISSUE_URL,
+    LIVE_ISSUE_URL,
     TRADE_URL,
     extract_issue,
     extract_match_score,
+    parse_live_sfc_html,
 )
 
 
@@ -74,6 +76,67 @@ class SfcIssueTests(unittest.TestCase):
     def test_extract_issue_falls_back_to_expect_url(self):
         html = '<a href="https://trade.500.com/sfc/?expect=26120">26120</a>'
         self.assertEqual(extract_issue(html), "26120")
+
+    def test_parse_live_sfc_html_uses_fixture_and_team_fields(self):
+        html = """
+        <title>【26166期足彩比分直播】</title>
+        <table id="table_match">
+          <tr fid="1428647" id="a1428647">
+            <td>1</td><td class="ssbox_01" bgcolor="#990099">德甲</td>
+            <td>第10轮</td><td>11-21 03:30</td><td>未</td>
+            <td class="p_lr01"><span>[01]</span><a>拜仁</a></td>
+            <td><a data-ao="两球半/三球" data-pb="两球半/三球">两球半/三球</a></td>
+            <td class="p_lr01"><a>科隆</a><span>[15]</span></td>
+            <td>-</td><td><a href="//odds.500.com/fenxi/shuju-1428647.shtml">析</a></td>
+            <td><span>1.08</span><span>11.44</span><span>19.81</span></td>
+          </tr>
+        </table>
+        """
+        rows = parse_live_sfc_html(
+            html,
+            issue="26166",
+            source_url=LIVE_ISSUE_URL.format(issue="26166"),
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["fixture_id"], "1428647")
+        self.assertEqual(rows[0]["home_team"], "拜仁")
+        self.assertEqual(rows[0]["away_team"], "科隆")
+        self.assertEqual(rows[0]["league_color"], "#990099")
+        self.assertEqual(rows[0]["europe_home"], 1.08)
+        self.assertEqual(rows[0]["asian_line_text"], "两球半/三球")
+
+    def test_collect_falls_back_to_live_issue_page(self):
+        from football_analysis import pipeline
+
+        live_html = """
+        <table id="table_match">
+          <tr fid="1428647"><td>1</td><td class="ssbox_01">德甲</td>
+          <td>第10轮</td><td>11-21 03:30</td><td>未</td>
+          <td class="p_lr01"><a>拜仁</a></td><td><a data-ao="两球半">两球半</a></td>
+          <td class="p_lr01"><a>科隆</a></td><td>-</td><td><a href="/fenxi/shuju-1428647.shtml">析</a></td>
+          <td><span>1.08</span><span>11.44</span><span>19.81</span></td></tr>
+        </table>
+        """
+
+        class FallbackFetcher:
+            def __init__(self):
+                self.calls = []
+                self.cache = PageCache(None)
+
+            def fetch(self, url, **kwargs):
+                self.calls.append(url)
+                if url == ISSUE_URL.format(issue="26166"):
+                    return '<table id="vsTable"></table>'
+                return live_html
+
+        fetcher = FallbackFetcher()
+        rows, actual_issue = pipeline.collect_sfc_matches("26166", fetcher)
+        self.assertEqual(actual_issue, "26166")
+        self.assertEqual(rows[0]["fixture_id"], "1428647")
+        self.assertEqual(fetcher.calls, [
+            ISSUE_URL.format(issue="26166"),
+            LIVE_ISSUE_URL.format(issue="26166"),
+        ])
 
 
 class AutoLatestTests(unittest.TestCase):

@@ -802,6 +802,20 @@ def _run_refresh(args: argparse.Namespace) -> int:
     if code != 0:
         print(f"\n抓取未完成（退出码 {code}），原产物未被覆盖。")
         return code
+    from .titan_scrape import run_titan_fallback
+
+    titan_error = run_titan_fallback(
+        issue,
+        cache_dir,
+        endpoint,
+        delay=(
+            args.delay
+            if args.delay is not None
+            else load_scrape_delay()
+        ),
+    )
+    if titan_error:
+        print(f"\n{titan_error}")
 
     new_age = pages_age_hours(cache_dir, issue)
     if new_age is None:

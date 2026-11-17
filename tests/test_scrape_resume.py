@@ -107,6 +107,20 @@ class PartialFileTests(unittest.TestCase):
 
 
 class VerificationPauseTests(unittest.TestCase):
+    def test_rate_limit_title_skips_without_waiting_for_manual_verification(self):
+        mod = _scraper()
+        page = mock.MagicMock()
+        page.title.return_value = mod.VERIFY_MARK
+        page.evaluate.return_value = True
+
+        with self.assertRaises(mod.RateLimited):
+            mod.fetch_page(
+                page,
+                "https://example.test/odds",
+                120,
+            )
+        page.bring_to_front.assert_not_called()
+
     def test_verification_detection_uses_title_body_and_url_but_not_empty_odds(self):
         mod = _scraper()
 
@@ -133,6 +147,7 @@ class VerificationPauseTests(unittest.TestCase):
         page.evaluate.side_effect = [
             1,
             {"url": "https://odds.500.com/fenxi/yazhi-111.shtml", "text": "Security Verification"},
+            False,
             {"url": "https://odds.500.com/fenxi/yazhi-111.shtml", "text": "Asian odds"},
             False,
             [["company", "line"]],
@@ -178,6 +193,7 @@ class VerificationPauseTests(unittest.TestCase):
         page.title.side_effect = [mod.VERIFY_MARK, "Odds page"]
         page.evaluate.side_effect = [
             1,
+            False,
             {"url": "https://example.test/odds", "text": "Asian odds"},
             False,
             [["company", "line"]],
@@ -196,7 +212,7 @@ class VerificationPauseTests(unittest.TestCase):
         self.assertEqual(result, {"status": mod.STATUS_OK, "rows": [["company", "line"]]})
         self.assertEqual(phases, ["required", "resolved"])
         page.goto.assert_called_once()
-        self.assertEqual(page.evaluate.call_count, 4)
+        self.assertEqual(page.evaluate.call_count, 5)
 
     def test_fetch_page_reports_verification_and_times_out_as_action_required(self):
         mod = _scraper()
@@ -216,7 +232,7 @@ class VerificationPauseTests(unittest.TestCase):
         self.assertEqual(notified, [True])
         self.assertEqual(result["status"], mod.STATUS_VERIFICATION_REQUIRED)
 
-    def test_verification_timeout_stops_remaining_pages(self):
+    def test_verification_timeout_skips_page_and_continues(self):
         mod = _scraper()
         with tempfile.TemporaryDirectory() as tmp:
             cache = Path(tmp)
@@ -224,7 +240,9 @@ class VerificationPauseTests(unittest.TestCase):
 
             def fake_fetch(page, url, wait, **kwargs):
                 fetched.append(url)
-                return {"status": mod.STATUS_VERIFICATION_REQUIRED, "rows": []}
+                if url.endswith("-111.shtml"):
+                    return {"status": mod.STATUS_VERIFICATION_REQUIRED, "rows": []}
+                return {"status": mod.STATUS_OK, "rows": [["company", "line"]]}
 
             page = mock.MagicMock()
             with mock.patch.object(
@@ -236,7 +254,7 @@ class VerificationPauseTests(unittest.TestCase):
                 ),
             ), mock.patch.object(mod, "acquire", return_value=page), mock.patch.object(
                 mod, "fetch_page", side_effect=fake_fetch
-            ):
+            ), mock.patch.object(mod.time, "sleep"):
                 code = mod.main(
                     [
                         "--issue",
@@ -250,12 +268,122 @@ class VerificationPauseTests(unittest.TestCase):
                     ]
                 )
 
-            self.assertEqual(code, mod.EXIT_VERIFICATION_REQUIRED)
-            self.assertEqual(fetched, ["https://odds.500.com/fenxi/yazhi-111.shtml"])
-            progress = json.loads((cache / ".ai_scrape_progress").read_text(encoding="utf-8"))
-            self.assertEqual(progress["phase"], "aborted")
-            self.assertEqual(progress["reason"], "verification_required")
-            self.assertFalse((cache / "odds_pages_26144.json").exists())
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                fetched,
+                [
+                    "https://odds.500.com/fenxi/yazhi-111.shtml",
+                    "https://odds.500.com/fenxi/yazhi-222.shtml",
+                ],
+            )
+            saved = json.loads((cache / "odds_pages_26144.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["111|yazhi"]["status"], mod.STATUS_VERIFICATION_REQUIRED)
+            self.assertEqual(saved["222|yazhi"]["status"], mod.STATUS_OK)
+            self.assertTrue(mod.partial_path(cache, "26144").exists())
+
+    def test_rate_limit_skips_page_and_keeps_browser_for_next_page(self):
+        mod = _scraper()
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            fetched = []
+
+            def fake_fetch(page, url, wait, **kwargs):
+                fetched.append(url)
+                if url.endswith("-111.shtml"):
+                    raise mod.RateLimited(url)
+                return {"status": mod.STATUS_OK, "rows": [["company", "line"]]}
+
+            page = mock.MagicMock()
+            with mock.patch.object(
+                mod,
+                "collect_sfc_matches",
+                return_value=(
+                    [{"fixture_id": "111"}, {"fixture_id": "222"}],
+                    "26144",
+                ),
+            ), mock.patch.object(mod, "acquire", return_value=page), mock.patch.object(
+                mod, "fetch_page", side_effect=fake_fetch
+            ), mock.patch.object(mod.time, "sleep"):
+                code = mod.main(
+                    [
+                        "--issue",
+                        "26144",
+                        "--cache-dir",
+                        str(cache),
+                        "--kinds",
+                        "yazhi",
+                        "--delay",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                fetched,
+                [
+                    "https://odds.500.com/fenxi/yazhi-111.shtml",
+                    "https://odds.500.com/fenxi/yazhi-222.shtml",
+                ],
+            )
+            page.bring_to_front.assert_called_once()
+            page.reveal_window.assert_called_once()
+            page.close.assert_not_called()
+            saved = json.loads((cache / "odds_pages_26144.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["111|yazhi"]["status"], mod.STATUS_RATE_LIMITED)
+            self.assertEqual(saved["222|yazhi"]["status"], mod.STATUS_OK)
+            self.assertTrue(mod.partial_path(cache, "26144").exists())
+
+    def test_browser_disconnect_reconnects_and_continues(self):
+        mod = _scraper()
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            fetched = []
+            first_page = mock.MagicMock()
+            second_page = mock.MagicMock()
+
+            def fake_fetch(page, url, wait, **kwargs):
+                fetched.append(url)
+                if len(fetched) == 1:
+                    raise mod.BrowserGone()
+                return {"status": mod.STATUS_OK, "rows": [["company", "line"]]}
+
+            with mock.patch.object(
+                mod,
+                "collect_sfc_matches",
+                return_value=(
+                    [{"fixture_id": "111"}, {"fixture_id": "222"}],
+                    "26144",
+                ),
+            ), mock.patch.object(
+                mod, "acquire", side_effect=[first_page, second_page]
+            ), mock.patch.object(
+                mod, "fetch_page", side_effect=fake_fetch
+            ), mock.patch.object(mod.time, "sleep"):
+                code = mod.main(
+                    [
+                        "--issue",
+                        "26144",
+                        "--cache-dir",
+                        str(cache),
+                        "--kinds",
+                        "yazhi",
+                        "--delay",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                fetched,
+                [
+                    "https://odds.500.com/fenxi/yazhi-111.shtml",
+                    "https://odds.500.com/fenxi/yazhi-222.shtml",
+                ],
+            )
+            second_page.close.assert_called_once()
+            saved = json.loads((cache / "odds_pages_26144.json").read_text(encoding="utf-8"))
+            self.assertEqual(saved["111|yazhi"]["status"], mod.STATUS_ERROR)
+            self.assertEqual(saved["222|yazhi"]["status"], mod.STATUS_OK)
 
     def test_retry_after_verification_timeout_resumes_from_saved_page(self):
         mod = _scraper()
@@ -296,7 +424,7 @@ class VerificationPauseTests(unittest.TestCase):
                     ]
                 )
 
-            self.assertEqual(code, mod.EXIT_VERIFICATION_REQUIRED)
+            self.assertEqual(code, 0)
             self.assertEqual(len(json.loads(mod.partial_path(cache, "26144").read_text(encoding="utf-8"))), 1)
 
             retry_fetches = []

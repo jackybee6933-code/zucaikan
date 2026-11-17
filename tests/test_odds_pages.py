@@ -13,6 +13,7 @@ from football_analysis.pipeline import _build_single_analysis
 from football_analysis.query_report import _split_html, _total_goals_html
 from football_analysis.report import asian_display, total_display
 from football_analysis.store import _extract_split
+from football_analysis.titan_odds import parse_titan_market, parse_titan_rows
 
 
 def _raw(rows_by_key: dict) -> dict:
@@ -26,8 +27,45 @@ ASIAN_ROWS = [
 
 TOTAL_ROWS = [["5", "1.25", "3/3.5", "0.75", "0.75", "2.5", "1.00"]]
 
+TITAN_ASIAN_HTML = """
+<table id="odds">
+  <tr><td><input name="oddsShow" data-id="1"></td><td>澳*</td>
+    <td>2026-11-16 22:01 1.03</td><td>2026-11-16 22:01 平手</td><td>2026-11-16 22:01 0.67</td>
+    <td>1.03</td><td>平手</td><td>0.67</td><td>历史</td></tr>
+  <tr><td><input name="oddsShow" data-id="9"></td><td>威*</td>
+    <td>0.80</td><td>受让平手/半球</td><td>0.96</td>
+    <td>1.07</td><td>平手</td><td>0.75</td><td>历史</td></tr>
+  <tr class="maxTr"><td>最大值</td></tr>
+</table>
+"""
+
+TITAN_TOTAL_HTML = """
+<table id="odds">
+  <tr><td><input name="oddsShow" data-id="1"></td><td>澳*</td>
+    <td>0.88</td><td>2.5/3</td><td>0.92</td>
+    <td>0.95</td><td>2.5</td><td>0.85</td><td>历史</td></tr>
+</table>
+"""
+
 
 class OddsPagesTests(unittest.TestCase):
+    def test_titan_parser_uses_macau_and_common_row_shape(self):
+        rows = parse_titan_rows(TITAN_ASIAN_HTML, kind="yazhi")
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0][:2], ["1", "澳*"])
+        self.assertEqual(rows[0][2:8], ["1.03", "平手", "0.67", "1.03", "平手", "0.67"])
+        parsed = parse_titan_market(TITAN_ASIAN_HTML, kind="yazhi")
+        self.assertEqual(parsed["asian_company"], "澳门")
+        self.assertEqual(parsed["asian_line_text"], "平手")
+        self.assertEqual(parsed["asian_home_line"], 0.0)
+
+    def test_titan_total_parser_converts_over_under(self):
+        parsed = parse_titan_market(TITAN_TOTAL_HTML, kind="daxiao")
+        self.assertEqual(parsed["total_company"], "澳门")
+        self.assertEqual(parsed["total_line_text"], "2.5")
+        self.assertEqual(parsed["total_line"], 2.5)
+        self.assertEqual(parsed["over_water"], 0.95)
+
     def test_prefers_macau_cid_5(self):
         parsed = parse_odds_pages(_raw({"9|yazhi": ASIAN_ROWS}))
         asian = parsed["9"]
@@ -79,6 +117,24 @@ class OddsPagesTests(unittest.TestCase):
             "total_line_text", "total_line", "over_water", "under_water",
             "total_company",
         })
+
+    def test_titan_fills_only_missing_market(self):
+        raw = _raw(
+            {
+                "9|yazhi": ASIAN_ROWS,
+                "9|titan_yazhi": [
+                    ["1", "澳*", "0.80", "受让平手", "1.00", "0.80", "受让平手", "1.00"]
+                ],
+                "9|titan_daxiao": [
+                    ["1", "澳*", "0.88", "2.5", "0.92", "0.95", "2.5", "0.85"]
+                ],
+            }
+        )
+        parsed = parse_odds_pages(raw)["9"]
+        self.assertEqual(parsed["asian_company"], "澳门")
+        self.assertEqual(parsed["asian_line_text"], "一球")
+        self.assertEqual(parsed["total_company"], "澳门")
+        self.assertEqual(parsed["total_line_text"], "2.5")
 
     def test_build_single_analysis_uses_pages_data(self):
         parsed = parse_odds_pages(_raw({"9|yazhi": ASIAN_ROWS, "9|daxiao": TOTAL_ROWS}))

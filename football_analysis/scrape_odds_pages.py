@@ -10,7 +10,7 @@
 在 Chrome 里那个标签页勾选一次即可，脚本会自动继续。
 
 单 IP 抓得太密会触发 EdgeOne「请求过于频繁」限流；脚本默认每页间隔 ``--delay``
-秒并带随机抖动，检测到限流页立即停止。
+秒并带随机抖动。单页命中限流会标记并跳过，继续尝试后续页面；失败页会在下次运行时重试。
 
 只做这次改动是因为自带 Chromium 那条路已验证走不通：它没有已验证 cookie，
 实测恒定停在验证页/限流页，且窗口与日常 Chrome 难以分辨、每次都要人工勾选。
@@ -45,9 +45,18 @@ VERIFY_TEXT_MARKS = (
     "人机验证",
 )
 VERIFY_URL_MARKS = ("captcha", "challenge", "security-verification", "secverify")
-RATE_LIMIT_MARKS = ("频繁", "过于频繁", "Too Many Requests", "too many requests")
-PAGE_TIMEOUT_MS = 25_000
+RATE_LIMIT_MARKS = (
+    "频繁",
+    "过于频繁",
+    "请求频率过高",
+    "请稍后再试",
+    "too many requests",
+    "rate limit",
+    "temporarily blocked",
+)
+PAGE_TIMEOUT_MS = 10_000
 POLL_SECONDS = 1.5
+DEFAULT_WAIT_SECONDS = 30.0
 # 真实页面出现后，等这几拍让 JS 把公司行渲染出来；到点仍为空即视为「无盘口」
 SETTLE_POLLS = 3
 # shuju（数据分析页）只取球队资料文本，供大模型阅读；放在最后，限流中断时先保住盘口页。
@@ -78,8 +87,9 @@ EXTRACT_JS = """() => {
 }"""
 
 RATECHECK_JS = (
-    "() => { const t = document.body ? document.body.innerText : '';"
-    " return %s.some(m => t.indexOf(m) >= 0); }" % json.dumps(list(RATE_LIMIT_MARKS))
+    "() => { const t = document.body ? document.body.innerText.toLowerCase() : '';"
+    " return %s.some(m => t.indexOf(m.toLowerCase()) >= 0); }"
+    % json.dumps(list(RATE_LIMIT_MARKS))
 )
 
 CHALLENGE_CONTEXT_JS = (
@@ -171,6 +181,14 @@ class BrowserGone(Exception):
     """浏览器/CDP 连接已断开。"""
 
 
+# 发生限流时保留专用 Chrome，便于人工查看页面现场。
+KEEP_BROWSER_OPEN = False
+
+
+def keep_browser_open() -> bool:
+    return KEEP_BROWSER_OPEN
+
+
 def _safe(text: str) -> str:
     return text.encode("gbk", "replace").decode("gbk")
 
@@ -196,6 +214,22 @@ def acquire(endpoint: str) -> CdpPage:
     return CdpPage(endpoint)
 
 
+def reconnect(endpoint: str):
+    """浏览器标签页断开后重新连接；必要时只重启本地专用 Chrome。"""
+    try:
+        return acquire(endpoint)
+    except CdpError:
+        if not endpoint.startswith("http://127.0.0.1"):
+            raise
+        from urllib.parse import urlparse
+
+        port = urlparse(endpoint).port or 9222
+        err = ensure_cdp_chrome(port)
+        if err:
+            raise CdpError(err)
+        return acquire(endpoint)
+
+
 def browser_alive(page) -> bool:
     """探活：浏览器被关掉后 Playwright 的 sync API 可能永久阻塞，先做个廉价调用探一下。"""
     try:
@@ -212,6 +246,7 @@ STATUS_OK = "ok"
 STATUS_EMPTY = "empty"
 STATUS_TIMEOUT = "timeout"
 STATUS_ERROR = "error"
+STATUS_RATE_LIMITED = "rate_limited"
 STATUS_VERIFICATION_REQUIRED = "verification_required"
 EXIT_VERIFICATION_REQUIRED = 6
 
@@ -348,6 +383,15 @@ def fetch_page(
             )
 
         if verification_page:
+            # EdgeOne 的限流页有时也沿用 Security Verification 标题。
+            # 先判限流，避免把它误当成人工验证白等整段人工等待时间。
+            try:
+                if page.evaluate(RATECHECK_JS) is True:
+                    raise RateLimited(url)
+            except RateLimited:
+                raise
+            except CdpError as exc:
+                return _error(str(exc).splitlines()[0][:90], text_mode=text_mode)
             settled = 0
             if not verification_pending:
                 verification_pending = True
@@ -403,10 +447,17 @@ def fetch_page(
 
 
 def main(argv: list[str] | None = None) -> int:
+    global KEEP_BROWSER_OPEN
+    KEEP_BROWSER_OPEN = False
     parser = argparse.ArgumentParser(description="抓取 odds.500.com 单场页盘口")
     parser.add_argument("--issue", default="", help="期号；留空则用当前最新一期")
     parser.add_argument("--cache-dir", default="cache")
-    parser.add_argument("--wait", type=float, default=120.0, help="撞到验证页时等待人工勾选的秒数")
+    parser.add_argument(
+        "--wait",
+        type=float,
+        default=DEFAULT_WAIT_SECONDS,
+        help=f"撞到验证页时等待人工勾选的秒数（默认 {DEFAULT_WAIT_SECONDS:g}）",
+    )
     parser.add_argument(
         "--delay", type=float, default=5.0, help="每个页面之间的间隔秒数（带随机抖动）"
     )
@@ -533,17 +584,42 @@ def main(argv: list[str] | None = None) -> int:
                         ),
                     )
                 except BrowserGone:
-                    log("")
-                    log("[!] 浏览器已断开（多半是被关掉了），中止；已抓页面已保存，重试会从断点继续。")
-                    log("    重跑前请先重新启动带调试端口的 Chrome，且中途不要关闭窗口。")
-                    _write_progress(cache_dir, issue, phase="aborted", total=total, done=page_no - 1, failed=failed, reason="browser_gone")
-                    return 4
-                except RateLimited:
-                    log("")
-                    log("[!] 触发 EdgeOne「请求过于频繁」限流，已停止；已抓页面已保存，等会儿重试会从断点继续。")
-                    log("    等几十分钟再跑，或调大 --delay。")
-                    _write_progress(cache_dir, issue, phase="aborted", total=total, done=page_no - 1, failed=failed, reason="rate_limited")
-                    return 3
+                    log("    [!] 当前标签页的 CDP 连接断开，尝试重连后继续下一场。")
+                    try:
+                        page = reconnect(args.cdp)
+                    except CdpError as exc:
+                        log("")
+                        log(f"[!] 浏览器重连失败：{str(exc).splitlines()[0][:90]}")
+                        log("    已抓页面已保存，重新运行会从断点继续。")
+                        _write_progress(
+                            cache_dir,
+                            issue,
+                            phase="aborted",
+                            total=total,
+                            done=page_no - 1,
+                            failed=failed,
+                            reason="browser_gone",
+                        )
+                        return 4
+                    log("    [!] CDP 已重连，跳过当前断开的页面，继续下一场。")
+                    payload = _error("CDP 连接断开", text_mode=text_mode)
+                except RateLimited as exc:
+                    # 只跳过当前页；保持 CDP 标签页和 Chrome 存活，让后续比赛继续抓。
+                    # 同时把窗口移回屏幕并在整批结束后保留，便于人工查看限流现场。
+                    # rate_limited 不写入断点，下一次运行会重试该页。
+                    KEEP_BROWSER_OPEN = True
+                    try:
+                        page.bring_to_front()
+                        if not page.reveal_window():
+                            log("    [!] Chrome 窗口回迁失败，请检查专用 Chrome 是否仍在运行。")
+                    except CdpError:
+                        log("    [!] Chrome 窗口回迁失败，请检查专用 Chrome 是否仍在运行。")
+                    payload = {
+                        "status": STATUS_RATE_LIMITED,
+                        "detail": str(exc)[:120] or "EdgeOne 请求频率受限",
+                        "text" if text_mode else "rows": "" if text_mode else [],
+                    }
+                    log("    [!] 当前页触发 EdgeOne 限流，窗口已保留，跳过当前页，继续下一场。")
                 except CdpError as exc:
                     log("")
                     log(f"[!] 浏览器中断：{str(exc).splitlines()[0][:90]}")
@@ -551,18 +627,9 @@ def main(argv: list[str] | None = None) -> int:
                     _write_progress(cache_dir, issue, phase="aborted", total=total, done=page_no - 1, failed=failed, reason="cdp_error")
                     return 4
                 if payload.get("status") == STATUS_VERIFICATION_REQUIRED:
-                    log("")
-                    log("[!] EdgeOne 人工验证未在等待时间内完成，已暂停整批抓取；已抓页面已保存，请验证后重试。")
-                    _write_progress(
-                        cache_dir,
-                        issue,
-                        phase="aborted",
-                        total=total,
-                        done=done,
-                        failed=failed,
-                        reason="verification_required",
-                    )
-                    return EXIT_VERIFICATION_REQUIRED
+                    # 单场验证页可能只卡住这一场；不要让它阻塞后面的比赛。
+                    # 该页不写入断点，下一次运行会优先重试它。
+                    log("    [!] 本场验证未完成，跳过当前页面，继续下一场；稍后可重试失败页。")
                 done += 1
                 failed += 1 if payload.get("status") not in (STATUS_OK, STATUS_EMPTY) else 0
                 result[key] = payload
@@ -574,17 +641,28 @@ def main(argv: list[str] | None = None) -> int:
                     log(f"  [{done:>2}/{total}] {kind}-{fid}: {len(payload.get('text') or '')} 字{note}")
                 else:
                     log(f"  [{done:>2}/{total}] {kind}-{fid}: {len(payload.get('rows') or [])} 家{note}")
-                _write_progress(cache_dir, issue, phase="scrape", total=total, done=done, failed=failed, last=f"{kind}-{fid}")
+                _write_progress(
+                    cache_dir,
+                    issue,
+                    phase="scrape",
+                    total=total,
+                    done=done,
+                    failed=failed,
+                    last=f"{kind}-{fid}",
+                )
                 if kind == "shuju" and payload.get("status") == STATUS_EMPTY:
                     stop_empty_shuju = True
                     log("    [!] 首个 shuju 页面为空，跳过剩余球队资料页。")
                 time.sleep(args.delay * random.uniform(0.6, 1.4))
     finally:
         # 只关自己开的那一个标签页；用户的浏览器和其余标签一律不碰
-        try:
-            page.close()
-        except CdpError:
-            pass
+        if KEEP_BROWSER_OPEN:
+            log("限流现场已保留：请查看专用 Chrome 窗口；关闭窗口后可重新刷新。")
+        else:
+            try:
+                page.close()
+            except CdpError:
+                pass
 
     if failed:
         # 合并旧产物前保存本轮成功页，避免把其他页种的旧数据当成新断点。

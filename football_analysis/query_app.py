@@ -231,6 +231,21 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
 
     analyses = rebuild_analyses_from_db(target_db, actual_issue, run_id=run_id)
     raw = load_odds_pages_raw(cache_dir, actual_issue)
+    shuju_pages = {
+        str(key): value
+        for key, value in (raw or {}).items()
+        if str(key).rsplit("|", 1)[-1] == "shuju"
+    }
+    valid_shuju = {
+        key: value
+        for key, value in shuju_pages.items()
+        if isinstance(value, dict)
+        and str(value.get("status") or "") in ("ok", "empty")
+    }
+    failed_shuju = len(shuju_pages) - len(valid_shuju)
+    if shuju_pages and not valid_shuju:
+        task_log("AI 分析", f"{actual_issue} 跳过：分析页产物全部抓取失败")
+        return f"{actual_issue}：500 数据分析页抓取失败，AI 无资料可读"
     fixture_ids = [str(a.get("fixture_id") or "") for a in analyses]
     # Old DB payloads predate the fixture_id column; when every id is empty but
     # the artifact does carry shuju keys, derive fixture ids from the artifact
@@ -264,6 +279,22 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     if needed_pages == 0:
         task_log("AI 分析", f"{actual_issue} 跳过：无可读球队资料")
         return f"{actual_issue}：500 数据分析页缺失或抓取失败，AI 无资料可读，请先确认单场页产物 cache/odds_pages_{actual_issue}.json 含 shuju 页"
+    # 抓取函数返回后先确认产物已落盘，再进入模型阶段。这个状态也让查询页
+    # 能明确区分“资料已更新”和“模型正在处理”，避免两阶段看起来粘在一起。
+    _write_ai_progress(
+        cache_dir,
+        actual_issue,
+        phase="artifact_ready",
+        total=len(analyses),
+        done=0,
+        failed=failed_shuju,
+        artifact_status="updated",
+    )
+    task_log(
+        "AI 分析",
+        f"{actual_issue} 数据产物已更新（{len(valid_shuju)} 页有效"
+        f"{f'，{failed_shuju} 页失败' if failed_shuju else ''}），准备模型分析",
+    )
     reader = TeamReader()
     if not reader.enabled:
         task_log("AI 分析", f"{actual_issue} 跳过：未配置模型接入点")
@@ -317,6 +348,21 @@ def _clear_progress(cache_dir: Path) -> None:
         pass
 
 
+def _write_ai_progress(cache_dir: Path, issue: str, **fields) -> None:
+    """原子写入 AI 分析阶段状态，避免查询页读到半截 JSON。"""
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        path = cache_dir / ".ai_scrape_progress"
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps({"issue": issue, **fields}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
 def _ensure_cdp(endpoint: str) -> str | None:
     """Probe the CDP port; if unreachable, launch Chrome with the CDP profile.
 
@@ -352,6 +398,7 @@ def run_refresh_odds(issue: str, *, cdp: str = CDP_DEFAULT, db_path: str | Path 
     Chrome CDP port; if unreachable return CDP_HINT. If reachable, run
     tools/scrape_odds_pages.py to re-scrape and overwrite the artifact.
     """
+    from . import scrape_odds_pages as scraper_module
     from .cdp_profile import shutdown_cdp_chrome
     from .main import _default_cache_dir
     from .odds_pages import (
@@ -417,9 +464,18 @@ def run_refresh_odds(issue: str, *, cdp: str = CDP_DEFAULT, db_path: str | Path 
         task_log("刷新盘口", f"{issue} 浏览器启动失败：{cdp_error}")
         return cdp_error
     try:
-        scrape_error = _run_odds_scraper(issue, cache_dir, endpoint, kinds=refresh_kinds)
+        scrape_error = _run_odds_scraper(
+            issue,
+            cache_dir,
+            endpoint,
+            kinds=refresh_kinds,
+            titan_fallback=True,
+        )
     finally:
-        shutdown_cdp_chrome()
+        if scraper_module.keep_browser_open():
+            task_log("刷新盘口", f"{issue} 检测到限流，保留 Chrome 窗口供查看")
+        else:
+            shutdown_cdp_chrome()
     if scrape_error:
         task_log("刷新盘口", f"{issue} 抓取失败或暂停：{scrape_error}")
         return scrape_error
@@ -482,6 +538,7 @@ def _run_odds_scraper(
     *,
     kinds: list[str] | None = None,
     delay: float | None = None,
+    titan_fallback: bool = False,
 ) -> str | None:
     """Run the packaged odds scraper. Return an error string, or None on success."""
     from . import scrape_odds_pages as mod
@@ -501,6 +558,17 @@ def _run_odds_scraper(
         return f"{issue} 检测到 EdgeOne 人工验证，整批抓取已暂停；请手动完成验证后重试"
     if code != 0:
         return f"{issue} 抓取未完成（退出码 {code}），已抓页面已保存，重试会从断点继续"
+    if titan_fallback:
+        from .titan_scrape import run_titan_fallback
+
+        titan_error = run_titan_fallback(
+            issue,
+            cache_dir,
+            endpoint,
+            delay=delay,
+        )
+        if titan_error:
+            task_log("刷新盘口", f"{issue} {titan_error}")
     return None
 
 

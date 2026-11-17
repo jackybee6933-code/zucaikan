@@ -100,6 +100,23 @@ class DedupMessageTests(unittest.TestCase):
 
 
 class RunRefreshOddsTests(unittest.TestCase):
+    def test_rate_limited_scrape_keeps_chrome_for_inspection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cache = root / "cache"
+            cache.mkdir()
+            _artifact(cache, "26135", PAGES_STALE_HOURS + 3)
+            with mock.patch("football_analysis.main._app_root", return_value=root), \
+                 mock.patch.object(query_app, "_ensure_cdp", return_value=None), \
+                 mock.patch.object(query_app, "_run_odds_scraper", return_value=None), \
+                 mock.patch("football_analysis.scrape_odds_pages.keep_browser_open", return_value=True), \
+                 mock.patch.object(query_app, "analyze_issue", return_value=([_item()], "26135", "u")), \
+                 mock.patch.object(query_app, "save_issue_movements", return_value={"match_count": 1, "attention_count": 0}), \
+                 mock.patch("football_analysis.cdp_profile.shutdown_cdp_chrome") as shutdown:
+                text = query_app.run_refresh_odds("26135", db_path=root / "x.sqlite")
+            shutdown.assert_not_called()
+            self.assertIn("盘口", text)
+
     def test_fresh_only_shuju_missing_skips_without_scraping(self):
         """yazhi/daxiao 都有公司行、只缺 shuju：直接跳过，shuju 留给「AI 分析」。"""
         with tempfile.TemporaryDirectory() as tmp:

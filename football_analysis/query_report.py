@@ -894,6 +894,8 @@ _FETCH_BLOCK = \
         aiStatus.textContent = "AI 分析 " + s.issue + " — 人工验证未完成，抓取已暂停；验证后请重试";
       } else if (p.phase === "llm") {
         aiStatus.textContent = "AI 分析 " + s.issue + " 中 — 模型分析 " + done + "/" + total + " (" + pct + "%)";
+      } else if (p.phase === "artifact_ready") {
+        aiStatus.textContent = "AI 分析 " + s.issue + " — 数据产物已更新，准备模型分析";
       } else if (p.phase === "aborted" && p.reason) {
         aiStatus.textContent = "AI 分析 " + s.issue + " 中 — 抓取中止: " + p.reason;
       } else if (p.phase === "done") {
