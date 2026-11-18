@@ -55,6 +55,16 @@ def parse_sfc_html(html: str, source_url: str = "") -> list[dict]:
         away_node = team_td.find("a", class_="team-r") if team_td else None
         home_team = home_node.get_text(" ", strip=True) if home_node else ""
         away_team = away_node.get_text(" ", strip=True) if away_node else ""
+        home_id_match = (
+            re.search(r"/team/(\d+)/", str(home_node.get("href") or ""))
+            if home_node
+            else None
+        )
+        away_id_match = (
+            re.search(r"/team/(\d+)/", str(away_node.get("href") or ""))
+            if away_node
+            else None
+        )
         if not home_team or not away_team:
             vs_text = (team_td.get_text(" ", strip=True) if team_td else "") or str(
                 row.get("data-vs", "")
@@ -98,6 +108,8 @@ def parse_sfc_html(html: str, source_url: str = "") -> list[dict]:
                 "match_time": match_time,
                 "home_team": home_team,
                 "away_team": away_team,
+                "home_id": home_id_match.group(1) if home_id_match else "",
+                "away_id": away_id_match.group(1) if away_id_match else "",
                 "final_score": final_score,
                 "europe_home": bjpl[0] if len(bjpl) > 0 else 0.0,
                 "europe_draw": bjpl[1] if len(bjpl) > 1 else 0.0,

@@ -221,8 +221,8 @@ def analyze_issue(
             detail.update(
                 {
                     "info_match_id": enrichment["info_match_id"],
-                    "home_id": enrichment["home_id"],
-                    "away_id": enrichment["away_id"],
+                    "home_id": enrichment["home_id"] or detail.get("home_id", ""),
+                    "away_id": enrichment["away_id"] or detail.get("away_id", ""),
                     "home_name": enrichment["home_name"],
                     "away_name": enrichment["away_name"],
                     "league": enrichment["league"] or row["league"],

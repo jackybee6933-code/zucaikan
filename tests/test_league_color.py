@@ -37,6 +37,16 @@ class SfcLeagueColorTests(unittest.TestCase):
         self.assertEqual(rows[0]["league"], "英超")
         self.assertEqual(rows[0]["league_color"], "")
 
+    def test_team_ids_are_read_from_team_links(self):
+        html = SFC_ROW.replace(
+            '<td class="td td-team"><i class="team-vs">VS</i></td>',
+            '<td class="td td-team"><a class="team-l" href="https://liansai.500.com/team/123/">主队</a>'
+            '<i class="team-vs">VS</i><a class="team-r" href="/team/456/">客队</a></td>',
+        )
+        rows = parse_sfc_html(html)
+        self.assertEqual(rows[0]["home_id"], "123")
+        self.assertEqual(rows[0]["away_id"], "456")
+
 
 class JczqLeagueColorTests(unittest.TestCase):
     def test_color_taken_from_td_evt_inline_style(self):

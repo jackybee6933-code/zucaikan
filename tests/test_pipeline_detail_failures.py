@@ -12,6 +12,8 @@ class DetailPageFailureTests(unittest.TestCase):
             "fixture_id": "1425920",
             "home_team": "主队",
             "away_team": "客队",
+            "home_id": "123",
+            "away_id": "456",
             "league": "联赛",
             "final_score": "",
         }
@@ -57,6 +59,42 @@ class DetailPageFailureTests(unittest.TestCase):
         self.assertTrue(
             any("详情页抓取失败" in warning for warning in analyses[0]["warnings"])
         )
+
+    def test_empty_jczq_team_ids_do_not_replace_sfc_ids(self):
+        row = {
+            "issue": "26158", "match_no": "1", "fixture_id": "1425920",
+            "home_team": "主队", "away_team": "客队", "home_id": "123",
+            "away_id": "456", "league": "联赛", "final_score": "",
+        }
+        fetcher = mock.MagicMock()
+        fetcher.cache.root = None
+        fetcher.fetch.return_value = "<html></html>"
+        enrichment = {
+            "info_match_id": "", "home_id": "", "away_id": "",
+            "home_name": "主队", "away_name": "客队", "league": "联赛",
+            "league_color": "", "match_no": "1", "match_date": "",
+            "match_time": "20:00",
+        }
+        with (
+            mock.patch.object(pipeline, "collect_sfc_matches", return_value=([row], "26158")),
+            mock.patch.object(pipeline, "parse_jczq_html", return_value={"1425920": enrichment}),
+            mock.patch.object(pipeline, "parse_odds_xml", return_value={}),
+            mock.patch.object(pipeline, "load_odds_pages_raw", return_value={}),
+            mock.patch.object(pipeline, "fetch_cantonese_matches", return_value={}),
+            mock.patch.object(pipeline, "_attach_titan_h2h"),
+            mock.patch.object(pipeline, "_attach_odds_movement"),
+            mock.patch.object(pipeline, "_fetch_team_records", return_value={}),
+            mock.patch.object(
+                pipeline, "_build_single_analysis",
+                side_effect=lambda match, *_args, **_kwargs: {
+                    "match_no": match["match_no"],
+                    "home_id": match["home_id"], "away_id": match["away_id"],
+                },
+            ),
+        ):
+            analyses, _, _ = pipeline.analyze_issue("26158", fetcher=fetcher)
+        self.assertEqual(analyses[0]["home_id"], "123")
+        self.assertEqual(analyses[0]["away_id"], "456")
 
 
 if __name__ == "__main__":

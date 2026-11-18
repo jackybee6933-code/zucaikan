@@ -706,12 +706,10 @@ class QueryServerTests(unittest.TestCase):
         finally:
             get_live.reset_mock()
 
-    def test_expired_live_cache_is_served_while_background_refresh_runs(self):
+    def test_expired_live_cache_is_served_without_automatic_refresh(self):
         old_links = {(ISSUE, "1"): "http://huakangsy.cn/play/old_1.html"}
-        fresh_links = {(ISSUE, "1"): "http://huakangsy.cn/play/new_1.html"}
         get_live = self.live_links_mock
         get_live.reset_mock(return_value=True)
-        get_live.return_value = fresh_links
         try:
             with mock.patch(
                 "football_analysis.query_app.load_cached_live_links",
@@ -720,11 +718,9 @@ class QueryServerTests(unittest.TestCase):
                 status, body = _get(self.base + f"/?issue={ISSUE}")
             self.assertEqual(status, 200)
             self.assertIn("http://huakangsy.cn/play/old_1.html", body)
-            payload = _wait_idle(self.base, "/refresh-live-status")
-            self.assertIn("匹配 1 场", payload["result"])
-            get_live.assert_called_once()
-            self.assertTrue(get_live.call_args.kwargs["force"])
-            self.assertIsNotNone(get_live.call_args.kwargs["cache_dir"])
+            get_live.assert_not_called()
+            _, status_body = _get(self.base + "/refresh-live-status")
+            self.assertFalse(json.loads(status_body)["running"])
         finally:
             get_live.reset_mock()
 
