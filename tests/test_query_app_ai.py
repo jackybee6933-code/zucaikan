@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -62,6 +63,7 @@ class FixtureIdFallbackTests(unittest.TestCase):
             captured["n_items"] = len(items)
             captured["non_empty"] = sum(1 for t in page_texts if t)
             captured["page_texts"] = list(page_texts)
+            captured["match_nos"] = [it["match_no"] for it in items]
             for it in items:
                 it["team_read"] = {"tendency": "观望", "confidence": 0.5, "reason": "x"}
             return len(items)
@@ -115,8 +117,110 @@ class FixtureIdFallbackTests(unittest.TestCase):
             result = run_ai_analyze("26135", db_path=self.db)
 
         self.assertEqual(captured["non_empty"], 3, "只有前 3 场能匹配到 shuju")
-        self.assertEqual(captured["page_texts"][3], "")
-        self.assertEqual(captured["page_texts"][4], "")
+        self.assertEqual(captured["n_items"], 3)
+        self.assertEqual(captured["match_nos"], ["1", "2", "3"])
+
+    def test_fresh_completed_match_is_skipped_and_only_missing_result_is_written(self):
+        raw = _raw_shuju(2)
+        analyses = _analyses(2)
+        analyses[0]["team_read"] = {
+            "tendency": "主队赢盘", "analyzed_at": time.time() - 60,
+        }
+        patches, captured = self._patch_all(raw, analyses)
+        with patches[0], patches[1], patches[2], patches[3], patches[4] as update, \
+             patches[5], patches[6] as scrape, patches[7]:
+            result = run_ai_analyze("26135", db_path=self.db)
+
+        scrape.assert_not_called()
+        self.assertEqual(captured["match_nos"], ["2"])
+        reads = update.call_args.args[2]
+        self.assertEqual(set(reads), {"2"})
+        self.assertGreater(reads["2"]["analyzed_at"], time.time() - 10)
+        self.assertIn("复用 1 场", result)
+
+    def test_all_fresh_completed_matches_skip_browser_and_model(self):
+        analyses = _analyses(1)
+        analyses[0]["team_read"] = {
+            "tendency": "观望", "analyzed_at": time.time() - 60,
+        }
+        patches, _ = self._patch_all(_raw_shuju(1), analyses)
+        with patches[0], patches[1], patches[2], patches[3] as enrich, \
+             patches[4] as update, patches[5] as ensure, patches[6] as scrape, patches[7]:
+            result = run_ai_analyze("26135", db_path=self.db)
+
+        ensure.assert_not_called()
+        scrape.assert_not_called()
+        enrich.assert_not_called()
+        update.assert_not_called()
+        self.assertIn("均在一小时有效期内，已跳过", result)
+
+    def test_expired_result_is_reanalyzed_without_refetching_fresh_page(self):
+        analyses = _analyses(1)
+        analyses[0]["team_read"] = {
+            "tendency": "主队赢盘", "analyzed_at": time.time() - 3601,
+        }
+        patches, captured = self._patch_all(_raw_shuju(1), analyses)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patches[5], patches[6] as scrape, patches[7]:
+            run_ai_analyze("26135", db_path=self.db)
+        scrape.assert_not_called()
+        self.assertEqual(captured["match_nos"], ["1"])
+
+    def test_new_page_invalidates_previous_model_result(self):
+        raw = _raw_shuju(1)
+        raw["7000000|shuju"]["captured_at"] = time.time() - 10
+        analyses = _analyses(1)
+        analyses[0]["team_read"] = {
+            "tendency": "主队赢盘", "analyzed_at": time.time() - 60,
+        }
+        patches, captured = self._patch_all(raw, analyses)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7]:
+            run_ai_analyze("26135", db_path=self.db)
+        self.assertEqual(captured["match_nos"], ["1"])
+
+    def test_expired_page_is_refetched_before_model_rerun(self):
+        raw = _raw_shuju(1)
+        raw["7000000|shuju"]["captured_at"] = time.time() - 3601
+        analyses = _analyses(1)
+        analyses[0]["team_read"] = {
+            "tendency": "主队赢盘", "analyzed_at": time.time() - 60,
+        }
+        patches, captured = self._patch_all(raw, analyses)
+
+        def refetch(*args, **kwargs):
+            raw["7000000|shuju"]["captured_at"] = time.time()
+
+        patches[6] = mock.patch("football_analysis.query_app._run_odds_scraper", side_effect=refetch)
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+             patches[5], patches[6] as scrape, patches[7]:
+            run_ai_analyze("26135", db_path=self.db)
+        self.assertTrue(scrape.call_args.kwargs["reuse_fresh"])
+        self.assertEqual(captured["match_nos"], ["1"])
+
+    def test_partial_scrape_failure_still_analyzes_available_pages(self):
+        raw = _raw_shuju(2)
+        raw["7000001|shuju"] = {"status": "error", "text": ""}
+        patches, captured = self._patch_all(raw, _analyses(2))
+        patches[6] = mock.patch("football_analysis.query_app._run_odds_scraper", return_value="抓取中断")
+        with patches[0], patches[1], patches[2], patches[3], patches[4] as update, \
+             patches[5], patches[6], patches[7]:
+            result = run_ai_analyze("26135", db_path=self.db)
+        self.assertEqual(captured["match_nos"], ["1"])
+        self.assertEqual(set(update.call_args.args[2]), {"1"})
+        self.assertIn("部分资料未抓全", result)
+
+    def test_failed_model_does_not_write_or_renew_existing_result(self):
+        analyses = _analyses(1)
+        old_read = {"tendency": "主队赢盘", "analyzed_at": time.time() - 3601}
+        analyses[0]["team_read"] = old_read.copy()
+        patches, _ = self._patch_all(_raw_shuju(1), analyses)
+        patches[3] = mock.patch("football_analysis.llm.enrich_team_reads", return_value=0)
+        with patches[0], patches[1], patches[2], patches[3], patches[4] as update, \
+             patches[5], patches[6], patches[7]:
+            result = run_ai_analyze("26135", db_path=self.db)
+        update.assert_not_called()
+        self.assertEqual(analyses[0]["team_read"], old_read)
+        self.assertIn("AI 分析全部失败", result)
 
     def test_new_db_with_fixture_id_ignores_shuju_key_order(self):
         """payload 有 fixture_id（新库）→ 直接用 payload 里的 fid，不走产物顺序。"""
@@ -169,6 +273,54 @@ class FixtureIdFallbackTests(unittest.TestCase):
 
         self.assertIn("AI 分析完成 1/1 场", result)
         self.assertEqual(events, ["artifact_ready"])
+
+
+class PersistedResumeTests(unittest.TestCase):
+    def test_repeated_clicks_retry_failed_match_then_skip_all(self):
+        from football_analysis.store import connect, rebuild_analyses_from_db
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            db = root / "ai.sqlite"
+            _make_db(db)
+            conn = connect(db)
+            conn.execute(
+                "INSERT INTO match_movements "
+                "(issue, run_id, captured_at, match_no, payload_json) "
+                "VALUES ('26135', 1, datetime('now'), '2', '{}')"
+            )
+            conn.commit()
+            conn.close()
+            raw = _raw_shuju(2)
+            batches = []
+
+            def enrich(items, **kwargs):
+                batches.append([item["match_no"] for item in items])
+                count = 0
+                for item in items:
+                    if len(batches) == 1 and item["match_no"] == "2":
+                        continue
+                    item["team_read"] = {"tendency": "观望", "confidence": 0.5}
+                    count += 1
+                return count
+
+            with mock.patch("football_analysis.main._default_cache_dir", return_value=root), \
+                 mock.patch("football_analysis.odds_pages.load_odds_pages_raw", return_value=raw), \
+                 mock.patch("football_analysis.odds_pages.pages_kind_age_hours", return_value=0.1), \
+                 mock.patch("football_analysis.llm.TeamReader", return_value=mock.Mock(enabled=True)), \
+                 mock.patch("football_analysis.llm.enrich_team_reads", side_effect=enrich), \
+                 mock.patch("football_analysis.query_app._ensure_cdp") as ensure:
+                run_ai_analyze("26135", db_path=db)
+                first = rebuild_analyses_from_db(db, "26135")[0]["team_read"].copy()
+                run_ai_analyze("26135", db_path=db)
+                result = run_ai_analyze("26135", db_path=db)
+
+            self.assertEqual(batches, [["1", "2"], ["2"]])
+            ensure.assert_not_called()
+            rebuilt = rebuild_analyses_from_db(db, "26135")
+            self.assertEqual(rebuilt[0]["team_read"], first)
+            self.assertTrue(rebuilt[1]["team_read"]["analyzed_at"])
+            self.assertIn("均在一小时有效期内，已跳过", result)
 
 
 class StaleProgressSnapshotTests(unittest.TestCase):

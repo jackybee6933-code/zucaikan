@@ -57,6 +57,8 @@ class ModelInput:
     h2h_home_wins: int = 0
     h2h_draws: int = 0
     h2h_away_wins: int = 0
+    h2h_avg_total_goals: float = 0.0
+    h2h_score_matches: int = 0
     market_home: float = 1 / 3
     market_draw: float = 1 / 3
     market_away: float = 1 / 3
@@ -165,6 +167,11 @@ def _expected_lambdas(data: ModelInput) -> tuple[float, float]:
         0.30,
         3.00,
     )
+    if data.h2h_score_matches >= 3:
+        total_gap = data.h2h_avg_total_goals - (home_lambda + away_lambda)
+        total_adjustment = clamp(total_gap * 0.12, -0.25, 0.25)
+        home_lambda = clamp(home_lambda + total_adjustment / 2, 0.35, 3.20)
+        away_lambda = clamp(away_lambda + total_adjustment / 2, 0.30, 3.00)
     return home_lambda, away_lambda
 
 
@@ -404,6 +411,8 @@ def build_model_input(
     h2h_home_wins: int = 0,
     h2h_draws: int = 0,
     h2h_away_wins: int = 0,
+    h2h_avg_total_goals: float = 0.0,
+    h2h_score_matches: int = 0,
     market_home: float = 0.0,
     market_draw: float = 0.0,
     market_away: float = 0.0,
@@ -436,6 +445,8 @@ def build_model_input(
         h2h_home_wins=h2h_home_wins,
         h2h_draws=h2h_draws,
         h2h_away_wins=h2h_away_wins,
+        h2h_avg_total_goals=h2h_avg_total_goals,
+        h2h_score_matches=h2h_score_matches,
         market_home=market_home,
         market_draw=market_draw,
         market_away=market_away,

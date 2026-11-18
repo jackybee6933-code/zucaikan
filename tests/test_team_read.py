@@ -132,6 +132,35 @@ class PromptTests(unittest.TestCase):
         self.assertIn("逆向判断", llm.TEAM_READ_SYSTEM_PROMPT)
         self.assertIn("与 over_tendency 一致", llm.TEAM_READ_SYSTEM_PROMPT)
 
+    def test_over_prompt_compares_opening_line_with_recent_h2h_goals(self):
+        analysis = _analysis()
+        analysis["odds_movement"]["total"] = {
+            "available": True,
+            "initial": {"line_text": "3"},
+            "current": {"line_text": "2.5"},
+        }
+        analysis["history"]["h2h"]["rows"] *= 3
+        prompt = llm.build_team_read_prompt(analysis)
+        self.assertIn("大小盘初盘：3", prompt)
+        self.assertIn("近期对赛场均总进球：2.00", prompt)
+        self.assertIn("相差 1.00 球", prompt)
+        self.assertIn("至少 0.5 球", prompt)
+        self.assertIn("重要先验", prompt)
+
+    def test_half_goal_gap_adds_focus_prompt(self):
+        analysis = _analysis()
+        analysis["odds_movement"]["total"] = {
+            "available": True,
+            "initial": {"line_text": "2.5"},
+            "current": {"line_text": "2.5"},
+        }
+        analysis["history"]["h2h"]["rows"] = [
+            {"score": "3-0"}, {"score": "2-1"}, {"score": "1-2"}
+        ]
+        prompt = llm.build_team_read_prompt(analysis)
+        self.assertIn("重点提示：大小球开盘 2.5 球", prompt)
+        self.assertIn("相差 0.50 球", prompt)
+
 
 class ParseTests(unittest.TestCase):
     def test_accepts_plain_fenced_and_embedded_json(self):
@@ -968,6 +997,99 @@ class StoreAndReportTests(unittest.TestCase):
         rendered = _lean_cell(row)
         self.assertNotIn("大球", rendered)
         self.assertNotIn("大小球资料不足", rendered)
+
+    def test_over_focus_is_highlighted_in_popup(self):
+        row = _analysis(
+            team_read=json.dumps(
+                {
+                    "over_tendency": "大球",
+                    "over_confidence": 0.6,
+                    "over_reason": "结合近期状态判断",
+                    "over_focus": {
+                        "opening_line": 2.5,
+                        "h2h_average": 3.0,
+                        "h2h_matches": 5,
+                        "gap": 0.5,
+                    },
+                },
+                ensure_ascii=False,
+            )
+        )
+        rendered = _lean_cell(row)
+        self.assertIn('class="ai-tip-focus"', rendered)
+        self.assertIn("开盘 2.5 球；近 5 场对赛均值 3.00 球，差 0.50 球。", rendered)
+        rendered_page = render_query_html([], issues=[])
+        self.assertIn(".ai-tip-focus", rendered_page)
+        focus_style = next(line for line in rendered_page.splitlines() if ".ai-tip-focus {" in line)
+        self.assertIn("color: #c62828", focus_style)
+        self.assertNotIn("background:", focus_style)
+        self.assertNotIn("border:", focus_style)
+        self.assertIn("background: rgba(255, 255, 255, .85)", rendered_page)
+
+    def test_over_tendency_style_uses_h2h_gap_thresholds(self):
+        cases = (
+            (0.49, "model-lean\"", "model-lean over-gap-watch"),
+            (0.5, "model-lean over-gap-watch", "model-lean over-gap-high"),
+            (1.0, "model-lean over-gap-watch", "model-lean over-gap-high"),
+            (1.01, "model-lean over-gap-high", "model-lean over-gap-watch"),
+        )
+        for gap, expected, unexpected in cases:
+            with self.subTest(gap=gap):
+                row = _analysis(
+                    team_read=json.dumps(
+                        {
+                            "over_tendency": "大球",
+                            "over_confidence": 0.6,
+                            "over_reason": "大小球依据",
+                            "over_focus": {
+                                "opening_line": 3.0,
+                                "h2h_average": 3.0 + gap,
+                                "h2h_matches": 5,
+                                "gap": gap,
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                rendered = _lean_cell(row)
+                self.assertIn(expected, rendered)
+                self.assertNotIn(unexpected, rendered)
+
+        rendered_page = render_query_html([], issues=[])
+        self.assertIn(".model-lean.over-gap-watch { color: #c62828; font-weight: 700; }", rendered_page)
+        self.assertIn("background: #c62828; color: #fff; font-weight: 700", rendered_page)
+
+    def test_focus_uses_cached_500_h2h_reference_for_existing_ai_result(self):
+        h2h = (
+            "赛事 | 比赛日期 | 主队比分客队 | 半场 | 赛果\n"
+            "德甲 | 2026-11-21 | [1]拜仁VS科隆[15] | VS | -\n"
+            "德甲 | 2026-05-16 | [1]拜仁5-1科隆[14] | 3-1 | 胜\n"
+            "德甲 | 2026-01-15 | [11]科隆1-3拜仁[1] | 1-1 | 胜\n"
+            "德国杯 | 2025-10-30 | 科隆1-4拜仁 | 1-2 | 胜\n"
+            "德甲 | 2024-04-13 | [2]拜仁2-0科隆[17] | 0-0 | 胜\n"
+            "德甲 | 2023-11-25 | [17]科隆0-1拜仁[2] | 0-1 | 胜"
+        )
+        row = _analysis(
+            team_read=json.dumps(
+                {
+                    "over_tendency": "大球",
+                    "over_confidence": 0.75,
+                    "over_reason": "双方近期状态支持大球",
+                    "source_references": {"交战历史": h2h},
+                },
+                ensure_ascii=False,
+            ),
+            payload_json=json.dumps(
+                {
+                    "odds_movement": {
+                        "total": {"initial": {"line": 4.25, "line_text": "4/4.5"}}
+                    }
+                },
+                ensure_ascii=False,
+            ),
+        )
+        rendered = _lean_cell(row)
+        self.assertIn("开盘 4.25 球；近 5 场对赛均值 3.60 球，差 0.65 球。", rendered)
 
     def test_over_tendency_hovers_h2h_score_popup(self):
         h2h = (

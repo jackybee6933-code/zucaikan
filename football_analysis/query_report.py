@@ -606,13 +606,43 @@ def _lean_cell(
     )
     if over_tendency and (over_confidence > 0 or h2h_table):
         over_conf = f" {over_confidence * 100:.0f}%" if over_confidence > 0 else ""
+        over_style = ""
         over_reason = _popup_team_names_text(
             str(read.get("over_reason") or "").strip(), team_names
         )
+        focus = read.get("over_focus") or {}
+        if not focus:
+            try:
+                analysis_payload = json.loads(str(row.get("payload_json") or "{}"))
+            except (json.JSONDecodeError, TypeError):
+                analysis_payload = {}
+            if isinstance(analysis_payload, dict):
+                analysis_payload["team_read"] = read
+                from .llm import over_goal_focus
+
+                focus = over_goal_focus(analysis_payload)
         tooltip_sections = []
-        if over_reason:
+        if over_reason or focus:
+            focus_note = ""
+            if isinstance(focus, dict):
+                try:
+                    gap = abs(float(focus["gap"]))
+                    if gap > 1:
+                        over_style = " over-gap-high"
+                    elif gap >= 0.5:
+                        over_style = " over-gap-watch"
+                    focus_note = (
+                        f"<p class=\"ai-tip-focus\">重点关注：开盘 "
+                        f"{float(focus['opening_line']):g} 球；近 "
+                        f"{int(focus['h2h_matches'])} 场对赛均值 "
+                        f"{float(focus['h2h_average']):.2f} 球，差 "
+                        f"{float(focus['gap']):.2f} 球。</p>"
+                    )
+                except (KeyError, TypeError, ValueError):
+                    pass
             tooltip_sections.append(
-                f'<section class="ai-tip-section"><h4>模型理由</h4><p class="ai-tip-model-reason">{_esc(over_reason)}</p></section>'
+                f'<section class="ai-tip-section"><h4>模型理由</h4>{focus_note}'
+                f'<p class="ai-tip-model-reason">{_esc(over_reason)}</p></section>'
             )
         if h2h_table:
             tooltip_sections.append(
@@ -631,7 +661,7 @@ def _lean_cell(
                 + "</template>"
             )
         parts.append(
-            f'<div class="model-lean"><span class="model-lean-tip"{tip_attrs}>'
+            f'<div class="model-lean{over_style}"><span class="model-lean-tip"{tip_attrs}>'
             f'{_esc(over_tendency)}{_esc(over_conf)}{tooltip}</span></div>'
         )
     return "".join(parts) or "—"
@@ -2305,6 +2335,8 @@ def render_query_html(
     .line-delta {{ margin-top: 5px; color: #475569; font-size: 12px; font-weight: 600; }}
     .lean-cell {{ font-weight: 600; color: #334155; }}
     .model-lean {{ color: #0f172a; }}
+    .model-lean.over-gap-watch {{ color: #c62828; font-weight: 700; }}
+    .model-lean.over-gap-high {{ display: table; padding: 1px 5px; background: #c62828; color: #fff; font-weight: 700; }}
     .lean-cell > .model-lean + .model-lean {{ margin-top: 8px; }}
     .model-lean-tip[data-ai-tip] {{ cursor: help; text-decoration: underline dotted #94a3b8; text-underline-offset: 3px; }}
     .model-lean-tip[data-ai-tip]:focus-visible {{ outline: 2px solid rgba(37, 99, 235, .35); outline-offset: 2px; border-radius: 2px; }}
@@ -2315,6 +2347,7 @@ def render_query_html(
     .ai-tip-section h4 {{ margin: 0 0 3px; color: #475569; font-size: 13px; font-weight: 700; }}
     .ai-tip-section p {{ margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }}
     .ai-tip-model-reason {{ color: #2563eb; }}
+    .ai-tip-focus {{ margin: 0 0 6px; padding: 7px 9px; color: #c62828; font-weight: 700; }}
     .ai-tip-section ul {{ margin: 3px 0 0; padding-left: 18px; }}
     .ai-tip-recommendation {{ margin-top: 0; padding: 10px 11px; border: 1px solid #bfdbfe; border-radius: 6px; background: #eff6ff; }}
     .ai-tip-recommendation h4 {{ margin-bottom: 5px; color: #1d4ed8; font-size: 13px; }}

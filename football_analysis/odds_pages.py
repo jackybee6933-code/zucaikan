@@ -73,6 +73,22 @@ def pages_kind_age_hours(
     return max(0.0, (time.time() - captured_at) / 3600)
 
 
+def page_age_hours(page: dict, fallback_age: float | None = None) -> float | None:
+    """Use a page's own capture time; legacy pages use the kind's age."""
+    try:
+        captured_at = float(page["captured_at"])
+    except (KeyError, TypeError, ValueError):
+        return fallback_age
+    return max(0.0, (time.time() - captured_at) / 3600)
+
+
+def page_is_fresh(page: object, fallback_age: float | None = None) -> bool:
+    if not isinstance(page, dict) or _status(page) not in PAGE_STATUSES:
+        return False
+    age = page_age_hours(page, fallback_age)
+    return age is not None and age <= PAGES_STALE_HOURS
+
+
 def has_odds_rows(cache_root: str | Path | None, issue: str) -> bool:
     """产物里是否至少有一个可信的 yazhi（亚指）公司行。
 

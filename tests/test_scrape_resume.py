@@ -464,6 +464,38 @@ class VerificationPauseTests(unittest.TestCase):
 class ResumeMainTests(unittest.TestCase):
     """上次中断存下的页不再重抓，只补缺的。"""
 
+    def test_reuse_fresh_only_fetches_expired_and_failed_pages(self):
+        mod = _scraper()
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            now = time.time()
+            out = cache / "odds_pages_26144.json"
+            out.write_text(json.dumps({
+                "111|shuju": {"status": "ok", "text": "fresh", "captured_at": now - 600},
+                "222|shuju": {"status": "ok", "text": "expired", "captured_at": now - 3601},
+                "333|shuju": {"status": "error", "text": "", "captured_at": now},
+            }), encoding="utf-8")
+            args = ["--issue", "26144", "--cache-dir", str(cache),
+                    "--kinds", "shuju", "--delay", "0", "--reuse-fresh"]
+            with mock.patch.object(mod, "collect_sfc_matches", return_value=(
+                [{"fixture_id": fid} for fid in ("111", "222", "333")], "26144"
+            )), mock.patch.object(mod, "acquire", return_value=mock.MagicMock()), \
+                 mock.patch.object(mod, "fetch_page", side_effect=lambda *a, **kw: {
+                     "status": "ok", "text": "new",
+                 }) as fetch, mock.patch.object(mod.time, "sleep"):
+                self.assertEqual(mod.main(args), 0)
+                self.assertEqual([call.args[1] for call in fetch.call_args_list], [
+                    "https://odds.500.com/fenxi/shuju-222.shtml",
+                    "https://odds.500.com/fenxi/shuju-333.shtml",
+                ])
+                saved = json.loads(out.read_text(encoding="utf-8"))
+                self.assertEqual(saved["111|shuju"]["captured_at"], now - 600)
+                self.assertGreaterEqual(saved["222|shuju"]["captured_at"], now)
+                fetch.reset_mock()
+                self.assertEqual(mod.main(args), 0)
+                fetch.assert_not_called()
+                self.assertEqual(json.loads(out.read_text(encoding="utf-8")), saved)
+
     def test_finished_batch_with_failure_keeps_checkpoint_until_retry_succeeds(self):
         from football_analysis.query_report import _data_freshness
 

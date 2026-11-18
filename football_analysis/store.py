@@ -457,6 +457,11 @@ def rebuild_analyses_from_db(
         analyses: list[dict] = []
         for row in rows:
             payload = json.loads(row["payload_json"] or "{}")
+            try:
+                team_read = json.loads(row["team_read"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                team_read = {}
+            team_read = team_read if isinstance(team_read, dict) else {}
             # Old payload (movement-only): synthesize a minimal analysis so query still renders
             if "market" not in payload:
                 movement = dict(payload)
@@ -477,6 +482,7 @@ def rebuild_analyses_from_db(
                     "captured_at": row["captured_at"],
                     "source_url": row["source_url"],
                     "_legacy": True,
+                    "team_read": team_read,
                 })
                 continue
             # New full snapshot
@@ -486,6 +492,7 @@ def rebuild_analyses_from_db(
             movement["kind"] = row["kind"]
             movement["reasons"] = [row["reason"]] if row["reason"] else []
             analysis = dict(payload)
+            analysis["team_read"] = team_read
             analysis["odds_movement"] = movement
             analysis["final_score"] = row["final_score"]
             analysis["captured_at"] = row["captured_at"]

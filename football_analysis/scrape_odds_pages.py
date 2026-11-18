@@ -29,7 +29,10 @@ from pathlib import Path
 
 from .http import Fetcher
 from .pipeline import collect_sfc_matches
-from .odds_pages import PAGES_META_FILENAME
+from .odds_pages import (
+    PAGES_META_FILENAME, PAGES_STALE_HOURS, load_odds_pages_raw,
+    page_is_fresh, pages_kind_age_hours,
+)
 from .cdp_profile import ensure_cdp_chrome
 from .cdp import CdpError, CdpPage
 
@@ -258,7 +261,7 @@ def _error(detail: str, *, text_mode: bool = False) -> dict:
 
 
 # 断点文件：每抓完一页就落盘，限流/断网中断后下次只补没抓的页。
-PARTIAL_TTL_HOURS = 6.0
+PARTIAL_TTL_HOURS = PAGES_STALE_HOURS
 
 
 def partial_path(cache_dir: Path, issue: str) -> Path:
@@ -279,11 +282,12 @@ def load_partial(path: Path, wanted: set[str]) -> dict[str, dict]:
     if not isinstance(data, dict):
         return {}
     return {
-        key: page
+        key: dict(page, captured_at=page.get("captured_at", path.stat().st_mtime))
         for key, page in data.items()
         if key in wanted
         and isinstance(page, dict)
         and page.get("status") in (STATUS_OK, STATUS_EMPTY)
+        and page_is_fresh(page, max(0.0, (time.time() - path.stat().st_mtime) / 3600))
     }
 
 
@@ -327,7 +331,12 @@ def save_kind_metadata(
             for fid in fids
         )
         if complete or kind in (completed_kinds or set()):
-            metadata[kind] = now
+            metadata[kind] = min(
+                (float(result[f"{fid}|{kind}"].get("captured_at", now))
+                 for fid in fids if isinstance(result.get(f"{fid}|{kind}"), dict)
+                 and result[f"{fid}|{kind}"].get("status") in (STATUS_OK, STATUS_EMPTY)),
+                default=now,
+            )
     if not metadata:
         return
     tmp = path.with_suffix(".tmp")
@@ -452,6 +461,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="抓取 odds.500.com 单场页盘口")
     parser.add_argument("--issue", default="", help="期号；留空则用当前最新一期")
     parser.add_argument("--cache-dir", default="cache")
+    parser.add_argument("--reuse-fresh", action="store_true",
+                        help="复用一小时内已完成的页面，只补缺失、失败或过期页")
     parser.add_argument(
         "--wait",
         type=float,
@@ -495,6 +506,15 @@ def main(argv: list[str] | None = None) -> int:
     wanted = {f"{fid}|{kind}" for fid in fids for kind in active_kinds}
     # 断点续传：沿用上次已抓好的页，只补剩下的。
     result: dict[str, dict] = load_partial(partial, wanted)
+    if args.reuse_fresh:
+        existing = load_odds_pages_raw(cache_dir, issue)
+        for key, payload in existing.items():
+            if key not in wanted or key in result:
+                continue
+            age = pages_kind_age_hours(cache_dir, issue, key.rsplit("|", 1)[-1])
+            if page_is_fresh(payload, age):
+                result[key] = dict(payload)
+                result[key].setdefault("captured_at", time.time() - age * 3600 if age is not None else time.time())
     done = len(result)
     failed = 0
     if done:
@@ -632,6 +652,8 @@ def main(argv: list[str] | None = None) -> int:
                     log("    [!] 本场验证未完成，跳过当前页面，继续下一场；稍后可重试失败页。")
                 done += 1
                 failed += 1 if payload.get("status") not in (STATUS_OK, STATUS_EMPTY) else 0
+                if payload.get("status") in (STATUS_OK, STATUS_EMPTY):
+                    payload["captured_at"] = time.time()
                 result[key] = payload
                 if payload.get("status") in (STATUS_OK, STATUS_EMPTY):
                     save_partial(partial, result)
@@ -650,7 +672,7 @@ def main(argv: list[str] | None = None) -> int:
                     failed=failed,
                     last=f"{kind}-{fid}",
                 )
-                if kind == "shuju" and payload.get("status") == STATUS_EMPTY:
+                if kind == "shuju" and payload.get("status") == STATUS_EMPTY and not args.reuse_fresh:
                     stop_empty_shuju = True
                     log("    [!] 首个 shuju 页面为空，跳过剩余球队资料页。")
                 time.sleep(args.delay * random.uniform(0.6, 1.4))

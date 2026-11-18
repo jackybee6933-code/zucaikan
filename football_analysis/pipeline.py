@@ -546,6 +546,20 @@ def _build_single_analysis(
     if away_record.get("_error"):
         warnings.append(f"客队往绩缺失：{away_record['_error']}")
 
+    h2h_goal_totals = []
+    for h2h_row in (h2h.get("rows") or [])[:5]:
+        home_goals = h2h_row.get("current_home_score")
+        away_goals = h2h_row.get("current_away_score")
+        if home_goals is None or away_goals is None:
+            score = re.fullmatch(r"\s*(\d+)\s*[-:：]\s*(\d+)\s*", str(h2h_row.get("score") or ""))
+            if not score:
+                continue
+            home_goals, away_goals = score.groups()
+        try:
+            h2h_goal_totals.append(int(home_goals) + int(away_goals))
+        except (TypeError, ValueError):
+            continue
+
     europe_home = float(odds.get("europe_home") or row.get("europe_home") or 0)
     europe_draw = float(odds.get("europe_draw") or row.get("europe_draw") or 0)
     europe_away = float(odds.get("europe_away") or row.get("europe_away") or 0)
@@ -612,6 +626,8 @@ def _build_single_analysis(
         h2h_home_wins=int(h2h.get("home_wins") or 0),
         h2h_draws=int(h2h.get("draws") or 0),
         h2h_away_wins=int(h2h.get("away_wins") or 0),
+        h2h_avg_total_goals=(sum(h2h_goal_totals) / len(h2h_goal_totals) if h2h_goal_totals else 0.0),
+        h2h_score_matches=len(h2h_goal_totals),
         market_home=market_home,
         market_draw=market_draw,
         market_away=market_away,

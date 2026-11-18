@@ -169,6 +169,7 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
         PAGES_STALE_HOURS,
         load_odds_pages_raw,
         pages_kind_age_hours,
+        page_is_fresh,
         shuju_analysis_text,
         shuju_references,
     )
@@ -191,46 +192,50 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     actual_issue = issue
     run_id = int(row[0])
 
-    # Ensure the per-match analysis pages are available and fresh enough for
-    # the model to read team data. Skip the Chrome step entirely when the
-    # artifact exists and is within PAGES_STALE_HOURS, exactly like
-    # run_refresh_odds. Missing / stale → same CDP path (off-screen window,
-    # auto-reveal for EdgeOne checkbox), then re-read from the fresh artifact.
-    # has_odds_rows() is intentionally not part of this condition: an artifact
-    # that carries yazhi odds but no shuju text still serves the refresh
-    # semantics, and the LLM simply reads whatever shuju text is present.
     from .main import _default_cache_dir
     cache_dir = _default_cache_dir()
     _clear_progress(cache_dir)
-    needed_pages = 0
-    # mtime 龄只说"文件很新"，不说里面有 shuju。产物存在但缺 shuju
-    # （比如刚被"刷新盘口分歧"全量抓过、只带了 yazhi/daxiao），也要
-    # 补抓一次 shuju，否则模型没有资料可读。
-    has_shuju = any(
-        isinstance(v, dict)
-        and str(v.get("status") or "") in ("ok", "empty")
-        for k, v in (load_odds_pages_raw(cache_dir, actual_issue) or {}).items()
-        if k.rsplit("|", 1)[-1] == "shuju"
-    )
+    analyses = rebuild_analyses_from_db(target_db, actual_issue, run_id=run_id)
+    raw = load_odds_pages_raw(cache_dir, actual_issue)
+
+    def resolved_ids(pages: dict) -> list[str]:
+        old_ids = [key.rsplit("|", 1)[0] for key in pages if key.endswith("|shuju")]
+        ids = []
+        for analysis in analyses:
+            fid = str(analysis.get("fixture_id") or "")
+            if not fid:
+                try:
+                    idx = int(analysis.get("match_no", "0")) - 1
+                except (TypeError, ValueError):
+                    idx = -1
+                fid = old_ids[idx] if 0 <= idx < len(old_ids) else ""
+            ids.append(fid)
+        return ids
+
     shuju_age = pages_kind_age_hours(cache_dir, actual_issue, "shuju")
-    if shuju_age is not None and shuju_age <= PAGES_STALE_HOURS and has_shuju:
-        task_log("AI 分析", f"{issue} 复用 {shuju_age:.1f} 小时前的球队资料，跳过抓取")
+    fixture_ids = resolved_ids(raw)
+    missing = sum(not page_is_fresh(raw.get(f"{fid}|shuju"), shuju_age) for fid in fixture_ids)
+    scrape_error = None
+    if not missing:
+        task_log("AI 分析", f"{issue} 球队资料均在一小时有效期内，跳过抓取")
     else:
-        task_log("AI 分析", f"{issue} 球队资料缺失或过期，开始抓取 shuju 页")
+        task_log("AI 分析", f"{issue} 补抓 {missing} 场缺失、失败或过期的球队资料")
         cdp_error = _ensure_cdp(CDP_DEFAULT)
         if cdp_error:
             task_log("AI 分析", f"{issue} 浏览器启动失败：{cdp_error}")
-            return cdp_error
-        try:
-            scrape_error = _run_odds_scraper(actual_issue, cache_dir, CDP_DEFAULT, kinds=["shuju"])
-        finally:
-            shutdown_cdp_chrome()
+            scrape_error = cdp_error
+        else:
+            try:
+                scrape_error = _run_odds_scraper(actual_issue, cache_dir, CDP_DEFAULT,
+                                                 kinds=["shuju"], reuse_fresh=True)
+            finally:
+                shutdown_cdp_chrome()
         if scrape_error:
             task_log("AI 分析", f"{issue} 分析页抓取失败：{scrape_error}")
-            return f"分析页抓取失败：{scrape_error}"
+        raw = load_odds_pages_raw(cache_dir, actual_issue)
+        shuju_age = pages_kind_age_hours(cache_dir, actual_issue, "shuju")
+        fixture_ids = resolved_ids(raw)
 
-    analyses = rebuild_analyses_from_db(target_db, actual_issue, run_id=run_id)
-    raw = load_odds_pages_raw(cache_dir, actual_issue)
     shuju_pages = {
         str(key): value
         for key, value in (raw or {}).items()
@@ -246,46 +251,46 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     if shuju_pages and not valid_shuju:
         task_log("AI 分析", f"{actual_issue} 跳过：分析页产物全部抓取失败")
         return f"{actual_issue}：500 数据分析页抓取失败，AI 无资料可读"
-    fixture_ids = [str(a.get("fixture_id") or "") for a in analyses]
-    # Old DB payloads predate the fixture_id column; when every id is empty but
-    # the artifact does carry shuju keys, derive fixture ids from the artifact
-    # key order (one shuju entry per match, in scraper order).
-    if not any(fixture_ids) and raw:
-        shuju_fids: list[str] = []
-        seen: set[str] = set()
-        for key in raw:
-            if key.endswith("|shuju"):
-                fid = key.rsplit("|", 1)[0]
-                if fid not in seen:
-                    seen.add(fid)
-                    shuju_fids.append(fid)
-        fixture_ids = shuju_fids
-        # analyses 与 fixture_ids 数量一致时按 index 对齐 page_texts；
-        # 不一致时用 match_no 从 fixture_ids 里找对应 fid（若有的话）。
+    pending: list[dict] = []
     page_texts: list[str] = []
     references: list[dict[str, str]] = []
-    for analysis in analyses:
-        fid = str(analysis.get("fixture_id") or "")
-        if not fid:
-            # 老库无 fixture_id：用 match_no 作为第 N 个 fid 的索引
-            try:
-                idx = int(analysis.get("match_no", "0")) - 1
-            except ValueError:
-                idx = -1
-            fid = fixture_ids[idx] if 0 <= idx < len(fixture_ids) else ""
-        page_texts.append(shuju_analysis_text(raw, fid))
+    reused = 0
+    for analysis, fid in zip(analyses, fixture_ids):
+        page = raw.get(f"{fid}|shuju") or {}
+        if not page_is_fresh(page, shuju_age):
+            continue
+        read = analysis.get("team_read") or {}
+        try:
+            analyzed_at = float(read.get("analyzed_at") or 0)
+            source_time = float(page.get("captured_at") or 0)
+            reusable = (bool(read.get("tendency") or read.get("over_tendency"))
+                        and 0 <= time.time() - analyzed_at <= PAGES_STALE_HOURS * 3600
+                        and analyzed_at >= source_time)
+        except (TypeError, ValueError, AttributeError):
+            reusable = False
+        if reusable:
+            reused += 1
+            continue
+        page_text = shuju_analysis_text(raw, fid)
+        if not page_text:
+            continue
+        pending.append({key: value for key, value in analysis.items() if key != "team_read"})
+        page_texts.append(page_text)
         references.append(shuju_references(raw, fid))
+    if reused == len(analyses) and reused:
+        return f"{actual_issue}：已完成 {reused}/{len(analyses)} 场 AI 分析，均在一小时有效期内，已跳过"
     needed_pages = sum(1 for t in page_texts if t)
     if needed_pages == 0:
         task_log("AI 分析", f"{actual_issue} 跳过：无可读球队资料")
-        return f"{actual_issue}：500 数据分析页缺失或抓取失败，AI 无资料可读，请先确认单场页产物 cache/odds_pages_{actual_issue}.json 含 shuju 页"
+        return (f"{actual_issue}：已复用 {reused} 场 AI 结果；500 数据分析页缺失、过期或抓取失败，AI 无资料可读"
+                + (f"；{scrape_error}" if scrape_error else ""))
     # 抓取函数返回后先确认产物已落盘，再进入模型阶段。这个状态也让查询页
     # 能明确区分“资料已更新”和“模型正在处理”，避免两阶段看起来粘在一起。
     _write_ai_progress(
         cache_dir,
         actual_issue,
         phase="artifact_ready",
-        total=len(analyses),
+        total=len(pending),
         done=0,
         failed=failed_shuju,
         artifact_status="updated",
@@ -309,7 +314,7 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     }
     if any(references):
         enrich_kwargs["source_references"] = references
-    count = enrich_team_reads(analyses, **enrich_kwargs)
+    count = enrich_team_reads(pending, **enrich_kwargs)
     if not count:
         task_log("AI 分析", f"{actual_issue} 模型分析全部失败，未更新结果")
         return f"{actual_issue}：AI 分析全部失败（已读 {needed_pages}/{len(fixture_ids)} 场数据页），AI分析结果未更新"
@@ -319,9 +324,11 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     # returned by enrich_team_reads is the number of items that got a result.
     team_reads = {
         str(a.get("match_no") or ""): a["team_read"]
-        for a in analyses
+        for a in pending
         if a.get("team_read")
     }
+    for read in team_reads.values():
+        read["analyzed_at"] = time.time()
     task_log("AI 分析", f"{actual_issue} 正在写入 {len(team_reads)} 场 AI 结果")
     updated = update_team_reads(
         target_db, actual_issue, team_reads, expected_run_id=run_id
@@ -331,7 +338,8 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
         return f"{actual_issue}：分析期间已有新数据入库，本次结果未写入，请重新运行 AI 分析"
     return (
         f"{actual_issue}：AI 分析完成 {count}/{len(analyses)} 场"
-        f"（读 {needed_pages} 场数据页、更新 {updated} 行），刷新页面查看「AI分析」"
+        f"（复用 {reused} 场、读 {needed_pages} 场数据页、更新 {updated} 行），刷新页面查看「AI分析」"
+        + (f"；部分资料未抓全：{scrape_error}" if scrape_error else "")
     )
 
 
@@ -539,6 +547,7 @@ def _run_odds_scraper(
     kinds: list[str] | None = None,
     delay: float | None = None,
     titan_fallback: bool = False,
+    reuse_fresh: bool = False,
 ) -> str | None:
     """Run the packaged odds scraper. Return an error string, or None on success."""
     from . import scrape_odds_pages as mod
@@ -553,6 +562,8 @@ def _run_odds_scraper(
     ]
     if kinds:
         argv.extend(["--kinds", *kinds])
+    if reuse_fresh:
+        argv.append("--reuse-fresh")
     code = mod.main(argv)
     if code == mod.EXIT_VERIFICATION_REQUIRED:
         return f"{issue} 检测到 EdgeOne 人工验证，整批抓取已暂停；请手动完成验证后重试"

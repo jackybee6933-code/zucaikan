@@ -367,6 +367,8 @@ TEAM_READ_SYSTEM_PROMPT = """你是一名足球盘口分析师，负责读完一
 - 资料不足、双方势均力敌或无法判断时，tendency 必须是「观望」。
 - factors 必须是 0~6 条可核对的依据；没有对应资料就不要补写，单条不超过 100 字。
 - over_tendency 判断总进球数更可能落在大小盘线上方还是下方，只能取三个值之一：大球、小球、观望。
+- 判断大小球时，必须综合近期对赛比分总进球、主客队近期进球/失球和大小球率，并对照大小球开盘线与即时线；近期状态优先于较早交锋。
+- 若开盘线与近期对赛场均总进球相差至少 0.5 球，必须在 over_reason 中明确指出差异并重点评估；将盘口视为重要市场先验，不可仅凭历史比分推翻盘口，需结合近期状态和盘口/水位变化判断。
 - over_reason 必须结合即时大小盘线解释最终选择，与 over_tendency 一致；市场倾向需说明来自变盘还是当前水位，不能仅凭一次变盘夸大为“强烈支持”。
 - 大小盘数据缺失、双方大小球率都没有、或无法判断时，over_tendency 必须是「观望」。
 - 不要编造伤停、转会、内幕等资料里没有的信息，也不要预测比分。"""
@@ -399,6 +401,70 @@ def _team_form_line(label: str, record: dict | None) -> str:
     if record.get("over_rate") is not None:
         parts.append(f"大球率{_pct(record['over_rate'])}")
     return f"{label}：" + "，".join(parts)
+
+
+def _h2h_text_goal_totals(text: str) -> list[int]:
+    totals = []
+    for line in str(text or "").splitlines():
+        cells = line.split("|")
+        if len(cells) < 3 or not re.search(r"\b\d{4}-\d{2}-\d{2}\b", cells[1]):
+            continue
+        score = re.search(r"(?<!\d)(\d+)\s*[-:：]\s*(\d+)(?!\d)", cells[2])
+        if score:
+            totals.append(int(score.group(1)) + int(score.group(2)))
+    return totals
+
+
+def _h2h_goal_summary(analysis: dict, page_text: str = "") -> dict | None:
+    history = analysis.get("history") or {}
+    rows = (history.get("h2h") or {}).get("rows") or []
+    totals = []
+    for row in rows[:5]:
+        score = re.fullmatch(r"\s*(\d+)\s*[-:：]\s*(\d+)\s*", str(row.get("score") or ""))
+        if score:
+            totals.append(int(score.group(1)) + int(score.group(2)))
+    if len(totals) < 3:
+        references = (analysis.get("team_read") or {}).get("source_references") or {}
+        if isinstance(references, dict):
+            for key in ("交战历史", "对战历史", "对赛成绩"):
+                totals = _h2h_text_goal_totals(references.get(key) or "")
+                if totals:
+                    break
+    if len(totals) < 3 and page_text:
+        section = re.search(r"交战历史\s*\n(.*?)(?=\n## |\Z)", page_text, re.S)
+        if section:
+            totals = _h2h_text_goal_totals(section.group(1))
+    if len(totals) < 3:
+        return None
+    recent = totals[:5]
+    return {"matches": len(recent), "average": sum(recent) / len(recent)}
+
+
+def over_goal_focus(analysis: dict, page_text: str = "") -> dict | None:
+    summary = _h2h_goal_summary(analysis, page_text)
+    total = (analysis.get("odds_movement") or {}).get("total") or {}
+    initial = total.get("initial") or {}
+    opening_line = initial.get("line")
+    if opening_line is None:
+        match = re.search(r"\d+(?:\.\d+)?", str(initial.get("line_text") or ""))
+        if not match:
+            return None
+        opening_line = match.group(0)
+    try:
+        opening_line = float(opening_line)
+    except (TypeError, ValueError):
+        return None
+    if summary is None:
+        return None
+    gap = abs(opening_line - summary["average"])
+    if gap < 0.5:
+        return None
+    return {
+        "opening_line": opening_line,
+        "h2h_average": summary["average"],
+        "h2h_matches": summary["matches"],
+        "gap": gap,
+    }
 
 
 def build_team_read_prompt(analysis: dict, page_text: str = "") -> str:
@@ -446,6 +512,18 @@ def build_team_read_prompt(analysis: dict, page_text: str = "") -> str:
     lines.append(_team_form_line("主队近况", history.get("home")))
     lines.append(_team_form_line("客队近况", history.get("away")))
     lines.extend(_history_detail(history))
+    h2h_summary = _h2h_goal_summary(analysis, page_text)
+    if h2h_summary:
+        lines.append(
+            f"近期对赛场均总进球：{h2h_summary['average']:.2f} "
+            f"（最近{h2h_summary['matches']}场有效比分）"
+        )
+    focus = over_goal_focus(analysis)
+    if focus:
+        lines.append(
+            f"重点提示：大小球开盘 {focus['opening_line']:g} 球与近期对赛场均 "
+            f"{focus['h2h_average']:.2f} 球相差 {focus['gap']:.2f} 球。"
+        )
     if page_text:
         lines.append("500 数据分析页资料（原样摘录，重点检查积分排名/交战历史/近期战绩/阵容情况/缺阵原因/上一场首发与后备/出场评分/未来赛事/平均数据）：")
         lines.append(page_text[:9000])
@@ -455,6 +533,7 @@ def build_team_read_prompt(analysis: dict, page_text: str = "") -> str:
         "\n请判断两件事：(1) 主队还是客队更可能赢下亚盘让球（主队赢盘 / 客队赢盘 / 观望）；"
         "(2) 总进球数更可能落在大小盘线上方还是下方（大球 / 小球 / 观望）。"
         "先核对伤停和阵容完整度，再核对上一场首发/后备比例与评分，最后结合盘口异动；"
+        "大小球必须比较开盘线与近期对赛场均总进球，并结合双方近期进失球/大小球率；差异至少 0.5 球时明确提示，盘口作为重要先验，不要机械追随历史比分。"
         "把能核对的伤停、阵容风险、盘口变化分别写入 factors。"
         "只用上面给出的资料，资料不足就给观望。只输出 JSON，不要解释。"
     )
@@ -661,6 +740,9 @@ def enrich_team_reads(
         result = reader.read(item, page_text)
         if result:
             item["team_read"] = dict(result)
+            focus = over_goal_focus(item, page_text)
+            if focus:
+                item["team_read"]["over_focus"] = focus
             references = (
                 source_references[index]
                 if source_references and index < len(source_references)

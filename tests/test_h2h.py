@@ -135,6 +135,16 @@ class ModelH2HTests(unittest.TestCase):
             base_pred["final_probabilities"]["away"],
         )
 
+    def test_h2h_score_totals_nudge_over_under_model_probability(self):
+        base = predict_match(build_model_input())
+        high = predict_match(build_model_input(h2h_avg_total_goals=4.0, h2h_score_matches=5))
+        low = predict_match(build_model_input(h2h_avg_total_goals=1.0, h2h_score_matches=5))
+        insufficient = predict_match(build_model_input(h2h_avg_total_goals=4.0, h2h_score_matches=2))
+
+        self.assertGreater(high["model_over25"], base["model_over25"])
+        self.assertLess(low["model_over25"], base["model_over25"])
+        self.assertEqual(insufficient["model_over25"], base["model_over25"])
+
 
 if __name__ == "__main__":
     unittest.main()
