@@ -600,7 +600,7 @@ def create_bet(
         (item for item in snapshot["selections"] if item["value"] == selection), None
     )
     if choice is None:
-        raise BetError("投注方向无效")
+        raise BetError("竞猜方向无效")
     if any(item.get("market") == market for item in options["existing"]):
         raise BetError("该市场已有注单，请修改或删除", 409)
     amount = _stake(stake)
@@ -689,7 +689,7 @@ def update_bet(
             None,
         )
         if choice is None:
-            raise BetError("投注方向无效")
+            raise BetError("竞猜方向无效")
         rec = snapshot["recommendation"]
         fields.extend(
             [

@@ -1001,7 +1001,8 @@ class BetServerTests(unittest.TestCase):
         status, body = _get(self.base + "/?issue=" + self.BET_ISSUE)
         self.assertEqual(status, 200)
         self.assertIn('id="bet-dialog"', body)
-        self.assertIn("本期投注", body)
+        self.assertIn("本期竞猜", body)
+        self.assertNotIn("投注", body)
         self.assertIn("bet-open", body)
         self.assertIn("此分析工具纯属游戏娱乐，不构成投资建议，风险自担！", body)
 

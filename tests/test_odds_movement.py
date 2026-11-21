@@ -312,7 +312,7 @@ class PagesSplitRetentionTests(unittest.TestCase):
         fetch.assert_not_called()
         self.assertEqual(rows[0]["odds_movement"]["source"], "odds_pages")
 
-    def test_no_split_added_when_companies_agree(self):
+    def test_company_odds_kept_when_companies_agree(self):
         nowscore = {
             "available": True,
             "source": "nowscore_prematch",
@@ -324,7 +324,9 @@ class PagesSplitRetentionTests(unittest.TestCase):
             "reasons": [],
         }
         movement = self._run(self.AGREED_PAGES, nowscore)
-        self.assertEqual(movement["split"], [])
+        self.assertEqual(len(movement["split"]), 1)
+        self.assertEqual(len(movement["split"][0]["rows"]), 2)
+        self.assertFalse(movement["attention"])
 
     def test_pages_take_over_when_nowscore_missing_asian(self):
         nowscore = {

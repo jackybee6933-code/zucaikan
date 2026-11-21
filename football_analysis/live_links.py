@@ -4,20 +4,20 @@ import json
 import re
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 import requests
-from bs4 import BeautifulSoup
 
 from .console import task_log
 
-HOME_URL = "http://huakangsy.cn/zuqiu/"
+HOME_URL = "https://www.fmtg2f.com/score/football/lives"
+HUAKANG_URL = "https://www.fmtg2f.com"
 CRZB_URL = "https://crl4.crzbcx8.com"
 CRZB_BACKUP_URL = "https://www.crzb.com"
 CRZB_SECOND_BACKUP_URL = "https://www.crtv0.live"
-BIG_FIVE_LEAGUES = frozenset(("英超", "西甲", "德甲", "意甲", "法甲"))
 _CACHE_SECONDS = 60 * 60
 _cache_lock = threading.Lock()
 _cache_expires = 0.0
@@ -57,14 +57,34 @@ def _normalize(value: str) -> str:
 
 _TEAM_ALIAS_GROUPS = (
     ("曼联", "曼彻斯特联"),
+    ("诺丁汉", "诺丁汉森林"),
+    ("伯恩茅", "伯恩茅斯"),
+    ("热刺", "托特纳姆热刺"),
+    ("伊普斯", "伊普斯维奇"),
+    ("纽卡斯", "纽卡斯尔", "纽卡斯尔联"),
     ("维拉", "阿斯顿维拉"),
     ("国米", "国际米兰"),
     ("马竞", "马竞技", "马德里竞技"),
     ("巴萨", "巴塞罗那"),
     ("维拉利尔", "維拉利爾", "比利亚雷亚尔"),
     ("加泰", "赫塔菲", "赫塔费"),
+    ("毕尔巴", "毕尔巴鄂", "毕尔巴鄂竞技", "畢爾包"),
+    ("西班人", "西班牙人", "愛斯賓奴"),
     ("斯图加", "史特加", "斯图加特"),
     ("不来梅", "雲達不萊梅", "云达不莱梅"),
+    ("埃沃斯", "埃沃斯堡", "埃尔沃斯贝格"),
+    ("霍芬海", "霍芬海姆"),
+    ("勒沃", "勒沃库森"),
+    ("帕德博", "帕德博恩"),
+    ("门兴", "门兴格拉德巴赫"),
+    ("多特", "多特蒙德"),
+    ("柏林联", "柏林联合"),
+    ("莱红牛", "莱比锡红牛", "RB莱比锡"),
+    ("沙尔克", "沙尔克04"),
+    ("塞维利", "塞维利亚"),
+    ("贝蒂斯", "皇家贝蒂斯"),
+    ("拜仁", "拜仁慕尼黑"),
+    ("比勒费", "比勒菲尔德", "比勒費爾德"),
     ("斯洛文尼", "斯洛文尼亚"),
     ("哈萨克", "哈薩克", "哈萨克斯坦"),
 )
@@ -75,104 +95,37 @@ _TEAM_ALIASES = {
 }
 
 
-def _team_in_text(team: str, text: str) -> bool:
-    team_norm = _normalize(team)
-    text_norm = _normalize(text)
-    if not team_norm:
-        return False
-    if team_norm in text_norm:
-        return True
-    return any(
-        alias in text_norm for alias in _TEAM_ALIASES.get(team_norm, ())
-    )
-
-
-def _first_source_url(url: str) -> str:
-    parsed = urlparse(url)
-    match = re.search(
-        r"/zuqiu/(\d+)(?:_1)?\.html?$", parsed.path, flags=re.IGNORECASE
-    )
-    if not match:
-        return url
-    return parsed._replace(path=f"/play/{match.group(1)}_1.html").geturl()
-
-
-def parse_match_links(
-    page_html: str, base_url: str, rows: list[dict]
-) -> dict[tuple[str, str], str]:
-    soup = BeautifulSoup(page_html, "html.parser")
-    links: dict[tuple[str, str], str] = {}
-    for anchor in soup.select("a[href]"):
-        href = urljoin(base_url, str(anchor.get("href") or ""))
-        if urlparse(href).netloc != urlparse(HOME_URL).netloc:
-            continue
-        if not urlparse(href).path.lower().endswith((".html", ".htm")):
-            continue
-
-        title = str(anchor.get("title") or "")
-        for row in rows:
-            home = str(row.get("home_team") or "")
-            away = str(row.get("away_team") or "")
-            if _team_in_text(home, title) and _team_in_text(away, title):
-                links[(_normalize(home), _normalize(away))] = _first_source_url(href)
-    return links
-
-
-def parse_league_links(page_html: str, base_url: str) -> list[str]:
-    soup = BeautifulSoup(page_html, "html.parser")
-    base_path = urlparse(HOME_URL).path.rstrip("/") + "/"
-    league_urls = []
-    for anchor in soup.select("a[href]"):
-        url = urljoin(base_url, str(anchor.get("href") or ""))
-        parsed = urlparse(url)
-        relative_path = parsed.path.removeprefix(base_path).strip("/")
-        if (
-            parsed.netloc == urlparse(HOME_URL).netloc
-            and parsed.path.startswith(base_path)
-            and relative_path
-            and "/" not in relative_path
-            and not relative_path.lower().endswith((".html", ".htm"))
-        ):
-            league_urls.append(url)
-    return list(dict.fromkeys(league_urls))[:6]
-
-
-def _fetch(url: str) -> str:
+def _fetch_live_json(base_url: str, path: str, site: str) -> list | dict:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/142.0.0.0 Safari/537.36",
+        "Referer": base_url + "/score/football/lives",
+        "Accept": "application/json",
+        "webclienttype": "web", "clientType": "web", "site": site,
+        "ad-channel": "crzb" if site == "crzb" else "", "timezone": "UTC+8",
+    }
+    if site == "crzb":
+        headers["channel"] = "channel_crzb"
     response = requests.get(
-        url,
-        timeout=2,
-        headers={"User-Agent": "Mozilla/5.0"},
+        base_url + "/api" + path,
+        timeout=8,
+        headers=headers,
     )
     response.raise_for_status()
-    return response.text
+    payload = response.json()
+    if (not isinstance(payload, dict) or payload.get("code") != 200
+            or not isinstance(payload.get("data"), (dict, list))):
+        raise ValueError("直播接口未返回有效数据")
+    return payload["data"]
 
 
-def _collect_huakang_links(rows: list[dict]) -> dict[str, str]:
-    try:
-        home_html = _fetch(HOME_URL)
-    except requests.RequestException:
-        return {}
-    links: dict[tuple[str, str], str] = {}
-    for league_url in parse_league_links(home_html, HOME_URL):
-        try:
-            league_html = _fetch(league_url)
-        except requests.RequestException:
-            continue
-        links.update(parse_match_links(league_html, league_url, rows))
-        if len(links) == len(rows):
-            break
-    return {
-        str(row.get("match_no") or ""):
-        links.get((
-            _normalize(str(row.get("home_team") or "")),
-            _normalize(str(row.get("away_team") or "")),
-        ), "")
-        for row in rows
-        if links.get((
-            _normalize(str(row.get("home_team") or "")),
-            _normalize(str(row.get("away_team") or "")),
-        ))
-    }
+def _fetch_huakang_json(path: str) -> list | dict:
+    return _fetch_live_json(HUAKANG_URL, path, "fmzb")
+
+
+def _collect_huakang_links(rows: list[dict]) -> dict[str, LiveLink]:
+    return _collect_api_links(rows, _fetch_huakang_json, HUAKANG_URL)
 
 
 def _fetch_crzb_json(path: str) -> list | dict:
@@ -181,25 +134,7 @@ def _fetch_crzb_json(path: str) -> list | dict:
     )
     for base_url in (CRZB_URL, CRZB_BACKUP_URL, CRZB_SECOND_BACKUP_URL):
         try:
-            response = requests.get(
-                base_url + "/api" + path,
-                timeout=8,
-                headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                                  "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                  "Chrome/142.0.0.0 Safari/537.36",
-                    "Referer": base_url + "/score/football/lives",
-                    "Accept": "application/json",
-                    "webclienttype": "web", "clientType": "web", "ad-channel": "crzb",
-                    "channel": "channel_crzb", "site": "crzb", "timezone": "UTC+8",
-                },
-            )
-            response.raise_for_status()
-            payload = response.json()
-            if (not isinstance(payload, dict) or payload.get("code") != 200
-                    or not isinstance(payload.get("data"), (dict, list))):
-                raise ValueError("超人直播接口未返回有效数据")
-            return payload.get("data")
+            return _fetch_live_json(base_url, path, "crzb")
         except (requests.RequestException, ValueError) as exc:
             last_error = exc
             task_log("刷新直播", f"源站 {base_url} 请求失败，尝试备用：{exc}")
@@ -213,10 +148,16 @@ def _same_team(team: str, *names: str) -> bool:
 
 
 def _collect_crzb_links(rows: list[dict]) -> dict[str, LiveLink]:
+    return _collect_api_links(rows, _fetch_crzb_json, CRZB_URL)
+
+
+def _collect_api_links(
+    rows: list[dict], fetch_json: Callable[[str], list | dict], base_url: str
+) -> dict[str, LiveLink]:
     try:
-        matches = _fetch_crzb_json("/web/web_football_score_list")
+        matches = fetch_json("/web/web_football_score_list")
     except (requests.RequestException, ValueError) as exc:
-        task_log("刷新直播", f"赛程获取失败：{exc}")
+        task_log("刷新直播", f"源站 {base_url} 赛程获取失败：{exc}")
         return {}
     if not isinstance(matches, list):
         return {}
@@ -245,7 +186,7 @@ def _collect_crzb_links(rows: list[dict]) -> dict[str, LiveLink]:
             if not match_id.isdigit():
                 continue
             try:
-                data = _fetch_crzb_json(
+                data = fetch_json(
                     f"/web/get_public_anchor?tournament_id={match_id}&type=1&tournament_type=1"
                 )
             except (requests.RequestException, ValueError) as exc:
@@ -270,7 +211,7 @@ def _collect_crzb_links(rows: list[dict]) -> dict[str, LiveLink]:
                     seen.add(member_id)
                     source = {
                         "name": str(anchor.get("nickname") or anchor.get("username") or f"主播 {member_id}"),
-                        "url": f"{CRZB_URL}/detail/1/{match_id}/{member_id}",
+                        "url": f"{base_url}/detail/1/{match_id}/{member_id}",
                     }
                     avatar = anchor.get("avatar") or anchor.get("face")
                     if isinstance(avatar, str) and avatar.startswith(("https://", "http://")):
@@ -286,27 +227,13 @@ def _collect_crzb_links(rows: list[dict]) -> dict[str, LiveLink]:
 
 
 def _collect_links(rows: list[dict], issue: str) -> dict[str, LiveLink]:
-    big_five_rows = [
-        row for row in rows if str(row.get("league") or "").strip() in BIG_FIVE_LEAGUES
+    task_log("刷新直播", f"{issue} 飞马直播匹配 {len(rows)} 场，获取全部主播")
+    links = _collect_huakang_links(rows)
+    missing = [
+        row for row in rows if str(row.get("match_no") or "") not in links
     ]
-    links: dict[str, LiveLink] = {}
-    if big_five_rows:
-        task_log("刷新直播", f"{issue} 五大联赛 {len(big_five_rows)} 场，先匹配华康直播")
-        try:
-            from .cantonese import fetch_mandarin_matches
-
-            mandarin_matches = fetch_mandarin_matches(issue)
-        except Exception:
-            mandarin_matches = {}
-        match_rows = [
-            {**row, "home_team": names[0], "away_team": names[1]}
-            if (names := mandarin_matches.get(str(row.get("match_no") or ""))) else row
-            for row in big_five_rows
-        ]
-        links = _collect_huakang_links(match_rows)
-    missing = [row for row in rows if str(row.get("match_no") or "") not in links]
     if missing:
-        task_log("刷新直播", f"{issue} 超人直播匹配 {len(missing)} 场，获取全部主播")
+        task_log("刷新直播", f"{issue} 飞马缺失 {len(missing)} 场，超人直播兜底")
         links.update(_collect_crzb_links(missing))
     return links
 

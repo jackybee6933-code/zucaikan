@@ -190,6 +190,15 @@ class BetLifecycleTests(unittest.TestCase):
             with self.assertRaises(BetError):
                 create_bet(db, ISSUE, "1", "asian", "away", 10, reason="x" * 101, now=NOW)
 
+    def test_invalid_direction_errors_use_quiz_wording(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = _seed(tmp)
+            with self.assertRaisesRegex(BetError, "竞猜方向无效"):
+                create_bet(db, ISSUE, "1", "asian", "draw", 10, now=NOW)
+            created = create_bet(db, ISSUE, "1", "asian", "away", 10, now=NOW)
+            with self.assertRaisesRegex(BetError, "竞猜方向无效"):
+                update_bet(db, created["id"], selection="draw", now=NOW)
+
     def test_operations_locked_after_kickoff_or_settlement(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = _seed(tmp)
@@ -387,7 +396,12 @@ class BetRenderTests(unittest.TestCase):
                     "profit": 0.0, "roi": 0.0, "hit_rate": 0.0,
                 }],
             )
-        self.assertIn("本期投注", static_html)
+        self.assertIn("本期竞猜", static_html)
+        for html in (static_html, serve_html, trend_html):
+            self.assertNotIn("投注", html)
+        for text in ("竞猜积分", "竞猜理由", "竞猜理由已保存",
+                     "记录本次竞猜判断依据", "请输入正整数竞猜积分"):
+            self.assertIn(text, serve_html)
         self.assertNotIn('id="bet-dialog"', static_html)
         self.assertIn('id="bet-dialog"', serve_html)
         self.assertIn('id="bet-reason-dialog"', serve_html)
@@ -423,7 +437,7 @@ class BetRenderTests(unittest.TestCase):
         self.assertIn("bet-chip", serve_html)
         self.assertIn("/bets.csv?issue=26145", serve_html)
         self.assertIn('id="bet-row-1"', serve_html)
-        self.assertIn("跨期投注趋势", trend_html)
+        self.assertIn("跨期竞猜趋势", trend_html)
         bets_section = serve_html[serve_html.index('<section class="bets-section"'):]
         self.assertNotIn("<th>操作</th>", bets_section)
         self.assertIn('class="match-cell"', bets_section)
@@ -452,7 +466,10 @@ class BetRenderTests(unittest.TestCase):
                 port="8765",
             )
         self.assertIn("disabled", html)
-        self.assertIn("投注</button>", html)
+        self.assertIn("竞猜</button>", html)
+        self.assertIn("比赛已开始，竞猜已关闭", html)
+        self.assertIn("本期还没有竞猜。", html)
+        self.assertNotIn("投注", html)
         self.assertNotIn('disabled title="已结算"', html)
 
 

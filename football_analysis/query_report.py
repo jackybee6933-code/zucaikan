@@ -14,6 +14,7 @@ from .odds_pages import (
     COMPANY_NAMES,
     PAGES_META_FILENAME,
     PAGES_STALE_HOURS,
+    build_company_odds,
     load_odds_pages_raw,
     page_failures,
     pages_age_hours,
@@ -359,20 +360,17 @@ def _kind_badge(kind: str, *, muted: bool = False) -> str:
     return f'<span class="kind {css}">{_esc(kind or "无")}</span>'
 
 def _split_html(row: dict, uid: str) -> str:
-    """Render all companies in a market-split popup."""
+    """Render all companies' opening and current lines."""
     blocks = row.get("split") or []
     if not isinstance(blocks, list):
         blocks = []
     parts = []
-    for block in blocks:
-        if not isinstance(block, dict):
-            continue
-        picked = str(block.get("picked") or "")
+    for block in sorted(
+        [block for block in blocks if isinstance(block, dict)],
+        key=lambda block: {"亚盘": 0, "大小球": 1}.get(block.get("market"), 2),
+    ):
         rows = [item for item in block.get("rows") or [] if isinstance(item, dict)]
-        if not any(
-            str(item.get("initial") or "") != str(item.get("current") or "")
-            for item in rows
-        ):
+        if not rows:
             continue
         trs = []
         for item in rows:
@@ -380,10 +378,15 @@ def _split_html(row: dict, uid: str) -> str:
             cid = _esc(raw_cid)
             name = _esc(str(item.get("name") or "").strip() or COMPANY_NAMES.get(raw_cid, ""))
             label = f"{name}({cid})" if name else cid
-            cur = _esc(str(item.get("current") or "\u2014"))
-            cur_cell = f"<b>{cur}</b>" if str(item.get("cid")) == picked else cur
+            initial = str(item.get("initial") or "\u2014")
+            current = str(item.get("current") or "\u2014")
+            init_cell = _esc(initial)
+            cur_cell = _esc(current)
+            if initial not in ("-", "\u2014") and current not in ("-", "\u2014") and initial != current:
+                init_cell = f'<b class="company-line-changed">{init_cell}</b>'
+                cur_cell = f'<b class="company-line-changed">{cur_cell}</b>'
             trs.append(
-                f"<tr><td>{label}</td><td>{_esc(str(item.get('initial') or '\u2014'))} \u2192 {cur_cell}</td></tr>"
+                f"<tr><td>{label}</td><td>{init_cell} \u2192 {cur_cell}</td></tr>"
             )
         parts.append(
             f'<div class="split-card"><div class="split-card-title">'
@@ -395,7 +398,7 @@ def _split_html(row: dict, uid: str) -> str:
         return ""
     body = f'<div class="split-cards">{"".join(parts)}</div>'
     return (
-        f'<div class="kind-split" data-split-for="{_esc(uid)}">\u76d8\u53e3\u5206\u6b67</div>'
+        f'<div class="kind-split" data-split-for="{_esc(uid)}">\u76d8\u53e3\u660e\u7ec6</div>'
         f'<template id="{_esc(uid)}">{body}</template>'
     )
 
@@ -1524,10 +1527,10 @@ _BET_BLOCK = """
     <div id="bet-existing"></div>
     <div id="bet-markets"></div>
     <label class="bet-reason">理由（选填）
-      <textarea id="bet-reason-input" rows="3" maxlength="100" placeholder="记录本次投注判断依据"></textarea>
+      <textarea id="bet-reason-input" rows="3" maxlength="100" placeholder="记录本次竞猜判断依据"></textarea>
       <span class="bet-reason-count"><span id="bet-reason-count">0</span>/100</span>
     </label>
-    <label class="bet-stake">投注积分
+    <label class="bet-stake">竞猜积分
       <input id="bet-stake-input" type="number" min="1" step="1" value="10">
     </label>
     <div id="bet-error" class="bet-error"></div>
@@ -1541,7 +1544,7 @@ _BET_BLOCK = """
 <dialog id="bet-reason-dialog">
   <div class="bet-reason-dialog-content">
     <div class="bet-dialog-head">
-      <strong>投注理由</strong>
+      <strong>竞猜理由</strong>
       <button type="button" id="bet-reason-close" class="icon-btn" title="关闭">×</button>
     </div>
     <label class="bet-reason-edit">理由
@@ -1834,7 +1837,7 @@ _BET_BLOCK = """
       });
       var data = await resp.json();
       if (!resp.ok) throw new Error(data.error || "保存理由失败");
-      flashAndReload("投注理由已保存", data.id);
+      flashAndReload("竞猜理由已保存", data.id);
     } catch (err) {
       reasonErrorEl.textContent = err.message || String(err);
       reasonSaveEl.disabled = false;
@@ -1857,7 +1860,7 @@ _BET_BLOCK = """
     var selection = selectedSelection(market);
     var stake = Number(stakeEl.value || 0);
     if (!market || !selection) { setError("请选择市场和方向"); return; }
-    if (!(Number.isInteger(stake) && stake > 0)) { setError("请输入正整数投注积分"); return; }
+    if (!(Number.isInteger(stake) && stake > 0)) { setError("请输入正整数竞猜积分"); return; }
     var payload = state.bet
       ? {id: state.bet.id, selection: selection, stake: stake, reason: reasonEl.value}
       : {issue: state.options.issue, match_no: state.options.match_no,
@@ -1944,8 +1947,12 @@ def render_query_html(
     bet_stats = bet_stats or summarize_bets(bets)
     bet_trend = bet_trend or []
     h2h_by_match: dict[str, str] = {}
-    if issue and cache_dir and analyses:
+    companies_by_fixture: dict[str, list[dict]] = {}
+    fixture_ids_by_match: dict[str, str] = {}
+    if issue and cache_dir:
         raw_pages = load_odds_pages_raw(cache_dir, issue)
+        if latest_only:
+            companies_by_fixture = build_company_odds(raw_pages)
         shuju_fids = list(dict.fromkeys(
             str(key).rsplit("|", 1)[0]
             for key in (raw_pages or {})
@@ -1960,6 +1967,8 @@ def render_query_html(
                 except ValueError:
                     index = -1
                 fixture_id = shuju_fids[index] if 0 <= index < len(shuju_fids) else ""
+            if match_no and fixture_id:
+                fixture_ids_by_match[match_no] = fixture_id
             references = shuju_references(raw_pages, fixture_id) if fixture_id else {}
             h2h = next(
                 (
@@ -2018,6 +2027,17 @@ def render_query_html(
     for row_idx, row in enumerate(rows):
         issue_value = str(row.get("issue") or "")
         match_no = str(row.get("match_no") or "")
+        if companies_by_fixture and issue_value == issue:
+            try:
+                payload = json.loads(str(row.get("payload_json") or "{}"))
+            except (TypeError, ValueError):
+                payload = {}
+            fixture_id = str(
+                (payload.get("fixture_id") if isinstance(payload, dict) else "")
+                or row.get("fixture_id") or fixture_ids_by_match.get(match_no) or ""
+            )
+            if fixture_id in companies_by_fixture:
+                row["split"] = companies_by_fixture[fixture_id]
         match_bets = bets_by_match.get((issue_value, match_no), [])
         kickoff = parse_kickoff(
             issue_value,
@@ -2047,18 +2067,18 @@ def render_query_html(
         if not can_bet_ui:
             bet_cell = '<td class="bet-cell muted">-</td>'
         elif locked:
-            button_title = "开赛时间未知" if kickoff is None and not row.get("final_score") else "比赛已开始，投注已关闭"
+            button_title = "开赛时间未知" if kickoff is None and not row.get("final_score") else "比赛已开始，竞猜已关闭"
             bet_cell = (
                 f'<td class="bet-cell"><span class="bet-action-group"{group_attrs}>'
                 f'<button type="button" class="bet-btn" disabled title="{_esc(button_title)}">'
-                f'投注</button>{more}</span></td>'
+                f'竞猜</button>{more}</span></td>'
             )
         else:
             bet_cell = (
                 f'<td class="bet-cell"><span class="bet-action-group"{group_attrs}>'
                 f'<button type="button" class="bet-btn bet-open" '
                 f'data-issue="{_esc(issue_value)}" data-match-no="{_esc(match_no)}" '
-            f'>投注</button>{more}</span></td>'
+            f'>竞猜</button>{more}</span></td>'
             )
         score_class = "score-cell" if row.get("final_score") else "score-cell score-pending"
         sources = live_sources(live_links.get((issue_value, match_no), ""))
@@ -2203,10 +2223,10 @@ def render_query_html(
     trend_panel = (
         f"""
         <details class="bets-trend">
-          <summary>跨期投注趋势</summary>
+          <summary>跨期竞猜趋势</summary>
           <div class="table-scroll">
             <table class="bets-table">
-              <thead><tr><th class="issue-cell">期号</th><th>注数</th><th>已结算</th><th>投注积分</th><th>净收益</th><th>ROI</th><th>命中率</th></tr></thead>
+              <thead><tr><th class="issue-cell">期号</th><th>注数</th><th>已结算</th><th>竞猜积分</th><th>净收益</th><th>ROI</th><th>命中率</th></tr></thead>
               <tbody>{''.join(trend_rows)}</tbody>
             </table>
           </div>
@@ -2217,9 +2237,9 @@ def render_query_html(
     bet_panel = f"""
     <section class="bets-section" id="bets-section">
       <div class="bets-head">
-        <h2>本期投注</h2>
+        <h2>本期竞猜</h2>
         <div class="bets-head-right">
-        <span class="muted">注单 {len(bets)} · 投注积分 {int(round(total_stake))} · 已结算 {settled_bets} · 待结算 {pending_bets} · 净收益 {settled_profit:+.2f} · ROI {roi:+.1f}% · 命中率 {hit_rate:.1f}%</span>
+        <span class="muted">注单 {len(bets)} · 竞猜积分 {int(round(total_stake))} · 已结算 {settled_bets} · 待结算 {pending_bets} · 净收益 {settled_profit:+.2f} · ROI {roi:+.1f}% · 命中率 {hit_rate:.1f}%</span>
           {export_link}
         </div>
       </div>
@@ -2233,7 +2253,7 @@ def render_query_html(
           <thead>
             <tr><th class="issue-cell">期号</th><th class="match-cell">比赛</th><th class="score-cell">完场比分</th><th>市场</th><th>方向</th><th>积分</th><th>理由</th><th>状态</th><th>收益</th><th>模型</th></tr>
           </thead>
-          <tbody>{''.join(bet_table_rows) or '<tr><td colspan="10" class="bets-empty">本期还没有投注。</td></tr>'}</tbody>
+          <tbody>{''.join(bet_table_rows) or '<tr><td colspan="10" class="bets-empty">本期还没有竞猜。</td></tr>'}</tbody>
         </table>
       </div>
       {trend_panel}
@@ -2243,7 +2263,7 @@ def render_query_html(
     bet_block = _BET_BLOCK if can_bet_ui else ""
     live_block = "".join(live_templates) + _LIVE_BLOCK
     bet_chip = (
-        f'<a class="bet-chip" href="#bets-section">本期投注 {len(bets)} 注 · '
+        f'<a class="bet-chip" href="#bets-section">本期竞猜 {len(bets)} 注 · '
         f'{int(round(total_stake))} 积分 · 净收益 {settled_profit:+.2f}</a>'
         if bets else ""
     )
@@ -2517,16 +2537,16 @@ def render_query_html(
     .kind-swing, .kind-watch {{ color: #475569; background: #eef2f7; }}
   .kind-muted {{ background: transparent; }}
   .kind-split {{ margin-top: 4px; color: var(--amber); font-size: 11px; font-weight: 600; line-height: 1.5; cursor: help; }}
-  #split-pop {{ position: fixed; z-index: 40; min-width: 240px; max-width: calc(100vw - 16px); padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, .82); backdrop-filter: blur(3px); box-shadow: 0 8px 24px rgba(15, 23, 42, .18); pointer-events: none; }}
+  #split-pop {{ position: fixed; z-index: 40; min-width: 240px; max-width: calc(100vw - 16px); max-height: calc(100vh - 16px); overflow: auto; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, .82); backdrop-filter: blur(3px); box-shadow: 0 8px 24px rgba(15, 23, 42, .18); }}
   #split-pop[hidden] {{ display: none; }}
-  .split-cards {{ display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }}
-  .split-card {{ min-width: 0; }}
+  .split-cards {{ display: flex; flex-wrap: nowrap; gap: 16px; align-items: flex-start; }}
+  .split-card {{ min-width: 0; flex: 0 0 auto; }}
   .split-card-title {{ margin-bottom: 6px; color: var(--muted); font-size: 11px; font-weight: 600; }}
   .split-table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
   .split-table th {{ padding: 3px 10px 5px 0; background: transparent; color: var(--muted); font-weight: 600; text-align: left; white-space: nowrap; }}
   .split-table td {{ padding: 3px 10px 3px 0; border-top: 1px solid var(--line); color: #2b3644; white-space: nowrap; }}
   .split-table td:last-child {{ text-align: right; font-variant-numeric: tabular-nums; }}
-  .split-table b {{ color: var(--amber); font-weight: 700; }}
+  .split-table b.company-line-changed {{ color: #dc2626; font-weight: 700; }}
     .no-alert {{ padding: 18px 16px; color: var(--green); background: var(--green-soft); }}
     .table-scroll {{ overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }}
     .alert-table tbody tr:nth-child(even) td {{ background: #f8fafc; }}
@@ -2673,10 +2693,18 @@ def render_query_html(
   (function () {{
     var pop = document.getElementById('split-pop');
     if (!pop) return;
+    var hideTimer;
+    function cancelHide() {{ window.clearTimeout(hideTimer); }}
+    function scheduleHide() {{
+      hideTimer = window.setTimeout(function () {{ pop.hidden = true; }}, 150);
+    }}
+    pop.addEventListener('mouseenter', cancelHide);
+    pop.addEventListener('mouseleave', scheduleHide);
     document.querySelectorAll('[data-split-for]').forEach(function (el) {{
       var tpl = document.getElementById(el.getAttribute('data-split-for'));
       if (!tpl) return;
       function show() {{
+        cancelHide();
         pop.innerHTML = tpl.innerHTML;
         pop.hidden = false;
         var r = el.getBoundingClientRect();
@@ -2690,7 +2718,7 @@ def render_query_html(
       }}
       el.addEventListener('mouseenter', show);
       el.addEventListener('focus', show);
-      el.addEventListener('mouseleave', function () {{ pop.hidden = true; }});
+      el.addEventListener('mouseleave', scheduleHide);
       el.addEventListener('blur', function () {{ pop.hidden = true; }});
     }});
   }})();

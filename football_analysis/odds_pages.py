@@ -258,9 +258,6 @@ def parse_odds_pages(raw: dict) -> dict[str, dict]:
     return result
 
 
-# 公司间盘口分歧阈值：同一页各公司即时盘口最大差距达到该值即提示分歧。
-SPLIT_WATCH = 0.5
-
 # 单场页对未登录用户打码公司名；已确认的中文名优先，其余抄页面打码名（威***/*门 等）。
 # 老产物（7 列、无公司名）靠这张表回退，新产物直接用行内名字。
 COMPANY_NAMES = {
@@ -282,20 +279,6 @@ COMPANY_NAMES = {
     "1055": "P*********",
     "1484": "o***",
 }
-
-
-def _spread(rows: list[list], converter) -> list[float]:
-    """各公司即时盘口，按让球幅度升序；不足两家公司时返回空列表。
-
-    空单元格跳过；「平手」解析成 0.0 是合法盘口，必须参与跨度计算，
-    否则「平手 vs 半球」这种 0.5 的真实分歧会被漏判。
-    """
-    values = []
-    for row in _shifted(rows):
-        text = _line_text(row[3])
-        if text:
-            values.append(converter(text))
-    return sorted(values, key=abs) if len(values) >= 2 else []
 
 
 def _company_rows(rows: list[list]) -> list[dict]:
@@ -322,27 +305,35 @@ def _company_rows(rows: list[list]) -> list[dict]:
     return out
 
 
-def _split_block(rows: list[list], label: str, converter) -> dict | None:
-    """盘口分歧达到 SPLIT_WATCH 时返回弹层数据块，否则返回 None。
-
-    至少一家公司初盘→即时有变化才挂弹窗：全部公司初盘与即时完全一致时，
-    各公司之间即便有差异也只是静态报价，标成「盘口分歧」会误导。
-    """
-    if not any(_line_text(r[6]) != _line_text(r[3]) for r in _shifted(rows)):
-        return None
-    values = _spread(rows, converter)
-    if not values:
-        return None
-    low, high = values[0], values[-1]
-    if abs(high - low) < SPLIT_WATCH:
-        return None
-    picked = _pick_company(rows)
-    return {
-        "market": label,
-        "picked": str(picked[0]) if picked else "",
-        # 只列真正动了盘的公司，没动的留在页面上反而让人以为弹窗在重复初盘
-        "rows": _company_rows(rows),
-    }
+def build_company_odds(raw: dict) -> dict[str, list[dict]]:
+    """全部公司盘口；500 单场页优先，球探补缺，保留公司顺序。"""
+    result: dict[str, list[dict]] = {}
+    for key, page in sorted(
+        (raw or {}).items(), key=lambda item: str(item[0]).partition("|")[2].startswith("titan_")
+    ):
+        if not isinstance(page, dict) or _status(page) not in PAGE_STATUSES:
+            continue
+        fixture_id, _, kind = str(key).partition("|")
+        label = {"yazhi": "亚盘", "daxiao": "大小球"}.get(kind.removeprefix("titan_"))
+        if not fixture_id or not label:
+            continue
+        rows = _shifted([
+            row for row in page.get("rows") or []
+            if isinstance(row, (list, tuple)) and len(row) >= 7
+        ])
+        companies = _company_rows(rows)
+        if not companies:
+            continue
+        blocks = result.setdefault(fixture_id, [])
+        if any(block["market"] == label for block in blocks):
+            continue
+        picked = _pick_company(rows, titan=kind.startswith("titan_"))
+        blocks.append({
+            "market": label,
+            "picked": str(picked[0]) if picked else "",
+            "rows": companies,
+        })
+    return result
 
 
 def build_pages_movements(raw: dict, teams_by_fixture: dict | None = None) -> dict[str, dict]:
@@ -407,30 +398,7 @@ def build_pages_movements(raw: dict, teams_by_fixture: dict | None = None) -> di
                 },
             }
 
-    splits: dict[str, list[str]] = {}
-    for key, page in (raw or {}).items():
-        fixture_id, _, kind = str(key).partition("|")
-        rows = _shifted(page.get("rows") or [])
-        if not fixture_id or len(rows) < 2:
-            continue
-        titan = kind.startswith("titan_")
-        market_kind = kind.removeprefix("titan_")
-        if market_kind == "yazhi":
-            if titan and fixture_id in splits and any(
-                block.get("market") == "亚盘" for block in splits[fixture_id]
-            ):
-                continue
-            block = _split_block(rows, "亚盘", handicap_line_to_float)
-        elif market_kind == "daxiao":
-            if titan and fixture_id in splits and any(
-                block.get("market") == "大小球" for block in splits[fixture_id]
-            ):
-                continue
-            block = _split_block(rows, "大小球", total_line_to_float)
-        else:
-            continue
-        if block:
-            splits.setdefault(fixture_id, []).append(block)
+    companies = build_company_odds(raw)
 
     analysed: dict[str, dict] = {}
     for fixture_id, slot in result.items():
@@ -444,7 +412,7 @@ def build_pages_movements(raw: dict, teams_by_fixture: dict | None = None) -> di
         if any("|titan_" in str(key) for key in (raw or {}) if str(key).startswith(f"{fixture_id}|")):
             source_names.add("titan007")
         analysis["source"] = "+".join(sorted(source_names)) or "odds_pages"
-        analysis["split"] = splits.get(fixture_id, [])
+        analysis["split"] = companies.get(fixture_id, [])
         analysed[fixture_id] = analysis
     return analysed
 

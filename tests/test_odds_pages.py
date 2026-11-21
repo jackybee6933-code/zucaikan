@@ -4,13 +4,14 @@ import unittest
 from pathlib import Path
 
 from football_analysis.odds_pages import (
+    build_company_odds,
     build_pages_movements,
     load_odds_pages,
     page_failures,
     parse_odds_pages,
 )
 from football_analysis.pipeline import _build_single_analysis
-from football_analysis.query_report import _split_html, _total_goals_html
+from football_analysis.query_report import _split_html, _total_goals_html, render_query_html
 from football_analysis.report import asian_display, total_display
 from football_analysis.store import _extract_split
 from football_analysis.titan_odds import parse_titan_market, parse_titan_rows
@@ -217,7 +218,7 @@ class PagesMovementTests(unittest.TestCase):
 
 
 class PagesSplitTests(unittest.TestCase):
-    """公司间盘口分歧 >= 0.5 时产出弹层数据块。"""
+    """公司盘口弹层不按分歧或变盘筛选。"""
 
     ROWS = [
         ["293", "0.53↓", "2.5↓", "1.40↑", "1.38", "3.5", "0.55"],
@@ -273,25 +274,26 @@ class PagesSplitTests(unittest.TestCase):
             [("293", "威***"), ("1484", "o***")],
         )
 
-    def test_no_split_when_companies_agree(self):
+    def test_company_odds_when_companies_agree(self):
         rows = [
             ["293", "1.00", "2.5", "0.90", "1.00", "2.5", "0.90"],
             ["4", "0.95", "2.5", "0.95", "0.95", "2.5", "0.95"],
         ]
-        self.assertEqual(build_pages_movements(_raw({"9|daxiao": rows}))["9"]["split"], [])
+        blocks = build_pages_movements(_raw({"9|daxiao": rows}))["9"]["split"]
+        self.assertEqual([r["cid"] for r in blocks[0]["rows"]], ["293", "4"])
 
-    def test_no_split_with_single_company(self):
+    def test_company_odds_with_single_company(self):
         mv = build_pages_movements(_raw({"9|daxiao": [self.ROWS[0]]}))["9"]
-        self.assertEqual(mv["split"], [])
+        self.assertEqual(len(mv["split"][0]["rows"]), 1)
 
-    def test_no_split_when_all_unchanged(self):
-        """初盘与即时完全一致时，即使各公司盘口有差异也不挂分歧。"""
+    def test_company_odds_when_all_unchanged(self):
+        """初盘与即时完全一致时仍可查看全部公司。"""
         rows = [
             ["293", "0.90", "2.5", "1.00", "0.90", "2.5", "1.00"],
             ["4", "0.85", "3", "1.05", "0.85", "3", "1.05"],
         ]
         mv = build_pages_movements(_raw({"9|daxiao": rows}))["9"]
-        self.assertEqual(mv["split"], [])
+        self.assertEqual([r["cid"] for r in mv["split"][0]["rows"]], ["293", "4"])
 
     def test_split_kept_when_some_company_unchanged(self):
         """只要有任何一家初盘→即时盘口有变化，分歧照常展示。"""
@@ -302,13 +304,13 @@ class PagesSplitTests(unittest.TestCase):
         mv = build_pages_movements(_raw({"9|daxiao": rows}))["9"]
         self.assertIn("split", mv)
 
-    def test_split_below_threshold_is_ignored(self):
+    def test_company_odds_below_old_split_threshold(self):
         rows = [
             ["293", "1.00", "2.5", "0.90", "1.00", "2.5", "0.90"],
             ["4", "1.00", "2.75", "0.90", "1.00", "2.75", "0.90"],
         ]
         mv = build_pages_movements(_raw({"9|daxiao": rows}))["9"]
-        self.assertEqual(mv["split"], [])
+        self.assertEqual([r["current"] for r in mv["split"][0]["rows"]], ["2.5", "2.75"])
 
     def test_even_handicap_counts_as_zero(self):
         """平手解析成 0.0，与半球相差 0.5，属于真实分歧。"""
@@ -349,6 +351,27 @@ class PagesSplitTests(unittest.TestCase):
         self.assertEqual(len(blocks), 2)
         self.assertEqual({b["market"] for b in blocks}, {"亚盘", "大小球"})
 
+    def test_company_odds_prefers_500_even_when_titan_key_is_first(self):
+        raw = _raw({
+            "9|titan_yazhi": [["3", "0.9", "半球", "0.9", "0.9", "半球", "0.9"]],
+            "9|yazhi": [["5", "0.9", "平手", "0.9", "0.9", "平手", "0.9"]],
+            "9|titan_daxiao": [["3", "0.9", "2.5", "0.9", "0.9", "2.5", "0.9"]],
+        })
+        blocks = build_company_odds(raw)["9"]
+        asian = next(b for b in blocks if b["market"] == "亚盘")
+        total = next(b for b in blocks if b["market"] == "大小球")
+        self.assertEqual(asian["picked"], "5")
+        self.assertEqual([r["cid"] for r in asian["rows"]], ["5"])
+        self.assertEqual(total["picked"], "3")
+
+    def test_company_odds_ignores_failed_and_malformed_pages(self):
+        raw = {
+            "9|yazhi": {"status": "error", "rows": ASIAN_ROWS},
+            "9|daxiao": {"status": "ok", "rows": [["293"], None]},
+            "9|shuju": {"status": "ok", "text": "球队资料"},
+        }
+        self.assertEqual(build_company_odds(raw), {})
+
 
 class SplitRenderTests(unittest.TestCase):
     BLOCK = {"market": "大小球", "picked": "293", "rows": [
@@ -368,17 +391,63 @@ class SplitRenderTests(unittest.TestCase):
 
     def test_html_renders_label_and_template(self):
         html = _split_html({"split": [self.BLOCK]}, "sp-1")
-        self.assertIn(">盘口分歧</div>", html)
+        self.assertIn(">盘口明细</div>", html)
         self.assertIn('data-split-for="sp-1"', html)
         self.assertIn('<template id="sp-1">', html)
         self.assertIn("威廉(293)", html)
         self.assertIn("1484", html)
-        self.assertIn("3.5 \u2192 ", html)
+        self.assertIn("<th>初盘 \u2192 即时</th>", html)
+        self.assertIn(
+            '<td><b class="company-line-changed">3.5</b> \u2192 '
+            '<b class="company-line-changed">2.5</b></td>',
+            html,
+        )
 
-    def test_html_bolds_the_picked_company(self):
-        html = _split_html({"split": [self.BLOCK]}, "sp-2")
-        self.assertEqual(html.count("<b>"), 1)
-        self.assertIn("<b>2.5</b>", html)
+    def test_html_does_not_highlight_unchanged_picked_company(self):
+        block = json.loads(json.dumps(self.BLOCK))
+        block["rows"][0]["current"] = "3.5"
+        html = _split_html({"split": [block]}, "sp-2")
+        self.assertNotIn("<b>", html)
+        self.assertIn("<td>威廉(293)</td><td>3.5 \u2192 3.5</td>", html)
+
+    def test_macau_is_red_only_when_its_own_market_line_changes(self):
+        for market, initial, changed in (
+            ("亚盘", "平手/半球", "半球"),
+            ("大小球", "3.5", "3"),
+        ):
+            for current in (initial, changed):
+                with self.subTest(market=market, current=current):
+                    block = {"market": market, "picked": "5", "rows": [
+                        {"cid": "5", "name": "*门", "initial": initial, "current": current},
+                    ]}
+                    html = _split_html({"split": [block]}, "sp-macau")
+                    self.assertEqual(
+                        html.count('class="company-line-changed"'),
+                        0 if current == initial else 2,
+                    )
+                    if current == initial:
+                        self.assertNotIn("<b", html)
+                        self.assertIn(f"<td>{initial} \u2192 {current}</td>", html)
+
+    def test_html_marks_only_changed_initial_and_current_lines_red(self):
+        block = {"market": "亚盘", "picked": "5", "rows": [
+            {"cid": "5", "name": "澳门", "initial": "平手/半球", "current": "平手/半球"},
+            {"cid": "3", "name": "B*****", "initial": "半球", "current": "平手/半球"},
+            {"cid": "1484", "name": "o***", "initial": "平手", "current": "半球/一球"},
+        ]}
+        html = _split_html({"split": [block]}, "sp-changed")
+        self.assertEqual(html.count('class="company-line-changed"'), 4)
+        self.assertIn("<td>平手/半球 \u2192 平手/半球</td>", html)
+        self.assertIn('<b class="company-line-changed">半球</b>', html)
+        self.assertIn('<b class="company-line-changed">半球/一球</b>', html)
+
+    def test_html_missing_line_is_not_marked_as_changed(self):
+        block = {"market": "大小球", "picked": "", "rows": [
+            {"cid": "293", "initial": "—", "current": "3"},
+            {"cid": "5", "initial": "3", "current": "—"},
+        ]}
+        html = _split_html({"split": [block]}, "sp-missing")
+        self.assertNotIn('class="company-line-changed"', html)
 
     def test_html_falls_back_to_company_name_table(self):
         html = _split_html({"split": [self.BLOCK]}, "sp-6")
@@ -394,11 +463,13 @@ class SplitRenderTests(unittest.TestCase):
         self.assertIn("威廉(293)", html)
         self.assertIn("皇冠(4)", html)
 
-    def test_html_hides_label_when_every_row_is_unchanged(self):
+    def test_html_shows_label_when_every_row_is_unchanged(self):
         block = {"market": "亚盘", "picked": "293", "rows": [
             {"cid": "293", "name": "威廉", "initial": "平手", "current": "平手"},
         ]}
-        self.assertEqual(_split_html({"split": [block]}, "sp-8"), "")
+        html = _split_html({"split": [block]}, "sp-8")
+        self.assertIn(">盘口明细</div>", html)
+        self.assertIn("<td>平手 \u2192 平手</td>", html)
 
     def test_html_renders_each_market_block(self):
         blocks = [
@@ -412,6 +483,13 @@ class SplitRenderTests(unittest.TestCase):
         self.assertIn("亚盘", html)
         self.assertEqual(html.count("split-card-title"), 2)
         self.assertIn('class="split-cards"', html)
+        self.assertLess(html.index(">亚盘</div>"), html.index(">大小球</div>"))
+        self.assertEqual(html.count("<th>初盘 \u2192 即时</th>"), 2)
+        self.assertIn(
+            '<b class="company-line-changed">让两球</b> \u2192 '
+            '<b class="company-line-changed">让两球半</b>',
+            html,
+        )
 
     def test_html_escapes_cell_text(self):
         evil = {"market": "x", "picked": "1", "rows": [
@@ -427,6 +505,41 @@ class SplitRenderTests(unittest.TestCase):
         self.assertEqual(_split_html({"split": []}, "sp-5"), "")
         self.assertEqual(_split_html({"split": [{"market": "亚盘", "picked": "", "rows": []}]}, "sp-5"), "")
         self.assertEqual(_split_html({"split": ["x"]}, "sp-5"), "")
+
+    def test_query_fills_both_markets_from_cache_without_rerunning_analysis(self):
+        row = {
+            "issue": "26166", "match_no": "3",
+            "home_team": "达姆施塔特", "away_team": "海登海姆",
+            "payload_json": json.dumps({"fixture_id": "9"}),
+            "split": [self.BLOCK],
+        }
+        raw = _raw({
+            "9|yazhi": [
+                ["5", "0.9", "平手", "0.9", "0.9", "平手", "0.9"],
+                ["293", "0.9", "平手", "0.9", "0.9", "平手", "0.9"],
+            ],
+            "9|daxiao": [
+                ["5", "0.9", "3", "0.9", "0.9", "3", "0.9"],
+                ["293", "0.9", "3", "0.9", "0.9", "3", "0.9"],
+            ],
+        })
+        original = json.loads(json.dumps(row))
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "odds_pages_26166.json").write_text(json.dumps(raw), encoding="utf-8")
+            html = render_query_html([row], issues=[], issue="26166", cache_dir=tmp)
+            historical = render_query_html(
+                [row], issues=[], issue="26166", cache_dir=tmp, latest_only=False,
+            )
+        popup = html.split('<template id="splitpop-0">', 1)[1].split("</template>", 1)[0]
+        self.assertEqual(popup.count("split-card-title"), 2)
+        self.assertLess(popup.index(">亚盘</div>"), popup.index(">大小球</div>"))
+        self.assertEqual(popup.count("<th>初盘 \u2192 即时</th>"), 2)
+        self.assertEqual(popup.count("澳门(5)"), 2)
+        self.assertEqual(popup.count("威廉(293)"), 2)
+        self.assertIn("background: rgba(255, 255, 255, .82)", html)
+        self.assertIn(".split-table b.company-line-changed { color: #dc2626;", html)
+        self.assertNotIn(">亚盘</div>", historical)
+        self.assertEqual(row, original)
 
 
 
