@@ -3,13 +3,16 @@
 import html
 import base64
 import json
+import math
 import re
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_from_bytes
 
 from .bets import parse_kickoff, summarize_bets
+from .h2h import parse_h2h_text_rows
 from .live_links import LiveLink, live_sources
+from .odds import total_line_to_float
 from .odds_pages import (
     COMPANY_NAMES,
     PAGES_META_FILENAME,
@@ -380,10 +383,10 @@ def _split_html(row: dict, uid: str) -> str:
             label = f"{name}({cid})" if name else cid
             initial = str(item.get("initial") or "\u2014")
             current = str(item.get("current") or "\u2014")
-            init_cell = _esc(initial)
+            init_cell = f'<span class="company-line-initial">{_esc(initial)}</span>'
             cur_cell = _esc(current)
             if initial not in ("-", "\u2014") and current not in ("-", "\u2014") and initial != current:
-                init_cell = f'<b class="company-line-changed">{init_cell}</b>'
+                init_cell = f'<b class="company-line-initial">{_esc(initial)}</b>'
                 cur_cell = f'<b class="company-line-changed">{cur_cell}</b>'
             trs.append(
                 f"<tr><td>{label}</td><td>{init_cell} \u2192 {cur_cell}</td></tr>"
@@ -403,29 +406,24 @@ def _split_html(row: dict, uid: str) -> str:
     )
 
 
-def _h2h_table_html(text: str, *, league_color: str = "") -> str:
+def _h2h_table_html(
+    text: str, *, league_color: str = "", team_names: tuple[str, ...] = (),
+) -> str:
     """Render one compact row per completed historical head-to-head match."""
     rows: list[str] = []
     total_goals = 0
-    for line in str(text or "").splitlines():
-        cells = [part.strip() for part in line.split("|")]
-        if len(cells) < 10 or cells[0] in ("赛事", "赛事名"):
+    for record in parse_h2h_text_rows(text, team_names=team_names):
+        cells = record["cells"]
+        if len(cells) < 10:
             continue
-        league, date, teams, halftime = cells[:4]
+        league, date, halftime = cells[0], cells[1], cells[3]
         asian, handicap, total = cells[6:9]
         asian = re.sub(
             r"^\d+(?:\.\d+)?\s*([\u4e00-\u9fff][\u4e00-\u9fff/\uff0f\s]*)\s*\d+(?:\.\d+)?$",
             r"\1", asian,
         ).strip()
-        score_match = re.search(r"(?:[Uu]\d{2})?(\d+)\s*[:-]\s*(\d+)", teams)
-        if not score_match:
-            continue
-        full_score = f"{score_match.group(1)}:{score_match.group(2)}"
-        home = re.sub(r"^\[\d+\]\s*", "", teams[:score_match.start(1)]).strip()
-        away = re.sub(r"\s*\[\d+\]$", "", teams[score_match.end():]).strip()
-        if not home or not away or halftime.upper() == "VS":
-            continue
-        total_goals += int(score_match.group(1)) + int(score_match.group(2))
+        full_score, home, away = record["score"], record["home"], record["away"]
+        total_goals += record["goals"]
         handicap_html = _esc(handicap)
         handicap_html = re.sub(
             r"赢", '<span class="ai-tip-result-win">赢</span>', handicap_html
@@ -483,6 +481,95 @@ def _popup_team_names_text(value: str, names: dict[str, str]) -> str:
         "|".join(re.escape(name) for name in sorted(names, key=len, reverse=True))
     )
     return pattern.sub(lambda match: names[match.group()], value)
+
+
+def _total_market_view_html(row: dict, h2h_rows: list[dict]) -> str:
+    """Display a separate line-based reference without modifying AI decisions."""
+    threshold = 0.75
+    try:
+        payload = json.loads(str(row.get("payload_json") or "{}"))
+    except (json.JSONDecodeError, TypeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    average = sum(record["goals"] for record in h2h_rows) / len(h2h_rows) if h2h_rows else None
+    paragraphs = []
+    if average is None:
+        paragraphs.append("缺少有效对赛往绩，无法计算球数差值。")
+    rate_directions = []
+    history = payload.get("history") or {}
+    for side, label in (("home", "主队"), ("away", "客队")):
+        record = history.get(side) or {}
+        rate = None
+        try:
+            matches = int(record.get("matches") or 0)
+            over, under = int(record.get("over") or 0), int(record.get("under") or 0)
+            if matches > 0 and over >= 0 and under >= 0:
+                if over + under:
+                    rate = over / (over + under)
+                elif "over" not in record and "under" not in record:
+                    rate = float(record["over_rate"])
+            if rate is not None and (not math.isfinite(rate) or not 0 <= rate <= 1):
+                rate = None
+        except (KeyError, TypeError, ValueError):
+            rate = None
+        if rate is None:
+            paragraphs.append(f"{label}近期大小球率缺失。")
+        else:
+            rate_directions.append(1 if rate > 0.5 else -1 if rate < 0.5 else 0)
+            paragraphs.append(
+                f"{label}近{matches}场：大球率{rate * 100:.0f}%，"
+                f"小球率{(1 - rate) * 100:.0f}%。"
+            )
+    total = (payload.get("odds_movement") or {}).get("total") or {}
+    comparisons = []
+    has_initial = False
+    if total.get("available"):
+        snapshot = total.get("initial") or {}
+        text = str(snapshot.get("line_text") or "").strip()
+        line = None
+        try:
+            if snapshot.get("line") is not None:
+                line = float(snapshot["line"])
+            elif re.fullmatch(r"\d+(?:\.\d+)?(?:\s*[/／]\s*\d+(?:\.\d+)?)?", text):
+                line = total_line_to_float(text)
+        except (TypeError, ValueError):
+            line = None
+        if line is not None and math.isfinite(line) and line >= 0:
+            has_initial = True
+            line_text = text or f"{line:g}"
+            reference_html = ""
+            if average is None:
+                message = f"初盘 {line_text} 球；缺少对赛场均，无法比较。"
+            else:
+                gap = abs(line - average)
+                position = "低于" if line < average else "高于" if line > average else "等于"
+                message = f"初盘 {line_text} 球，{position}对赛场均 {gap:.2f} 球"
+                if gap < threshold:
+                    message = ""
+                else:
+                    direction = -1 if line < average else 1
+                    if any(value == -direction for value in rate_directions):
+                        rate_note = "近期概率与盘口参考存在分歧"
+                    elif direction in rate_directions:
+                        rate_note = "近期概率支持该方向"
+                    elif rate_directions:
+                        rate_note = "近期概率接近均衡"
+                    else:
+                        rate_note = "近期概率不足，参考需谨慎"
+                    expectation = "较低" if direction < 0 else "较高"
+                    message += (
+                        f"，达到 {threshold:g} 球阈值；{rate_note}，"
+                        f"按约定优先参考公司盘口的{expectation}进球预期："
+                    )
+                    reference = "参考小球" if direction < 0 else "参考大球"
+                    reference_html = f'<strong style="color:#dc2626">{reference}</strong>。'
+            if message:
+                comparisons.append(f"<p>{_esc(message)}{reference_html}</p>")
+    if not has_initial:
+        paragraphs.append("缺少可用公司初盘，无法比较。")
+    body = "".join(f"<p>{_esc(value)}</p>" for value in paragraphs) + "".join(comparisons)
+    return f'<section class="ai-tip-section ai-tip-market-view"><h4>盘口视角</h4>{body}</section>'
 
 
 def _lean_cell(
@@ -603,8 +690,18 @@ def _lean_cell(
             ),
             "",
         )
+    h2h_team_names = tuple(
+        str(row.get(key) or "") for key in ("home_team", "away_team")
+    ) + tuple(team_names.values())
+    h2h_rows = [
+        record for record in parse_h2h_text_rows(h2h_text, team_names=h2h_team_names)
+        if len(record["cells"]) >= 10
+    ]
     h2h_table = (
-        _h2h_table_html(h2h_text, league_color=str(row.get("league_color") or ""))
+        _h2h_table_html(
+            h2h_text, league_color=str(row.get("league_color") or ""),
+            team_names=h2h_team_names,
+        )
         if h2h_text else ""
     )
     if over_tendency and (over_confidence > 0 or h2h_table):
@@ -614,13 +711,23 @@ def _lean_cell(
             str(read.get("over_reason") or "").strip(), team_names
         )
         focus = read.get("over_focus") or {}
-        if not focus:
+        if h2h_text or not focus:
             try:
                 analysis_payload = json.loads(str(row.get("payload_json") or "{}"))
             except (json.JSONDecodeError, TypeError):
                 analysis_payload = {}
             if isinstance(analysis_payload, dict):
                 analysis_payload["team_read"] = read
+                for key in ("home_team", "away_team"):
+                    analysis_payload.setdefault(key, row.get(key) or "")
+                if h2h_table:
+                    analysis_payload["history"] = {"h2h": {"rows": h2h_rows}}
+                    analysis_payload["team_read"] = {}
+                    total = (analysis_payload.get("odds_movement") or {}).get("total") or {}
+                    if not total.get("initial") and isinstance(focus, dict):
+                        analysis_payload["odds_movement"] = {
+                            "total": {"initial": {"line": focus.get("opening_line")}}
+                        }
                 from .llm import over_goal_focus
 
                 focus = over_goal_focus(analysis_payload)
@@ -647,6 +754,7 @@ def _lean_cell(
                 f'<section class="ai-tip-section"><h4>模型理由</h4>{focus_note}'
                 f'<p class="ai-tip-model-reason">{_esc(over_reason)}</p></section>'
             )
+        tooltip_sections.append(_total_market_view_html(row, h2h_rows))
         if h2h_table:
             tooltip_sections.append(
                 f'<section class="ai-tip-section"><h4>对赛往绩</h4>{h2h_table}</section>'
@@ -659,9 +767,10 @@ def _lean_cell(
                 f' aria-label="{html.escape(over_tendency + over_conf + "，大小球分析依据", quote=True)}"'
             )
             tooltip = (
-                '<template class="ai-tip-content"><div class="ai-tip-title">大小球分析依据</div>'
+                '<template class="ai-tip-content"><div class="ai-tip-total">'
+                '<div class="ai-tip-title">大小球分析依据</div>'
                 + "".join(tooltip_sections)
-                + "</template>"
+                + "</div></template>"
             )
         parts.append(
             f'<div class="model-lean{over_style}"><span class="model-lean-tip"{tip_attrs}>'
@@ -2282,6 +2391,11 @@ def render_query_html(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#16705a">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" href="/pwa/icon-192.png">
+  <link rel="apple-touch-icon" href="/pwa/icon-192.png">
+  <script src="/pwa/app.js" defer></script>
   <title>足彩分析系统{_esc(__version__)}</title>
   <style>
     :root {{
@@ -2294,7 +2408,14 @@ def render_query_html(
     body {{ margin: 0; background: var(--canvas); color: var(--ink); font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 14px; }}
     .page {{ max-width: 1360px; margin: 0 auto; padding: 26px 20px 54px; }}
     h1 {{ margin: 4px 0 6px; font-size: 28px; }}
-    .page-title {{ display: flex; align-items: center; gap: 10px; }}
+    .page-title {{ display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }}
+    .page-title span {{ overflow-wrap: anywhere; }}
+    .pwa-actions [hidden], .pwa-connection[hidden] {{ display: none !important; }}
+    .pwa-actions {{ display: flex; gap: 8px; margin-left: auto; }}
+    .pwa-actions button {{ width: 40px; height: 40px; padding: 8px; border-radius: 6px; background: white; color: var(--green); }}
+    .pwa-actions svg {{ width: 22px; height: 22px; }}
+    .pwa-connection {{ margin-top: 12px; padding: 8px 10px; background: #fff8e8; color: #8a5a08; border-left: 3px solid #b45309; font-size: 13px; }}
+    .meta {{ overflow-wrap: anywhere; }}
     .app-logo {{ width: 40px; height: 40px; object-fit: contain; }}
     .meta, .muted {{ color: var(--muted); }}
     .data-freshness {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--muted); font-size: 12px; }}
@@ -2385,6 +2506,12 @@ def render_query_html(
     .h2h-table th {{ background: #f8fafc; color: #475569; font-weight: 700; }}
     .h2h-table tbody tr:nth-child(odd) {{ background: #fff; }}
     .h2h-table tbody tr:nth-child(even) {{ background: #f8fafc; }}
+    .ai-tip-total {{ line-height: 1.35; }}
+    .ai-tip-total .ai-tip-title {{ margin-bottom: 5px; }}
+    .ai-tip-total .ai-tip-section + .ai-tip-section {{ margin-top: 5px; padding-top: 4px; }}
+    .ai-tip-total .ai-tip-section h4 {{ margin-bottom: 2px; }}
+    .ai-tip-total .ai-tip-focus {{ margin-bottom: 4px; padding: 4px 6px; }}
+    .ai-tip-total .h2h-table th, .ai-tip-total .h2h-table td {{ padding: 3px 6px; }}
     .h2h-block {{ display: grid; gap: 8px; }}
     .h2h-summary {{ display: flex; flex-wrap: wrap; gap: 8px 14px; color: #475569; font-size: 12px; font-weight: 700; }}
     .ai-tip-result-win {{ color: #dc2626; font-weight: 700; }}
@@ -2546,6 +2673,7 @@ def render_query_html(
   .split-table th {{ padding: 3px 10px 5px 0; background: transparent; color: var(--muted); font-weight: 600; text-align: left; white-space: nowrap; }}
   .split-table td {{ padding: 3px 10px 3px 0; border-top: 1px solid var(--line); color: #2b3644; white-space: nowrap; }}
   .split-table td:last-child {{ text-align: right; font-variant-numeric: tabular-nums; }}
+  .split-table .company-line-initial {{ color: #000; }}
   .split-table b.company-line-changed {{ color: #dc2626; font-weight: 700; }}
     .no-alert {{ padding: 18px 16px; color: var(--green); background: var(--green-soft); }}
     .table-scroll {{ overflow-x: auto; border: 1px solid var(--line); border-radius: 8px; }}
@@ -2556,6 +2684,11 @@ def render_query_html(
       .bets-table {{ min-width: 820px; }}
       .bets-head {{ align-items: flex-start; }}
     }}
+    @media (max-width: 640px) {{
+      h1 {{ font-size: 22px; }}
+      .query-toolbar input, .query-toolbar select, .query-toolbar > button {{ min-height: 44px; }}
+      .query-toolbar {{ padding: 10px; gap: 8px; }}
+    }}
   </style>
 </head>
 <body>
@@ -2563,7 +2696,12 @@ def render_query_html(
     <h1 class="page-title">
       {f'<img class="app-logo" src="{_LOGO_DATA_URI}" alt="">' if _LOGO_DATA_URI else ''}
       <span>足彩分析系统{_esc(__version__)}</span>
+      <span class="pwa-actions">
+        <button type="button" id="pwa-install-btn" hidden title="安装到桌面" aria-label="安装到桌面"><svg aria-hidden="true"><use href="#icon-download"></use></svg></button>
+        <button type="button" id="pwa-logout-btn" hidden title="退出登录" aria-label="退出登录"><svg aria-hidden="true"><use href="#icon-x"></use></svg></button>
+      </span>
     </h1>
+    <div id="pwa-connection" class="pwa-connection" role="status" hidden></div>
     <div class="meta">数据库：{_esc(db_path)}　生成时间：{_esc(generated_at)}</div>
     {f'<div class="meta muted">当前服务端口：{_esc(port)}</div>' if port else ''}
     {f'<div class="meta">{bet_chip}</div>' if bet_chip else ''}

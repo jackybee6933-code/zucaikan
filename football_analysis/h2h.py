@@ -14,6 +14,40 @@ NOWSCORE_ANALYSIS_URL = "https://m.nowscore.com/Analy/Analysis/{match_id}.htm"
 BF_NEXT_URL = "https://bf.titan007.com/football/Next_{yyyymmdd}.htm"
 
 
+def parse_h2h_text_rows(text: str, *, team_names: tuple[str, ...] = ()) -> list[dict]:
+    """Read completed scores without treating team-name suffixes as goals."""
+    rows = []
+    names = "|".join(
+        re.escape(name) for name in sorted(set(team_names), key=len, reverse=True) if name
+    )
+    for line in str(text or "").splitlines():
+        cells = [part.strip() for part in line.split("|")]
+        if len(cells) < 3 or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", cells[1]):
+            continue
+        if len(cells) > 3 and cells[3].upper() == "VS":
+            continue
+        teams = re.sub(r"^\[\d+\]\s*", "", cells[2])
+        score = (
+            re.match(rf"(?:{names})\s*(\d+)\s*[-:：]\s*(\d+)", teams)
+            if names else None
+        )
+        if score is None:
+            score = re.search(r"(?:[Uu]\d{2})?(\d+)\s*[-:：]\s*(\d+)", teams)
+        if score is None:
+            continue
+        home = teams[:score.start(1)].strip()
+        away = re.sub(r"\s*\[\d+\]$", "", teams[score.end():]).strip()
+        if not home or not away:
+            continue
+        home_score, away_score = int(score.group(1)), int(score.group(2))
+        rows.append({
+            "cells": cells, "home": home, "away": away,
+            "score": f"{home_score}:{away_score}",
+            "goals": home_score + away_score,
+        })
+    return rows
+
+
 def _clean_team_html(value: object) -> str:
     if not isinstance(value, str):
         return ""

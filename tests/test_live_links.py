@@ -9,6 +9,7 @@ import requests
 
 from football_analysis.live_links import (
     _collect_crzb_links,
+    _collect_huakang_links,
     _collect_links,
     _fetch_crzb_json,
     _fetch_huakang_json,
@@ -151,6 +152,69 @@ class LiveLinkParserTests(unittest.TestCase):
             body,
         )
         self.assertIn('alt="直播"', body)
+
+
+class FeimaTeamAliasTests(unittest.TestCase):
+    def cases(self):
+        return (
+            ("6", "AC米兰", "弗洛西诺", "弗洛西诺尼", "費辛隆尼", 2993865, 23, 1),
+            ("8", "巴萨", "比利亚雷", "比利亚雷亚尔", "維拉利爾", 3013764, 22, 21),
+        )
+
+    def test_26168_short_names_match_feima_and_keep_all_anchors(self):
+        for number, home, away, full_away, traditional, match_id, day, hour in self.cases():
+            rows = [{"match_no": number, "home_team": home, "away_team": away,
+                     "match_time": f"11-{day:02} {hour:02}:00"}]
+            for away_name in (full_away, traditional):
+                match = {
+                    "tournament_id": match_id,
+                    "home_name_zh": "AC米兰" if number == "6" else "巴塞罗那",
+                    "away_name_zh": away_name,
+                    "match_time_int": int(datetime(
+                        2026, 11, day, hour, tzinfo=timezone(timedelta(hours=8))
+                    ).timestamp()),
+                    "is_zb": 1,
+                }
+                anchors = {"more": [
+                    {"tournament_id": match_id, "tournament_type": 1,
+                     "member_id": member, "username": f"主播 {member}"}
+                    for member in (133, 1700)
+                ]}
+                with self.subTest(number=number, name=away_name), patch(
+                    "football_analysis.live_links._fetch_huakang_json",
+                    side_effect=[[match], anchors],
+                ), patch("football_analysis.live_links._collect_crzb_links") as backup:
+                    links = _collect_links(rows, "26168")
+                    self.assertEqual(links.get(number), [
+                        {"name": f"主播 {member}",
+                         "url": f"https://www.fmtg2f.com/detail/1/{match_id}/{member}"}
+                        for member in (133, 1700)
+                    ])
+                    backup.assert_not_called()
+
+    def test_26168_aliases_do_not_match_other_teams(self):
+        for number, home, away, full_away, _, match_id, day, hour in self.cases():
+            names = (full_away + "女足", full_away + "U21", full_away + "B")
+            if number == "8":
+                names += ("比利亚罗夫莱多",)
+            for wrong_name in names:
+                rows = [{"match_no": number, "home_team": home, "away_team": away,
+                         "match_time": f"11-{day:02} {hour:02}:00"}]
+                match = {
+                    "tournament_id": match_id,
+                    "home_name_zh": "AC米兰" if number == "6" else "巴塞罗那",
+                    "away_name_zh": wrong_name,
+                    "match_time_int": int(datetime(
+                        2026, 11, day, hour, tzinfo=timezone(timedelta(hours=8))
+                    ).timestamp()),
+                    "is_zb": 1,
+                }
+                with self.subTest(number=number, name=wrong_name), patch(
+                    "football_analysis.live_links._fetch_huakang_json",
+                    return_value=[match],
+                ) as fetch:
+                    self.assertEqual(_collect_huakang_links(rows), {})
+                    fetch.assert_called_once()
 
 
 class CrzbLiveLinkTests(unittest.TestCase):

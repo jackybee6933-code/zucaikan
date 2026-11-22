@@ -398,9 +398,30 @@ class SplitRenderTests(unittest.TestCase):
         self.assertIn("1484", html)
         self.assertIn("<th>初盘 \u2192 即时</th>", html)
         self.assertIn(
-            '<td><b class="company-line-changed">3.5</b> \u2192 '
+            '<td><b class="company-line-initial">3.5</b> \u2192 '
             '<b class="company-line-changed">2.5</b></td>',
             html,
+        )
+
+    def test_opening_lines_use_black_style_for_both_markets(self):
+        for market, initial, current in (
+            ("亚盘", "半球", "一球"),
+            ("大小球", "2.5", "3"),
+        ):
+            with self.subTest(market=market):
+                block = {"market": market, "rows": [
+                    {"cid": "5", "initial": initial, "current": current},
+                    {"cid": "293", "initial": initial, "current": initial},
+                    {"cid": "4", "initial": "—", "current": current},
+                ]}
+                html = _split_html({"split": [block]}, "sp-black")
+                self.assertEqual(html.count('class="company-line-initial"'), 3)
+                self.assertEqual(html.count('class="company-line-changed"'), 1)
+        page = render_query_html([], issues=[])
+        self.assertIn(".split-table .company-line-initial { color: #000; }", page)
+        self.assertIn(
+            ".split-table b.company-line-changed { color: #dc2626; font-weight: 700; }",
+            page,
         )
 
     def test_html_does_not_highlight_unchanged_picked_company(self):
@@ -408,7 +429,10 @@ class SplitRenderTests(unittest.TestCase):
         block["rows"][0]["current"] = "3.5"
         html = _split_html({"split": [block]}, "sp-2")
         self.assertNotIn("<b>", html)
-        self.assertIn("<td>威廉(293)</td><td>3.5 \u2192 3.5</td>", html)
+        self.assertIn(
+            '<td>威廉(293)</td><td><span class="company-line-initial">3.5</span> \u2192 3.5</td>',
+            html,
+        )
 
     def test_macau_is_red_only_when_its_own_market_line_changes(self):
         for market, initial, changed in (
@@ -423,22 +447,28 @@ class SplitRenderTests(unittest.TestCase):
                     html = _split_html({"split": [block]}, "sp-macau")
                     self.assertEqual(
                         html.count('class="company-line-changed"'),
-                        0 if current == initial else 2,
+                        0 if current == initial else 1,
                     )
                     if current == initial:
                         self.assertNotIn("<b", html)
-                        self.assertIn(f"<td>{initial} \u2192 {current}</td>", html)
+                        self.assertIn(
+                            f'<td><span class="company-line-initial">{initial}</span> \u2192 {current}</td>',
+                            html,
+                        )
 
-    def test_html_marks_only_changed_initial_and_current_lines_red(self):
+    def test_html_marks_only_changed_current_lines_red(self):
         block = {"market": "亚盘", "picked": "5", "rows": [
             {"cid": "5", "name": "澳门", "initial": "平手/半球", "current": "平手/半球"},
             {"cid": "3", "name": "B*****", "initial": "半球", "current": "平手/半球"},
             {"cid": "1484", "name": "o***", "initial": "平手", "current": "半球/一球"},
         ]}
         html = _split_html({"split": [block]}, "sp-changed")
-        self.assertEqual(html.count('class="company-line-changed"'), 4)
-        self.assertIn("<td>平手/半球 \u2192 平手/半球</td>", html)
-        self.assertIn('<b class="company-line-changed">半球</b>', html)
+        self.assertEqual(html.count('class="company-line-changed"'), 2)
+        self.assertIn(
+            '<td><span class="company-line-initial">平手/半球</span> \u2192 平手/半球</td>',
+            html,
+        )
+        self.assertIn('<b class="company-line-initial">半球</b>', html)
         self.assertIn('<b class="company-line-changed">半球/一球</b>', html)
 
     def test_html_missing_line_is_not_marked_as_changed(self):
@@ -469,7 +499,7 @@ class SplitRenderTests(unittest.TestCase):
         ]}
         html = _split_html({"split": [block]}, "sp-8")
         self.assertIn(">盘口明细</div>", html)
-        self.assertIn("<td>平手 \u2192 平手</td>", html)
+        self.assertIn('<td><span class="company-line-initial">平手</span> \u2192 平手</td>', html)
 
     def test_html_renders_each_market_block(self):
         blocks = [
@@ -486,7 +516,7 @@ class SplitRenderTests(unittest.TestCase):
         self.assertLess(html.index(">亚盘</div>"), html.index(">大小球</div>"))
         self.assertEqual(html.count("<th>初盘 \u2192 即时</th>"), 2)
         self.assertIn(
-            '<b class="company-line-changed">让两球</b> \u2192 '
+            '<b class="company-line-initial">让两球</b> \u2192 '
             '<b class="company-line-changed">让两球半</b>',
             html,
         )

@@ -178,6 +178,8 @@ def build_parser() -> argparse.ArgumentParser:
     query.add_argument("--limit", type=int, default=200, help="最多返回条数")
     query.add_argument("--output-dir", default="reports", help="查询 HTML 输出目录")
     query.add_argument("--serve", action="store_true", help="启动本地查询页")
+    query.add_argument("--host", default="127.0.0.1", help="监听地址；远程访问需配置 FOOTBALL_ACCESS_PASSWORD")
+    query.add_argument("--public-url", default="", help="HTTPS 反向代理根地址，如 https://football.example")
     query.add_argument("--port", type=int, default=DEFAULT_QUERY_PORT, help="查询页端口")
     query.add_argument("--no-open", action="store_true", help="启动查询页时不自动打开浏览器")
     query.add_argument("--refresh-scores", action="store_true", help="先刷新指定期的最终比分再输出")
@@ -1208,8 +1210,17 @@ def _run_analyze_then_serve(parser: argparse.ArgumentParser) -> int:
 def _run_query(args: argparse.Namespace) -> int:
     db_path = _resolve_db_path(args.db_path)
     if args.serve:
+        access_password = os.environ.get("FOOTBALL_ACCESS_PASSWORD", "")
+        from .web_access import QueryAccess
+        try:
+            QueryAccess(args.host, access_password, args.public_url)
+        except ValueError as exc:
+            print(f"查询服务未启动：{exc}")
+            return 1
         auto_clean_cache(_default_cache_dir())
-        serve_query(db_path, port=args.port, open_browser=not args.no_open, reports_dir=Path(args.output_dir))
+        serve_query(db_path, host=args.host, port=args.port, open_browser=not args.no_open,
+                    reports_dir=Path(args.output_dir), default_issue=args.issue,
+                    access_password=access_password, public_url=args.public_url)
         return 0
     rows = query_movements(
         db_path,

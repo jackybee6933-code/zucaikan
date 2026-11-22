@@ -19,6 +19,27 @@ from football_analysis.store import (
     update_team_reads,
 )
 
+_SCHALKE_H2H = (
+    "赛事 | 比赛日期 | 主队比分客队 | 半场 | 赛果 | 欧指 | 亚盘 | 盘路 | 大小 | 备注\n"
+    "德甲 | 2026-11-22 | [17]沙尔克04VS斯图加特[8] | VS | - | odds | line | - | - | -\n"
+    "德甲 | 2023-02-26 | [18]沙尔克042-1斯图加特[15] | 2-0 | 胜 | odds | line | 赢 | 大 | -\n"
+    "德甲 | 2022-09-03 | [12]斯图加特1-1沙尔克04[16] | 1-1 | 平 | odds | line | 赢 | 小 | -\n"
+    "德甲 | 2021-02-27 | [10]斯图加特5-1沙尔克04[18] | 3-1 | 负 | odds | line | 输 | 大 | -\n"
+    "德甲 | 2020-10-31 | [17]沙尔克041-1斯图加特[5] | 1-0 | 平 | odds | line | 赢 | 小 | -\n"
+    "德甲 | 2019-05-18 | [15]沙尔克040-0斯图加特[16] | 0-0 | 平 | odds | line | 输 | 小 | -\n"
+    "德甲 | 2018-12-22 | [16]斯图加特1-3沙尔克04[14] | 0-1 | 胜 | odds | line | 赢 | 大 | -"
+)
+
+_COVENTRY_H2H = (
+    "赛事 | 比赛日期 | 主队比分客队 | 半场 | 赛果 | 欧指 | 亚盘 | 盘路 | 大小 | 备注\n"
+    "英超 | 2026-11-21 | 考文垂VS水晶宫 | VS | - | odds | line | - | - | -\n"
+    "英冠 | 2012-03-07 | 考文垂1-1水晶宫 | 0-1 | 平 | odds | line | 走 | 小 | -\n"
+    "英冠 | 2011-08-17 | 水晶宫2-1考文垂 | 0-0 | 负 | odds | line | 输 | 大 | -\n"
+    "英冠 | 2011-02-12 | 考文垂2-1水晶宫 | 1-0 | 胜 | odds | line | 赢 | 大 | -\n"
+    "英足总杯 | 2011-01-08 | 考文垂2-1水晶宫 | 2-0 | 胜 | odds | line | 赢 | 大 | -\n"
+    "英冠 | 2010-11-13 | 水晶宫2-0考文垂 | 1-0 | 负 | odds | line | 输 | 小 | -"
+)
+
 
 def _analysis(**over) -> dict:
     base = {
@@ -161,6 +182,51 @@ class PromptTests(unittest.TestCase):
         self.assertIn("重点提示：大小球开盘 2.5 球", prompt)
         self.assertIn("相差 0.50 球", prompt)
 
+    def test_numeric_team_suffix_uses_all_completed_h2h_scores(self):
+        analysis = _analysis(
+            home_team="沙尔克04",
+            away_team="斯图加特",
+            history={},
+            team_read={"source_references": {"交战历史": _SCHALKE_H2H}},
+            odds_movement={"total": {"initial": {"line": 3.25}}},
+        )
+        summary = llm._h2h_goal_summary(analysis)
+        self.assertEqual(summary["matches"], 6)
+        self.assertAlmostEqual(summary["average"], 17 / 6)
+        self.assertIsNone(llm.over_goal_focus(analysis))
+        prompt = llm.build_team_read_prompt(analysis)
+        self.assertIn("近期对赛场均总进球：2.83", prompt)
+        self.assertNotIn("重点提示：", prompt)
+        self.assertNotIn("26.60", prompt)
+
+    def test_h2h_goal_summary_skips_unfinished_and_preserves_youth_suffix(self):
+        analysis = _analysis(history={}, team_read={"source_references": {
+            "交战历史": (
+                "青年赛 | 2026-11-22 | HomeU212-1Away | VS | -\n"
+                "青年赛 | 2026-05-01 | HomeU212-0Away | 1-0 | 胜\n"
+                "青年赛 | 2026-04-01 | HomeU211-1Away | 0-1 | 平\n"
+                "青年赛 | 2026-03-01 | Away0-2HomeU21 | 0-1 | 胜"
+            ),
+        }})
+        self.assertEqual(llm._h2h_goal_summary(analysis), {"matches": 3, "average": 2.0})
+
+    def test_page_h2h_prevents_false_no_history_prompt(self):
+        analysis = _analysis(home_team="考文垂", away_team="水晶宫", history={})
+        for count, average in ((1, "2.00"), (2, "2.50"), (5, "2.60")):
+            with self.subTest(count=count):
+                page = "## 考文垂 VS 水晶宫 对战历史\n" + "\n".join(
+                    _COVENTRY_H2H.splitlines()[:count + 2]
+                )
+                prompt = llm.build_team_read_prompt(analysis, page)
+                self.assertNotIn("历史交锋：无记录", prompt)
+                self.assertIn(f"历史交锋：已提供 {count} 场有效比分", prompt)
+                self.assertIn(f"近期对赛场均总进球：{average}", prompt)
+                self.assertIn("2012-03-07", prompt)
+                if count < 3:
+                    analysis["odds_movement"]["total"] = {"initial": {"line": 5}}
+                    self.assertIsNone(llm.over_goal_focus(analysis, page))
+        self.assertIn("不能写成“无交锋记录”", llm.TEAM_READ_SYSTEM_PROMPT)
+
 
 class ParseTests(unittest.TestCase):
     def test_accepts_plain_fenced_and_embedded_json(self):
@@ -289,6 +355,16 @@ class _StubReader:
 
 
 class EnrichTests(unittest.TestCase):
+    def test_records_h2h_input_count_before_attaching_display_references(self):
+        analysis = _analysis(home_team="考文垂", away_team="水晶宫", history={})
+        items = [analysis]
+        llm.enrich_team_reads(
+            items, reader=_StubReader(), pace=0,
+            page_texts=["## 对战历史\n" + _COVENTRY_H2H],
+            source_references=[{"对战历史": "\n".join(_COVENTRY_H2H.splitlines()[:-1])}],
+        )
+        self.assertEqual(items[0]["team_read"]["h2h_input_matches"], 5)
+
     def test_manual_analysis_logs_each_match_completion_and_skip(self):
         items = [_analysis(match_no="1"), _analysis(match_no="2")]
         with tempfile.TemporaryDirectory() as tmp, mock.patch(
@@ -345,7 +421,7 @@ class EnrichTests(unittest.TestCase):
             db = Path(tmp) / "test.sqlite"
             save_issue_movements(db, items, "26156")
             row = query_movements(db, issue="26156")[0]
-        self.assertEqual(json.loads(row["team_read"]), result)
+        self.assertEqual(json.loads(row["team_read"]), {**result, "h2h_input_matches": 1})
         rendered = _lean_cell(row)
         self.assertIn("客队赢盘 45%", rendered)
         self.assertIn("小球 40%", rendered)
@@ -468,7 +544,7 @@ class ShujuTextTests(unittest.TestCase):
         self.assertEqual(odds_pages.shuju_text(raw, "3"), "")
         self.assertEqual(odds_pages.shuju_text(raw, "9"), "")
 
-    def test_references_are_separate_from_analysis_text(self):
+    def test_recommendations_are_excluded_but_h2h_facts_enter_analysis_text(self):
         raw = {
             "1|shuju": {
                 "status": "ok",
@@ -487,7 +563,7 @@ class ShujuTextTests(unittest.TestCase):
         analysis = odds_pages.shuju_analysis_text(raw, "1")
         self.assertIn("近期战绩", analysis)
         self.assertNotIn("主队赢盘", analysis)
-        self.assertNotIn("主队 3胜1平", analysis)
+        self.assertIn("主队 3胜1平", analysis)
         self.assertNotIn("主队近期状态较好", analysis)
 
     def test_references_capture_fixture_specific_h2h_heading(self):
@@ -507,7 +583,23 @@ class ShujuTextTests(unittest.TestCase):
         analysis = odds_pages.shuju_analysis_text(raw, "1")
 
         self.assertEqual(refs["对战历史"], "2026-04-13 Home 2-0 Away")
-        self.assertNotIn("2-0", analysis)
+        self.assertIn("2-0", analysis)
+
+    def test_h2h_input_preserves_the_displayed_rows_and_skips_recommendations(self):
+        raw = {"1|shuju": {"status": "ok", "text": (
+            "## 考文垂 VS 水晶宫 对战历史\n" + _COVENTRY_H2H
+            + "\n## 推介\n推荐秘密文本\n## 分析\n第三方主观看法\n## 近期战绩\n近况资料"
+        )}}
+        refs = odds_pages.shuju_references(raw, "1")
+        text = odds_pages.shuju_analysis_text(raw, "1")
+        self.assertIn(refs["对战历史"], text)
+        self.assertNotIn("推荐秘密文本", text)
+        self.assertNotIn("第三方主观看法", text)
+        prompt = llm.build_team_read_prompt(
+            _analysis(home_team="考文垂", away_team="水晶宫", history={}), text
+        )
+        self.assertNotIn("历史交锋：无记录", prompt)
+        self.assertIn("历史交锋：已提供 5 场有效比分", prompt)
 
     def test_only_h2h_references_preserve_table_rows(self):
         raw = {
@@ -1090,6 +1182,55 @@ class StoreAndReportTests(unittest.TestCase):
         )
         rendered = _lean_cell(row)
         self.assertIn("开盘 4.25 球；近 5 场对赛均值 3.60 球，差 0.65 球。", rendered)
+
+    def test_over_focus_uses_displayed_h2h_instead_of_stale_ai_snapshot(self):
+        for opening, expected in (
+            (3.25, ""),
+            (4.0, "开盘 4 球；近 6 场对赛均值 2.83 球，差 1.17 球。"),
+        ):
+            with self.subTest(opening=opening):
+                row = _analysis(
+                    home_team="沙尔克04",
+                    away_team="斯图加特",
+                    team_read=json.dumps({
+                        "over_tendency": "大球",
+                        "over_confidence": 0.6,
+                        "over_focus": {
+                            "opening_line": 3.25, "h2h_average": 26.6,
+                            "h2h_matches": 5, "gap": 23.35,
+                        },
+                        "source_references": {"交战历史": "旧的截断数据"},
+                    }, ensure_ascii=False),
+                    payload_json=json.dumps({
+                        "home_team": "沙尔克04", "away_team": "斯图加特",
+                        "home_team_cantonese": "史浩克零四",
+                        "away_team_cantonese": "史特加",
+                        "history": {"h2h": {"rows": [{"score": "42-1"}] * 5}},
+                        "odds_movement": {"total": {"initial": {"line": opening}}},
+                    }, ensure_ascii=False),
+                )
+                rendered = _lean_cell(row, h2h_score=_SCHALKE_H2H)
+                self.assertIn(
+                    "<span>6 场交锋</span><span>总进球 17</span><span>场均进球 2.8</span>",
+                    rendered,
+                )
+                self.assertNotIn("26.60", rendered)
+                if expected:
+                    self.assertIn(expected, rendered)
+                else:
+                    self.assertNotIn('class="ai-tip-focus"', rendered)
+                    self.assertNotIn("over-gap-high", rendered)
+                    self.assertNotIn("over-gap-watch", rendered)
+
+    def test_h2h_table_preserves_numeric_team_suffix_without_alias(self):
+        rendered = _h2h_table_html(
+            _SCHALKE_H2H, team_names=("沙尔克04", "斯图加特")
+        )
+        self.assertIn("<td>沙尔克04</td><td>2:1</td><td>斯图加特</td>", rendered)
+        self.assertIn(
+            "<span>6 场交锋</span><span>总进球 17</span><span>场均进球 2.8</span>",
+            rendered,
+        )
 
     def test_over_tendency_hovers_h2h_score_popup(self):
         h2h = (

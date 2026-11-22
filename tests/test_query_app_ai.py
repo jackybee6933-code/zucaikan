@@ -59,7 +59,10 @@ class FixtureIdFallbackTests(unittest.TestCase):
         """run_ai_analyze 里是局部 import，必须 patch 源模块的函数对象。"""
         captured: dict = {}
 
-        def fake_enrich(items, *, reader, page_texts, pace=4.0, progress_path=None, issue=""):
+        def fake_enrich(
+            items, *, reader, page_texts, source_references=None,
+            pace=4.0, progress_path=None, issue="",
+        ):
             captured["n_items"] = len(items)
             captured["non_empty"] = sum(1 for t in page_texts if t)
             captured["page_texts"] = list(page_texts)
@@ -153,6 +156,34 @@ class FixtureIdFallbackTests(unittest.TestCase):
         enrich.assert_not_called()
         update.assert_not_called()
         self.assertIn("均在一小时有效期内，已跳过", result)
+
+    def test_old_result_without_h2h_input_is_not_reused(self):
+        raw = _raw_shuju(1)
+        raw["7000000|shuju"]["text"] = (
+            "## 主 VS 客 对战历史\n"
+            "联赛 | 2020-01-01 | 主1-1客 | 0-0 | 平\n"
+            "联赛 | 2019-01-01 | 主2-1客 | 1-0 | 胜\n"
+            "联赛 | 2018-01-01 | 客2-0主 | 0-0 | 负"
+        )
+        for count, reanalyze in ((None, True), (2, True), (3, False)):
+            with self.subTest(count=count):
+                analyses = _analyses(1)
+                analyses[0]["team_read"] = {
+                    "tendency": "主队赢盘", "analyzed_at": time.time() - 60,
+                    "over_reason": "无交锋记录" if reanalyze else "交锋年代较早",
+                }
+                if count is not None:
+                    analyses[0]["team_read"]["h2h_input_matches"] = count
+                patches, captured = self._patch_all(raw, analyses)
+                with patches[0], patches[1], patches[2], patches[3] as enrich, \
+                     patches[4], patches[5], patches[6] as scrape, patches[7]:
+                    run_ai_analyze("26135", db_path=self.db)
+                scrape.assert_not_called()
+                if reanalyze:
+                    self.assertEqual(captured["match_nos"], ["1"])
+                    self.assertIn("2019-01-01", captured["page_texts"][0])
+                else:
+                    enrich.assert_not_called()
 
     def test_expired_result_is_reanalyzed_without_refetching_fresh_page(self):
         analyses = _analyses(1)

@@ -133,6 +133,7 @@ def shuju_text(raw: dict, fixture_id: str) -> str:
 
 
 _H2H_HEADINGS = ("对赛成绩", "对战历史", "交战历史")
+_RECOMMENDATION_HEADINGS = ("推介", "心水推荐", "分析")
 _REFERENCE_HEADINGS = ("推介", "心水推荐", *_H2H_HEADINGS, "分析")
 
 
@@ -157,7 +158,7 @@ def _shuju_sections(text: str, *, preserve_lines: bool = False) -> list[tuple[st
 
 
 def shuju_references(raw: dict, fixture_id: str) -> dict[str, str]:
-    """Extract display-only 500-page references; these are never model input."""
+    """Extract popup references; factual H2H records also enter model input."""
     found: dict[str, str] = {}
     for heading, body in _shuju_sections(shuju_text(raw, fixture_id), preserve_lines=True):
         matched = next((name for name in _REFERENCE_HEADINGS if name in heading), None)
@@ -173,14 +174,18 @@ def shuju_analysis_text(raw: dict, fixture_id: str) -> str:
     text = shuju_text(raw, fixture_id)
     if not text:
         return ""
-    sections = _shuju_sections(text)
+    sections = _shuju_sections(text, preserve_lines=True)
     if not sections:
         return text[:9000]
-    kept = [
-        f"## {heading}\n{body}"
-        for heading, body in sections
-        if not any(name in heading for name in _REFERENCE_HEADINGS)
-    ]
+    kept = []
+    for heading, body in sections:
+        if any(name in heading for name in _RECOMMENDATION_HEADINGS):
+            continue
+        if any(name in heading for name in _H2H_HEADINGS):
+            body = body[:800]
+        else:
+            body = re.sub(r"\s+", " ", body).strip()
+        kept.append(f"## {heading}\n{body}")
     return "\n".join(kept)[:9000]
 
 

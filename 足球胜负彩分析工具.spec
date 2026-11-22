@@ -8,6 +8,7 @@ a = Analysis(
     datas=[
         ('football_analysis/assets/football_logo.jpeg', 'football_analysis/assets'),
         ('football_analysis/assets/football_ball.gif', 'football_analysis/assets'),
+        ('football_analysis/assets/pwa', 'football_analysis/assets/pwa'),
     ],
     hiddenimports=['football_analysis.cdp', 'football_analysis.cdp_profile',
                    'football_analysis.scrape_odds_pages', 'football_analysis.titan_scrape',

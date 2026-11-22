@@ -41,6 +41,8 @@ from .open_browser import open_in_chrome
 from .pipeline import analyze_issue
 from .report_index import build_issue_report_index
 from .query_report import render_query_html
+from .pwa import serve_pwa_asset
+from .web_access import QueryAccess
 from .store import (
     default_db_path,
     latest_captured_at,
@@ -163,7 +165,7 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
     CDP-Chrome scrape path as "刷新盘口分歧" (off-screen window, auto-revealed
     only when a human checkbox is required).
     """
-    from .llm import TeamReader, enrich_team_reads
+    from .llm import TeamReader, _h2h_goal_summary, enrich_team_reads
     from .cdp_profile import shutdown_cdp_chrome
     from .odds_pages import (
         PAGES_STALE_HOURS,
@@ -259,22 +261,26 @@ def run_ai_analyze(issue: str, *, db_path: str | Path = "") -> str:
         page = raw.get(f"{fid}|shuju") or {}
         if not page_is_fresh(page, shuju_age):
             continue
+        page_text = shuju_analysis_text(raw, fid)
+        input_analysis = {key: value for key, value in analysis.items() if key != "team_read"}
+        h2h_summary = _h2h_goal_summary(input_analysis, page_text)
         read = analysis.get("team_read") or {}
         try:
             analyzed_at = float(read.get("analyzed_at") or 0)
             source_time = float(page.get("captured_at") or 0)
             reusable = (bool(read.get("tendency") or read.get("over_tendency"))
                         and 0 <= time.time() - analyzed_at <= PAGES_STALE_HOURS * 3600
-                        and analyzed_at >= source_time)
+                        and analyzed_at >= source_time
+                        and (not h2h_summary
+                             or read.get("h2h_input_matches") == h2h_summary["matches"]))
         except (TypeError, ValueError, AttributeError):
             reusable = False
         if reusable:
             reused += 1
             continue
-        page_text = shuju_analysis_text(raw, fid)
         if not page_text:
             continue
-        pending.append({key: value for key, value in analysis.items() if key != "team_read"})
+        pending.append(input_analysis)
         page_texts.append(page_text)
         references.append(shuju_references(raw, fid))
     if reused == len(analyses) and reused:
@@ -591,7 +597,10 @@ def serve_query(
     open_browser: bool = True,
     reports_dir: str | Path | None = None,
     default_issue: str = "",
+    access_password: str = "",
+    public_url: str = "",
 ) -> None:
+    access = QueryAccess(host, access_password, public_url)
     db_path = str(Path(db_path))
     settings_path = Path(db_path).parent / "llm_settings.json"
     reports_dir = Path(reports_dir) if reports_dir else Path(db_path).parent.parent / "reports"
@@ -862,6 +871,13 @@ def serve_query(
             refresh_live_state["error"] = f"直播刷新失败：{exc}"
 
     class Handler(BaseHTTPRequestHandler):
+        def end_headers(self) -> None:
+            self.send_header("Cache-Control", getattr(self, "_cache_policy", "no-store"))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "same-origin")
+            self.send_header("X-Frame-Options", "SAMEORIGIN")
+            super().end_headers()
+
         def _json(self, status: int, payload: dict) -> None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             self.send_response(status)
@@ -872,6 +888,8 @@ def serve_query(
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+            if serve_pwa_asset(self, parsed.path) or access.handle(self, "GET"):
+                return
             if parsed.path == "/health":
                 self._json(200, {"status": "ok", "version": __version__})
                 return
@@ -1110,6 +1128,8 @@ def serve_query(
                     bet_trend=bet_trend_rows,
                     cache_dir=cache_dir,
                 )
+            if access.enabled:
+                html = html.replace("<body>", '<body data-access-protected="true">', 1)
             payload = html.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1119,6 +1139,8 @@ def serve_query(
 
         def do_POST(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
+            if access.handle(self, "POST"):
+                return
             def _body() -> dict:
                 content_length = int(self.headers.get("Content-Length") or 0)
                 raw = self.rfile.read(content_length).decode("utf-8") if content_length else ""
@@ -1419,14 +1441,21 @@ def serve_query(
             return
 
     try:
-        port = _pick_port(port)
+        if not public_url:
+            port = _pick_port(port)
         server = QueryHTTPServer((host, port), Handler)
+        port = server.server_port
     except OSError as exc:
         print(f"无法监听 {host}:{port}，请检查端口是否被占用或更换端口。错误: {exc}")
         return
-    url = f"http://{host}:{port}/"
+    browser_host = "127.0.0.1" if host == "0.0.0.0" else host
+    url = f"{access.origin}/" if access.origin else f"http://{browser_host}:{port}/"
     print(f"足彩分析系统{__version__} 已启动：{url}")
     print(f"数据库：{db_path}")
+    if access.enabled:
+        print("手机访问保护已开启，首次访问需登录。")
+    if host == "0.0.0.0" and not public_url:
+        print(f"同一局域网手机可浏览 http://<电脑局域网IP>:{port}/；安装 PWA 需 HTTPS。")
     print("按 Ctrl+C 停止服务。")
     if open_browser:
         open_in_chrome(url)

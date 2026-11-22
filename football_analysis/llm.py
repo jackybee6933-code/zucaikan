@@ -11,6 +11,7 @@ from pathlib import Path
 import requests
 
 from .model import OUTCOME_LABELS
+from .h2h import parse_h2h_text_rows
 from .report import history_short, h2h_short
 from .llm_settings import load_settings
 
@@ -368,6 +369,7 @@ TEAM_READ_SYSTEM_PROMPT = """你是一名足球盘口分析师，负责读完一
 - factors 必须是 0~6 条可核对的依据；没有对应资料就不要补写，单条不超过 100 字。
 - over_tendency 判断总进球数更可能落在大小盘线上方还是下方，只能取三个值之一：大球、小球、观望。
 - 判断大小球时，必须综合近期对赛比分总进球、主客队近期进球/失球和大小球率，并对照大小球开盘线与即时线；近期状态优先于较早交锋。
+- 输入提供了有效交锋比分时，不能写成“无交锋记录”；交锋年代较早时应说明参考性有限，而不是否认记录存在。
 - 若开盘线与近期对赛场均总进球相差至少 0.5 球，必须在 over_reason 中明确指出差异并重点评估；将盘口视为重要市场先验，不可仅凭历史比分推翻盘口，需结合近期状态和盘口/水位变化判断。
 - over_reason 必须结合即时大小盘线解释最终选择，与 over_tendency 一致；市场倾向需说明来自变盘还是当前水位，不能仅凭一次变盘夸大为“强烈支持”。
 - 大小盘数据缺失、双方大小球率都没有、或无法判断时，over_tendency 必须是「观望」。
@@ -403,41 +405,36 @@ def _team_form_line(label: str, record: dict | None) -> str:
     return f"{label}：" + "，".join(parts)
 
 
-def _h2h_text_goal_totals(text: str) -> list[int]:
-    totals = []
-    for line in str(text or "").splitlines():
-        cells = line.split("|")
-        if len(cells) < 3 or not re.search(r"\b\d{4}-\d{2}-\d{2}\b", cells[1]):
-            continue
-        score = re.search(r"(?<!\d)(\d+)\s*[-:：]\s*(\d+)(?!\d)", cells[2])
-        if score:
-            totals.append(int(score.group(1)) + int(score.group(2)))
-    return totals
+def _h2h_text_goal_totals(text: str, *, team_names: tuple[str, ...] = ()) -> list[int]:
+    return [row["goals"] for row in parse_h2h_text_rows(text, team_names=team_names)]
 
 
 def _h2h_goal_summary(analysis: dict, page_text: str = "") -> dict | None:
-    history = analysis.get("history") or {}
-    rows = (history.get("h2h") or {}).get("rows") or []
+    team_names = tuple(
+        str(analysis.get(key) or "")
+        for key in ("home_team", "away_team", "home_team_cantonese", "away_team_cantonese")
+    )
     totals = []
-    for row in rows[:5]:
-        score = re.fullmatch(r"\s*(\d+)\s*[-:：]\s*(\d+)\s*", str(row.get("score") or ""))
-        if score:
-            totals.append(int(score.group(1)) + int(score.group(2)))
-    if len(totals) < 3:
-        references = (analysis.get("team_read") or {}).get("source_references") or {}
-        if isinstance(references, dict):
-            for key in ("交战历史", "对战历史", "对赛成绩"):
-                totals = _h2h_text_goal_totals(references.get(key) or "")
-                if totals:
-                    break
-    if len(totals) < 3 and page_text:
-        section = re.search(r"交战历史\s*\n(.*?)(?=\n## |\Z)", page_text, re.S)
+    references = (analysis.get("team_read") or {}).get("source_references") or {}
+    if isinstance(references, dict):
+        for key in ("对赛成绩", "对战历史", "交战历史"):
+            totals = _h2h_text_goal_totals(references.get(key) or "", team_names=team_names)
+            if totals:
+                break
+    if not totals and page_text:
+        section = re.search(r"(?:交战历史|对战历史|对赛成绩)\s*\n(.*?)(?=\n## |\Z)", page_text, re.S)
         if section:
-            totals = _h2h_text_goal_totals(section.group(1))
-    if len(totals) < 3:
+            totals = _h2h_text_goal_totals(section.group(1), team_names=team_names)
+    if not totals:
+        history = analysis.get("history") or {}
+        totals = []
+        for row in ((history.get("h2h") or {}).get("rows") or [])[:_H2H_ROW_LIMIT]:
+            score = re.fullmatch(r"\s*(\d+)\s*[-:：]\s*(\d+)\s*", str(row.get("score") or ""))
+            if score:
+                totals.append(int(score.group(1)) + int(score.group(2)))
+    if not totals:
         return None
-    recent = totals[:5]
-    return {"matches": len(recent), "average": sum(recent) / len(recent)}
+    return {"matches": len(totals), "average": sum(totals) / len(totals)}
 
 
 def over_goal_focus(analysis: dict, page_text: str = "") -> dict | None:
@@ -454,7 +451,7 @@ def over_goal_focus(analysis: dict, page_text: str = "") -> dict | None:
         opening_line = float(opening_line)
     except (TypeError, ValueError):
         return None
-    if summary is None:
+    if summary is None or summary["matches"] < 3:
         return None
     gap = abs(opening_line - summary["average"])
     if gap < 0.5:
@@ -511,14 +508,17 @@ def build_team_read_prompt(analysis: dict, page_text: str = "") -> str:
         )
     lines.append(_team_form_line("主队近况", history.get("home")))
     lines.append(_team_form_line("客队近况", history.get("away")))
-    lines.extend(_history_detail(history))
     h2h_summary = _h2h_goal_summary(analysis, page_text)
+    for detail in _history_detail(history):
+        if h2h_summary and detail.startswith("历史交锋："):
+            detail = f"历史交锋：已提供 {h2h_summary['matches']} 场有效比分"
+        lines.append(detail)
     if h2h_summary:
         lines.append(
             f"近期对赛场均总进球：{h2h_summary['average']:.2f} "
             f"（最近{h2h_summary['matches']}场有效比分）"
         )
-    focus = over_goal_focus(analysis)
+    focus = over_goal_focus(analysis, page_text)
     if focus:
         lines.append(
             f"重点提示：大小球开盘 {focus['opening_line']:g} 球与近期对赛场均 "
@@ -737,12 +737,12 @@ def enrich_team_reads(
                 task_log("AI 分析", f"{issue} 第 {item.get('match_no')} 场跳过：球队资料为空")
             _report("llm", index + 1, len(analyses))
             continue
+        input_h2h = _h2h_goal_summary(item, page_text)
         result = reader.read(item, page_text)
         if result:
             item["team_read"] = dict(result)
-            focus = over_goal_focus(item, page_text)
-            if focus:
-                item["team_read"]["over_focus"] = focus
+            if input_h2h:
+                item["team_read"]["h2h_input_matches"] = input_h2h["matches"]
             references = (
                 source_references[index]
                 if source_references and index < len(source_references)
@@ -754,6 +754,9 @@ def enrich_team_reads(
                     for key, value in references.items()
                     if str(key).strip() and str(value).strip()
                 }
+            focus = over_goal_focus(item, page_text)
+            if focus:
+                item["team_read"]["over_focus"] = focus
             count += 1
         if progress_path is not None:
             task_log("AI 分析", f"{issue} [{index + 1}/{len(analyses)}] "
